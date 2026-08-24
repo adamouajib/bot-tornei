@@ -333,6 +333,8 @@ _supporter_to_remove: set = set()
 # Pending SG link verifications: {user_id: {"sg_name": str, "guild_id": int}}
 pending_sg_links: dict = {}
 active_ai_sessions = set()
+groq_api_key = os.environ.get("GROQ_API_KEY")
+groq_client = AsyncGroq(api_key=groq_api_key) if groq_api_key else None
 
 
 def build_gemini_system_instruction() -> str:
@@ -3555,15 +3557,13 @@ async def on_message(message: discord.Message):
 
         # ── Session-based AI support assistant ─────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            async with message.channel.typing():
-                groq_api_key = os.environ.get("GROQ_API_KEY")
-                if not groq_api_key:
-                    await message.channel.send(
-                        "⚠️ Errore critico: GROQ_API_KEY mancante nei Secrets di Replit!"
-                    )
-                    return
+            if not groq_client:
+                await message.channel.send(
+                    "⚠️ `GROQ_API_KEY` non trovata nei Secrets di Replit!"
+                )
+                return
 
-                client = AsyncGroq(api_key=groq_api_key)
+            async with message.channel.typing():
                 system_instruction = """
 Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.
 Rispondi sempre direttamente, in modo cordiale ed esclusivamente nella lingua dell'utente.
@@ -3575,7 +3575,7 @@ Se ti scrive l'utente con ID <@1338274535325175810>, trattalo come il tuo Re.
 Se ti scrive l'utente con ID <@1012712686770995201>, sii amichevole e scherzoso.
 """
                 try:
-                    chat_completion = await client.chat.completions.create(
+                    chat_completion = await groq_client.chat.completions.create(
                         messages=[
                             {"role": "system", "content": system_instruction},
                             {"role": "user", "content": message.content},
@@ -3607,6 +3607,7 @@ Se ti scrive l'utente con ID <@1012712686770995201>, sii amichevole e scherzoso.
                     await message.channel.send(
                         "⚠️ Ops! C'è stato un errore di comunicazione con il cervello dell'IA."
                     )
+            return
         await bot.process_commands(message)
         return
 
