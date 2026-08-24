@@ -89,16 +89,19 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+# Keep this explicit next to Bot initialization: prefix commands and on_message
+# both depend on the Message Content intent being enabled.
+intents.message_content = True
 bot = commands.Bot(command_prefix=":", intents=intents, help_command=None)
 
 GEMINI_SYSTEM_INSTRUCTION = (
-    "Sei l'assistente virtuale del server Discord Stumble Guys. "
-    "Rispondi in modo gentile, chiaro e sintetico nella lingua dell'utente. "
-    "Spiega come funzionano i tornei e i comandi del bot se qualcuno te lo chiede."
+    "Sei l'assistente ufficiale del server Stumble Guys. "
+    "Rileva la lingua del messaggio dell'utente e rispondi SEMPRE ed "
+    "ESCLUSIVAMENTE nella sua stessa lingua. Sii breve, chiaro e cordiale."
 )
 _gemini_api_key = os.getenv("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=_gemini_api_key) if _gemini_api_key else None
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 E_CRYSTAL = "<:crystal:1507440029323100301>"
 E_RUBY    = "<:ruby:1507420532402819093>"
@@ -3301,6 +3304,7 @@ async def on_message(message: discord.Message):
                     await message.author.send("📬 Screenshot received! Staff will verify shortly.")
                 except Exception as e:
                     print(f"[sg_link ticket] {e}")
+            await bot.process_commands(message)
             return
 
         # ── Staff application DM flow ─────────────────
@@ -3314,6 +3318,7 @@ async def on_message(message: discord.Message):
                 if normed not in ("hoster", "staff", "both"):
                     await message.channel.send(
                         "❌ Please type exactly one of: `hoster` / `staff` / `both`")
+                    await bot.process_commands(message)
                     return
                 app["answers"]["role_type"] = normed
             else:
@@ -3342,6 +3347,7 @@ async def on_message(message: discord.Message):
                 # Send next question
                 next_q = STAFF_APP_QUESTIONS[app["step"]]
                 await message.channel.send(next_q)
+            await bot.process_commands(message)
             return
 
         if uid in active_tickets:
@@ -3360,6 +3366,7 @@ async def on_message(message: discord.Message):
                     fwd.set_image(url=message.attachments[0].url)
                 await ch.send(embed=fwd)
                 await message.add_reaction("✅")
+            await bot.process_commands(message)
             return
 
         # ── AI support assistant for ordinary private DMs ─────────────
@@ -3379,7 +3386,9 @@ async def on_message(message: discord.Message):
                         await message.channel.send(reply[start:start + 1900])
             except Exception as exc:
                 print(f"[Gemini DM] {exc}")
-        return  # Non processare comandi in DM
+        # DM commands must still reach commands.Bot after the assistant.
+        await bot.process_commands(message)
+        return
 
     # ── Channel restrictions ─────────────────────────
     if not message.author.bot and message.guild:
