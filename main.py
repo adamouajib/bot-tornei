@@ -3418,8 +3418,10 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # ── DM → ticket channel ──────────────────────────
-    if isinstance(message.channel, discord.DMChannel):
+    # ── Direct Messages: AI sessions and support workflows ────────────────
+    # DMs have no guild; using this check also covers Discord's DM channel
+    # implementations consistently.
+    if message.guild is None:
         uid = str(message.author.id)
         command_text = message.content.strip().lower()
 
@@ -3435,7 +3437,6 @@ async def on_message(message: discord.Message):
                 color=discord.Color.green(),
             )
             await message.channel.send(embed=welcome_embed)
-            await bot.process_commands(message)
             return
 
         if command_text == ":stop":
@@ -3449,7 +3450,6 @@ async def on_message(message: discord.Message):
                 color=discord.Color.red(),
             )
             await message.channel.send(embed=closing_embed)
-            await bot.process_commands(message)
             return
 
         # ── SG Link screenshot flow ───────────────────
