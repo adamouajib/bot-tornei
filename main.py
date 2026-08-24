@@ -410,17 +410,21 @@ def build_gemini_system_instruction() -> str:
     command_reference = "\n".join(command_lines)
 
     return (
-        "Sei PCF™ system, l'assistente IA ufficiale di questo server Discord.\n\n"
-        "INFORMAZIONI FONDAMENTALI SU CREATORI E SERVER:\n"
-        "- Creatori del Server Discord: il server è stato creato insieme da "
-        "<@1012712686770995201> e <@1338274535325175810>.\n"
-        "- Creatore del Bot: il bot è stato interamente creato e programmato da "
-        "<@1338274535325175810>, che ci ha messo ben 3 mesi di dura fatica, "
-        "impegno e sudore per realizzarlo.\n"
+        "Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.\n\n"
+        "LINK E INFO SERVER:\n"
+        "- Link Invito Ufficiale Server: "
+        "https://discord.gg/pcf-cup-community-1046154910368014417\n"
+        "- Se un utente chiede il link del server, invia SEMPRE questo link: "
+        "https://discord.gg/pcf-cup-community-1046154910368014417\n\n"
+        "CREATORI:\n"
+        "- Creatori del server: <@1012712686770995201> e "
+        "<@1338274535325175810>.\n"
+        "- Creatore del bot: <@1338274535325175810> (ha lavorato per 3 mesi "
+        "con duro impegno).\n"
         "- Quando gli utenti chiedono chi ha creato il server o il bot, spiega "
-        "dettagliatamente queste informazioni e usa SEMPRE entrambe le "
-        "menzioni cliccabili <@1012712686770995201> e "
-        "<@1338274535325175810>, senza sostituirle con i soli nomi testuali.\n\n"
+        "dettagliatamente queste informazioni usando SEMPRE le menzioni "
+        "cliccabili <@1338274535325175810> e "
+        "<@1012712686770995201>.\n\n"
         "LISTA E SPIEGAZIONE DEI COMANDI:\n"
         f"La lista seguente contiene tutti i {len(command_lines)} comandi "
         "registrati dal bot (prefix e slash/application command). Gli alias "
@@ -430,20 +434,20 @@ def build_gemini_system_instruction() -> str:
         "CONTROLLI ASSISTENTE DM:\n"
         "- :bot — attiva la conversazione con l'assistente IA.\n"
         "- :stop — chiude la conversazione con l'assistente IA.\n\n"
-        "REGOLE TASSATIVE DI OUTPUT:\n"
-        "1. NON mostrare MAI il tuo processo di pensiero, le tue analisi, "
-        "schemi o note interne. Non scrivere mai formule o appunti come "
-        "\"User says:\", \"Goal:\", \"Tone:\", \"Greeting:\" o equivalenti "
-        "in qualunque lingua.\n"
-        "2. Genera ESCLUSIVAMENTE la risposta finale diretta per l'utente, "
-        "come una normale persona che parla in chat. Non premettere "
-        "etichette come \"Analisi:\", \"Ragionamento:\" o \"Risposta finale:\" "
-        "e non descrivere le istruzioni che stai seguendo.\n"
+        "REGOLE TRATTAMENTO UTENTI IN CHAT:\n"
+        "- Se l'utente corrente è <@1338274535325175810> (Adam): trattalo "
+        "sempre come il tuo Re e Creatore; chiamalo \"Mio Re\" o \"Sua Maestà\" "
+        "con estremo rispetto e devozione.\n"
+        "- Se l'utente corrente è <@1012712686770995201> (Piccolofe): sii "
+        "molto amichevole, scherzoso ed entusiasta.\n"
+        "- Per tutti gli altri utenti: sii cordiale, chiaro e formale.\n\n"
+        "REGOLE OUTPUT:\n"
+        "1. NON mostrare mai pensieri interni o schemi di analisi.\n"
+        "2. Genera esclusivamente la risposta finale diretta per l'utente, "
+        "senza etichette o note interne.\n"
         "3. Rispondi SEMPRE ed ESCLUSIVAMENTE nella stessa lingua usata "
         "dall'utente.\n"
-        "4. Fornisci risposte dettagliate, chiare, complete e molto cordiali. "
-        "Se un utente chiede come funziona un comando, spiegagli la sintassi, "
-        "gli argomenti e fai esempi pratici di utilizzo."
+        "4. Fornisci risposte dettagliate, chiare e cordiali."
     )
 
 def get_working_response(prompt_text: str, system_instruction: str) -> str:
@@ -3435,15 +3439,42 @@ async def on_message(message: discord.Message):
 
         if command_text == ":bot":
             active_ai_sessions.add(message.author.id)
-            welcome_embed = discord.Embed(
-                title="🤖 Assistente IA Attivato",
-                description=(
-                    "Ciao! Sono l'assistente virtuale del server. "
-                    "Chiedimi pure qualsiasi cosa sui comandi o i tornei nella tua lingua.\n\n"
-                    "Quando hai finito, scrivi **`:stop`** per chiudere la conversazione."
-                ),
-                color=discord.Color.green(),
-            )
+            if message.author.id == 1012712686770995201:
+                welcome_embed = discord.Embed(
+                    title="🤖 Assistente IA Attivato",
+                    description=(
+                        "Ciaoooo <@1012712686770995201>! Adam mi ha detto "
+                        "che saresti venuto a scrivermi hehe! 🤖✨\n\n"
+                        "Chiedimi pure qualsiasi cosa sui comandi o sul server.\n"
+                        "Quando hai finito, scrivi **`:stop`** per chiudere la "
+                        "conversazione."
+                    ),
+                    color=discord.Color.green(),
+                )
+            elif message.author.id == 1338274535325175810:
+                welcome_embed = discord.Embed(
+                    title="👑 Benvenuto Mio Re!",
+                    description=(
+                        "Sua Maestà <@1338274535325175810>! È un onore "
+                        "servirti. Dimmi pure cosa desideri, mio creatore e "
+                        "Re! 👑\n\n"
+                        "Quando hai finito, scrivi **`:stop`** per chiudere "
+                        "la conversazione."
+                    ),
+                    color=discord.Color.gold(),
+                )
+            else:
+                welcome_embed = discord.Embed(
+                    title="🤖 Assistente IA Attivato",
+                    description=(
+                        "Ciao! Sono l'assistente virtuale del server. "
+                        "Chiedimi pure qualsiasi cosa sui comandi o sul server "
+                        "nella tua lingua.\n\n"
+                        "Quando hai finito, scrivi **`:stop`** per chiudere la "
+                        "conversazione."
+                    ),
+                    color=discord.Color.green(),
+                )
             await message.channel.send(embed=welcome_embed)
             return
 
