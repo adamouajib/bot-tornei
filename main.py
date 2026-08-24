@@ -3564,15 +3564,37 @@ async def on_message(message: discord.Message):
                 return
 
             async with message.channel.typing():
-                system_instruction = """
+                bot_commands_list = []
+                for cmd in bot.commands:
+                    desc = (
+                        cmd.help
+                        or cmd.brief
+                        or "Esegue una funzione specifica del bot."
+                    )
+                    bot_commands_list.append(f"- :{cmd.name} -> {desc}")
+                commands_string = "\n".join(bot_commands_list)
+
+                system_instruction = f"""
 Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.
-Rispondi sempre direttamente, in modo cordiale ed esclusivamente nella lingua dell'utente.
-NON scrivere MAI bozze, analisi, ragionamenti o pensieri interni.
-Link invito server: https://discord.gg/pcf-cup-community-1046154910368014417
-Creatori server: <@1012712686770995201> e <@1338274535325175810>.
-Creatore bot: <@1338274535325175810> (3 mesi di duro lavoro).
-Se ti scrive l'utente con ID <@1338274535325175810>, trattalo come il tuo Re.
-Se ti scrive l'utente con ID <@1012712686770995201>, sii amichevole e scherzoso.
+ 
+REGOLE FONDAMENTALI DI FORMATTAZIONE:
+1. Metti in **grassetto** (`**parola**`) le parole chiave e le informazioni più importanti.
+2. NON scrivere mai il link del server per esteso. Se devi menzionarlo, usa sempre:
+   [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)
+   oppure [community PCF](https://discord.gg/pcf-cup-community-1046154910368014417).
+3. Rispondi in modo cordiale, chiaro e diretto, esclusivamente nella lingua dell'utente.
+4. NON mostrare mai analisi, bozze o pensieri interni.
+
+INFO GENERALI SERVER:
+- Creatori server: <@1012712686770995201> e <@1338274535325175810>.
+- Creatore bot: <@1338274535325175810> (3 mesi di duro lavoro).
+- Utente attuale: {message.author.display_name} (<@{message.author.id}>).
+
+DATABASE UFFICIALE DI TUTTI I {len(bot.commands)} COMANDI DEL BOT:
+{commands_string}
+
+Quando l'utente chiede a cosa serve un comando, consulta la lista sopra e spiegane
+la funzione in modo semplice e dettagliato.
 """
                 try:
                     chat_completion = await groq_client.chat.completions.create(
