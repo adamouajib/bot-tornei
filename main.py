@@ -335,6 +335,61 @@ pending_sg_links: dict = {}
 active_ai_sessions = set()
 groq_api_key = os.environ.get("GROQ_API_KEY")
 groq_client = AsyncGroq(api_key=groq_api_key) if groq_api_key else None
+ALERT_RECIPIENT_ID = 1338274535325175810
+
+
+async def send_threat_alert(message: discord.Message, reply_text: str) -> None:
+    """Send Adam a detailed DM when Groq flags a moderation alert."""
+    try:
+        recipient = bot.get_user(ALERT_RECIPIENT_ID)
+        if recipient is None:
+            recipient = await bot.fetch_user(ALERT_RECIPIENT_ID)
+
+        guild_name = message.guild.name if message.guild else "DM"
+        channel_name = getattr(message.channel, "mention", str(message.channel))
+        alert_body = reply_text.removeprefix("[ALERT]").strip()
+        if len(alert_body) > 1024:
+            alert_body = alert_body[:1021] + "..."
+
+        embed = discord.Embed(
+            title="🚨 Alert moderazione IA",
+            description=(
+                "Groq ha rilevato un possibile **insulto, comportamento tossico "
+                "o minaccia al server/bot**."
+            ),
+            color=discord.Color.red(),
+            timestamp=message.created_at,
+        )
+        embed.add_field(
+            name="Utente",
+            value=f"{message.author.mention}\n`{message.author} (ID: {message.author.id})`",
+            inline=False,
+        )
+        embed.add_field(name="Server", value=guild_name, inline=True)
+        embed.add_field(name="Canale", value=channel_name, inline=True)
+        embed.add_field(
+            name="Messaggio originale",
+            value=message.content[:1024] or "*(messaggio vuoto o con allegato)*",
+            inline=False,
+        )
+        embed.add_field(
+            name="Risposta IA",
+            value=alert_body or "*(nessun dettaglio restituito)*",
+            inline=False,
+        )
+        embed.add_field(
+            name="Link",
+            value=f"[Apri il messaggio]({message.jump_url})",
+            inline=False,
+        )
+        await recipient.send(embed=embed)
+        print(
+            f"[ALERT] DM inviato ad Adam per il messaggio "
+            f"{message.id} di {message.author.id}"
+        )
+    except Exception as exc:
+        # A failed DM must not prevent the bot from replying in the channel.
+        print(f"[ALERT ERROR] Impossibile inviare il DM ad Adam: {exc}")
 
 
 def build_gemini_system_instruction() -> str:
@@ -3574,32 +3629,36 @@ async def on_message(message: discord.Message):
                     bot_commands_list.append(f"- :{cmd.name} -> {desc}")
                 commands_string = "\n".join(bot_commands_list)
 
-                system_instruction = f"""
+                sys_prompt = f"""
 Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.
- 
-REGOLE FONDAMENTALI DI FORMATTAZIONE:
-1. Metti in **grassetto** (`**parola**`) le parole chiave e le informazioni più importanti.
-2. NON scrivere mai il link del server per esteso. Se devi menzionarlo, usa sempre:
-   [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)
-   oppure [community PCF](https://discord.gg/pcf-cup-community-1046154910368014417).
-3. Rispondi in modo cordiale, chiaro e diretto, esclusivamente nella lingua dell'utente.
-4. NON mostrare mai analisi, bozze o pensieri interni.
 
-INFO GENERALI SERVER:
-- Creatori server: <@1012712686770995201> e <@1338274535325175810>.
-- Creatore bot: <@1338274535325175810> (3 mesi di duro lavoro).
-- Utente attuale: {message.author.display_name} (<@{message.author.id}>).
+REGOLE DI SICUREZZA E SEGNALAZIONE:
+- Se l'utente ti insulta, ti minaccia, mostra comportamento tossico, o dice di voler
+  danneggiare, nukare, raidare o distruggere il server/bot (anche usando parole come
+  "nuke" o "distruggerò"):
+  1. DEVI INIZIARE la tua risposta ESATTAMENTE con il tag '[ALERT]'.
+  2. NON essere troppo gentile e NON salutare con 'Ciao'. Rispondi in modo serio,
+     fermo e dettagliato, facendo presente che le minacce e gli insulti non sono
+     tollerati e che il creatore del server è stato notificato.
+- Il tag '[ALERT]' è obbligatorio per ogni insulto, minaccia o comportamento tossico
+  rivolto al bot o al server. Non usarlo per messaggi normali.
 
-DATABASE UFFICIALE DI TUTTI I {len(bot.commands)} COMANDI DEL BOT:
+REGOLE GENERALI:
+- Metti in **grassetto** le parole chiave importanti.
+- Per i link al server usa [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417).
+- Non mostrare mai analisi o schemi interni.
+
+Creatori server: <@1012712686770995201> e <@1338274535325175810>.
+Creatore bot: <@1338274535325175810>.
+Utente attuale: {message.author.display_name} (<@{message.author.id}>).
+
+LISTA COMANDI:
 {commands_string}
-
-Quando l'utente chiede a cosa serve un comando, consulta la lista sopra e spiegane
-la funzione in modo semplice e dettagliato.
 """
                 try:
                     chat_completion = await groq_client.chat.completions.create(
                         messages=[
-                            {"role": "system", "content": system_instruction},
+                            {"role": "system", "content": sys_prompt},
                             {"role": "user", "content": message.content},
                         ],
                         model="openai/gpt-oss-20b",
@@ -3615,6 +3674,9 @@ la funzione in modo semplice e dettagliato.
                             "⚠️ Ops! L'IA non ha restituito una risposta."
                         )
                         return
+
+                    if reply_text.startswith("[ALERT]"):
+                        await send_threat_alert(message, reply_text)
 
                     response_embed = discord.Embed(
                         description=reply_text[:4096],
