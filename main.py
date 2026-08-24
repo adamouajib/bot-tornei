@@ -533,26 +533,46 @@ def clean_ai_response(text: str) -> str:
     cleaned = []
     skip_mode = False
     markers = [
-        "User Question",
-        "Language:",
-        "Goal:",
-        "Context:",
-        "Tone:",
-        "Draft",
-        "Internal Monologue",
-        "User Identity",
-        "Identify key",
+        "user question",
+        "user input:",
+        "user id",
+        "language:",
+        "goal:",
+        "context:",
+        "tone:",
+        "draft",
+        "internal monologue",
+        "user identity",
+        "identify key",
+        "the user asked",
+        "response should",
+        "no internal",
+        "direct response",
+        "language matches",
+        "violation detected",
     ]
     for line in lines:
-        if any(marker in line for marker in markers):
+        normalized_line = line.strip().lower()
+        if any(marker in normalized_line for marker in markers):
             skip_mode = True
             continue
-        if skip_mode and (
-            line.strip().startswith("•")
-            or line.strip().startswith("-")
-            or line.strip().startswith("o")
-        ):
-            continue
+        if skip_mode:
+            stripped = line.strip()
+            is_bullet = stripped.startswith(("•", "-", "o", "◦"))
+            if is_bullet:
+                candidate = stripped.lstrip("•-o◦ ").strip()
+                # Some leaked templates put the actual final answer in a
+                # quoted bullet. Keep that sentence while dropping the
+                # surrounding analysis bullets.
+                if candidate.startswith(('"', "“")) and len(candidate) > 1:
+                    candidate = candidate.strip('"“”').strip()
+                    if candidate:
+                        cleaned.append(candidate)
+                        skip_mode = False
+                continue
+            if not stripped:
+                continue
+            skip_mode = False
         skip_mode = False
         cleaned.append(line)
     final_text = "\n".join(cleaned).strip()
