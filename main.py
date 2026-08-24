@@ -3498,14 +3498,17 @@ async def on_message(message: discord.Message):
             active_ai_sessions.add(message.author.id)
             save_sessions()
             welcome_embed = discord.Embed(
-                title="🤖 Assistente IA Attivato",
+                title="🤖 Assistente Ufficiale PCF™",
                 description=(
-                    "OFFICIAL PCF SERVER BOT 🏆\n\n"
-                    "If you have any questions use :bot in dm to ask me anything!!\n\n"
-                    "PCF SERVER:\n"
-                    "https://discord.gg/pcf-cup-community-1046154910368014417"
+                    "Ciao! Sono l'assistente del server **PCF™** 🏆\n\n"
+                    "Chiedimi pure qualsiasi cosa riguardo ai comandi, al server "
+                    "o al regolamento e ti aiuterò subito!\n\n"
+                    "🔗 **Link Utili:**\n"
+                    "[Entra nel Server PCF™]"
+                    "(https://discord.gg/pcf-cup-community-1046154910368014417)\n\n"
+                    "*Per chiudere la chat in qualsiasi momento scrivi `:stop`.*"
                 ),
-                color=discord.Color.green(),
+                color=discord.Color(0x3498DB),
             )
             await message.channel.send(embed=welcome_embed)
             return
@@ -3667,11 +3670,22 @@ DATABASE COMPLETO DEI COMANDI:
 {commands_string}
 """
                 try:
-                    model = genai.GenerativeModel(
-                        "gemini-1.5-pro",
-                        system_instruction=system_instruction,
-                    )
-                    response = model.generate_content(message.content)
+                    try:
+                        model = genai.GenerativeModel(
+                            "gemini-2.5-pro",
+                            system_instruction=system_instruction,
+                        )
+                        response = model.generate_content(message.content)
+                    except Exception as primary_error:
+                        print(
+                            f"[GEMINI] gemini-2.5-pro failed, using "
+                            f"gemini-1.5-flash: {primary_error}"
+                        )
+                        fallback_model = genai.GenerativeModel(
+                            "gemini-1.5-flash",
+                            system_instruction=system_instruction,
+                        )
+                        response = fallback_model.generate_content(message.content)
                     reply_text = clean_gemini_response(response)
                     if not reply_text:
                         await message.channel.send(
