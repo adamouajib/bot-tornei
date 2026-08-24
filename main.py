@@ -10,7 +10,7 @@ import asyncio
 import inspect
 from datetime import datetime, timedelta
 import random
-import google.generativeai as genai
+from groq import AsyncGroq
 
 
 
@@ -469,110 +469,6 @@ def build_gemini_system_instruction() -> str:
         "dall'utente.\n"
         "5. Fornisci risposte dettagliate, chiare e cordiali."
     )
-
-def clean_ai_response(text: str) -> str:
-    """Remove leaked internal analysis and metadata before Discord delivery."""
-    lines = text.split("\n")
-    clean_lines = []
-    recording = False
-    for line in lines:
-        stripped = line.strip().lower()
-        # Check if the line is part of the unwanted internal monologue/analysis template
-        if any(
-            keyword in stripped
-            for keyword in [
-                "user message",
-                "user input",
-                "target persona",
-                "task:",
-                "persona:",
-                "refining:",
-                "check rules:",
-                "language:",
-                "goal:",
-                "context:",
-                "internal monologue",
-                "draft",
-                "analysis:",
-                "reasoning:",
-                "thought process:",
-                "internal analysis:",
-                "final answer:",
-            ]
-        ):
-            continue
-        # Skip standalone bullet points at the beginning
-        if not recording and (
-            stripped.startswith("•")
-            or stripped.startswith("-")
-            or stripped.startswith("o ")
-            or stripped.startswith("o:")
-        ):
-            continue
-
-        recording = True
-        clean_lines.append(line)
-
-    result = "\n".join(clean_lines).strip()
-    return result if result else text
-
-
-def get_working_response(prompt_text: str, system_instruction: str) -> str:
-    """Return a response from the first Gemini model available to the API key."""
-    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-    candidates = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-pro",
-    ]
-    attempted = set()
-
-    for model_name in candidates:
-        attempted.add(model_name)
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=system_instruction,
-            )
-            response = model.generate_content(prompt_text)
-            if response and response.text:
-                return clean_ai_response(response.text)
-        except Exception as error:
-            print(f"[Gemini model unavailable: {model_name}]: {error}")
-
-    try:
-        available_models = genai.list_models()
-    except Exception as error:
-        print(f"[Gemini model discovery error]: {error}")
-        available_models = []
-
-    for model_info in available_models:
-        model_name = getattr(model_info, "name", "")
-        supported_methods = getattr(
-            model_info, "supported_generation_methods", []
-        )
-        if (
-            not model_name
-            or model_name in attempted
-            or "generateContent" not in supported_methods
-        ):
-            continue
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                system_instruction=system_instruction,
-            )
-            response = model.generate_content(prompt_text)
-            if response and response.text:
-                return clean_ai_response(response.text)
-        except Exception as error:
-            print(f"[Gemini discovered model unavailable: {model_name}]: {error}")
-
-    raise Exception(
-        "Impossibile trovare un modello Gemini attivo sulla tua API Key."
-    )
-
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
@@ -3660,56 +3556,56 @@ async def on_message(message: discord.Message):
         # ── Session-based AI support assistant ─────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
             async with message.channel.typing():
-                try:
-                    # Keep the user prompt conversational. Structured labels
-                    # such as "User Question:" or "Goal:" can be copied by
-                    # the model as if they were part of its response.
-                    prompt = f"L'utente ha scritto: {message.content}"
-                    response_text = (
-                        await asyncio.to_thread(
-                            get_working_response,
-                            prompt,
-                            build_gemini_system_instruction(),
-                        )
-                    ).strip()
-                    if response_text.startswith("[REPORT_ADMIN]"):
-                        response_text = response_text[len("[REPORT_ADMIN]"):].lstrip()
-                        report_embed = discord.Embed(
-                            title="🚨 Segnalazione Moderazione AI",
-                            description=(
-                                f"**Utente:** {message.author.mention} "
-                                f"(`{message.author.id}`)\n"
-                                f"**Messaggio:** {message.content}"
-                            ),
-                            color=discord.Color.red(),
-                        )
-                        try:
-                            admin_user = await bot.fetch_user(
-                                1338274535325175810
-                            )
-                            await admin_user.send(embed=report_embed)
-                        except Exception as report_error:
-                            print(
-                                f"[REPORT_ADMIN notification error]: "
-                                f"{report_error}"
-                            )
-                    response_text = clean_ai_response(response_text)
-                    if response_text:
-                        for start in range(0, len(response_text), 2000):
-                            response_embed = discord.Embed(
-                                description=response_text[start:start + 2000],
-                                color=discord.Color.blurple(),
-                            )
-                            response_embed.set_footer(text="Scrivi :stop per chiudere la chat")
-                            await message.channel.send(embed=response_embed)
-                    else:
-                        await message.channel.send(
-                            "⚠️ Non ho ricevuto una risposta valida dall'IA."
-                        )
-                except Exception as e:
-                    print(f"[ERRORE GEMINI DM]: {e}")
+                groq_api_key = os.environ.get("GROQ_API_KEY")
+                if not groq_api_key:
                     await message.channel.send(
-                        f"⚠️ Errore durante la generazione della risposta: {e}"
+                        "⚠️ Errore critico: GROQ_API_KEY mancante nei Secrets di Replit!"
+                    )
+                    return
+
+                client = AsyncGroq(api_key=groq_api_key)
+                system_instruction = """
+Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.
+Rispondi sempre direttamente, in modo cordiale ed esclusivamente nella lingua dell'utente.
+NON scrivere MAI bozze, analisi, ragionamenti o pensieri interni.
+Link invito server: https://discord.gg/pcf-cup-community-1046154910368014417
+Creatori server: <@1012712686770995201> e <@1338274535325175810>.
+Creatore bot: <@1338274535325175810> (3 mesi di duro lavoro).
+Se ti scrive l'utente con ID <@1338274535325175810>, trattalo come il tuo Re.
+Se ti scrive l'utente con ID <@1012712686770995201>, sii amichevole e scherzoso.
+"""
+                try:
+                    chat_completion = await client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": system_instruction},
+                            {"role": "user", "content": message.content},
+                        ],
+                        model="llama-3.1-8b-instant",
+                        temperature=0.7,
+                        max_tokens=600,
+                    )
+
+                    reply_text = (
+                        chat_completion.choices[0].message.content or ""
+                    ).strip()
+                    if not reply_text:
+                        await message.channel.send(
+                            "⚠️ Ops! L'IA non ha restituito una risposta."
+                        )
+                        return
+
+                    response_embed = discord.Embed(
+                        description=reply_text[:4096],
+                        color=discord.Color.blurple(),
+                    )
+                    response_embed.set_footer(
+                        text="Scrivi :stop per chiudere la chat"
+                    )
+                    await message.channel.send(embed=response_embed)
+                except Exception as e:
+                    print(f"[ERRORE GROQ]: {e}")
+                    await message.channel.send(
+                        "⚠️ Ops! C'è stato un errore di comunicazione con il cervello dell'IA."
                     )
         await bot.process_commands(message)
         return
