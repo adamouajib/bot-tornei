@@ -3395,9 +3395,9 @@ async def on_message(message: discord.Message):
                 try:
                     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-                    def call_gemini():
+                    def call_gemini(model_name):
                         model = genai.GenerativeModel(
-                            model_name="gemini-2.5-flash",
+                            model_name,
                             system_instruction=(
                                 "Sei l'assistente ufficiale del server Stumble Guys. "
                                 "Rispondi SEMPRE nella stessa lingua dell'utente. "
@@ -3406,7 +3406,15 @@ async def on_message(message: discord.Message):
                         )
                         return model.generate_content(message.content)
 
-                    response = await asyncio.to_thread(call_gemini)
+                    try:
+                        response = await asyncio.to_thread(
+                            call_gemini, "gemini-3.6-flash"
+                        )
+                    except Exception as primary_error:
+                        print(f"[Gemini primary model error]: {primary_error}")
+                        response = await asyncio.to_thread(
+                            call_gemini, "gemini-1.5-flash"
+                        )
                     response_text = (response.text if response else "").strip()
                     if response_text:
                         for start in range(0, len(response_text), 2000):
