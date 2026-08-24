@@ -336,7 +336,13 @@ active_ai_sessions = set()
 
 
 def build_gemini_system_instruction() -> str:
-    """Build Gemini's command reference from the commands registered in this bot."""
+    """Build Gemini's complete command reference from the live bot registry.
+
+    This intentionally reads ``bot.commands`` and ``bot.tree`` instead of
+    maintaining a second, hand-written command list.  That keeps the AI
+    reference synchronized when a command is added, renamed, or converted to
+    an application/slash command.
+    """
     command_lines = []
     seen = set()
 
@@ -347,10 +353,20 @@ def build_gemini_system_instruction() -> str:
         seen.add(name)
         callback = getattr(command, "callback", None)
         signature = ""
-        description = getattr(command, "description", None) or ""
+        description = (
+            getattr(command, "description", None)
+            or getattr(command, "help", None)
+            or getattr(command, "short_doc", None)
+            or ""
+        )
         if callback:
             try:
-                parameters = list(inspect.signature(callback).parameters.values())[1:]
+                parameters = list(inspect.signature(callback).parameters.values())
+                # Prefix command callbacks receive Context; application
+                # command callbacks receive Interaction.  Neither belongs in
+                # the syntax shown to server members.
+                if parameters and parameters[0].name in {"ctx", "interaction", "self"}:
+                    parameters = parameters[1:]
                 parameter_tokens = []
                 for parameter in parameters:
                     if parameter.kind == inspect.Parameter.VAR_KEYWORD:
@@ -360,17 +376,24 @@ def build_gemini_system_instruction() -> str:
                     elif parameter.default is inspect.Parameter.empty:
                         token = f"<{parameter.name}>"
                     else:
-                        token = f"[<{parameter.name}>]"
+                        default = parameter.default
+                        token = f"[<{parameter.name}={default}>]"
                     parameter_tokens.append(token)
-                signature = f":{name}" + (
+                command_prefix = ":" if command in bot.commands else "/"
+                signature = f"{command_prefix}{name}" + (
                     " " + " ".join(parameter_tokens) if parameter_tokens else ""
                 )
-                description = inspect.getdoc(callback) or description
+                description = (
+                    inspect.getdoc(callback)
+                    or description
+                    or f"Comando {command_prefix}{name} del bot Discord."
+                )
             except (TypeError, ValueError):
-                signature = f":{name}"
+                command_prefix = ":" if command in bot.commands else "/"
+                signature = f"{command_prefix}{name}"
         aliases = getattr(command, "aliases", [])
         alias_text = f" (alias: {', '.join(':' + alias for alias in aliases)})" if aliases else ""
-        description = description.strip() or "Comando del bot Discord."
+        description = description.strip() or f"Comando :{name} del bot Discord."
         command_lines.append(f"- {signature}{alias_text} — {description}")
 
     for command in bot.commands:
@@ -391,10 +414,13 @@ def build_gemini_system_instruction() -> str:
         "CREATORE E SERVER:\n"
         "- Sei stato creato da <@1338274535325175810> (Adam / PCF™ team). "
         "Quando ti chiedono chi ti ha creato o chi è il proprietario, menziona "
-        "SEMPRE <@1338274535325175810>.\n\n"
+        "SEMPRE <@1338274535325175810>, usando esattamente questa menzione "
+        "cliccabile e non il solo nome testuale.\n\n"
         "LISTA E SPIEGAZIONE COMPLETA DI TUTTI I COMANDI DEL BOT:\n"
-        f"La lista seguente contiene {len(command_lines)} comandi registrati "
-        "(gli alias sono indicati sulla stessa riga e non contano separatamente):\n"
+        f"La lista seguente contiene tutti i {len(command_lines)} comandi "
+        "registrati dal bot (prefix e slash/application command). Gli alias "
+        "sono indicati sulla stessa riga e non contano separatamente. Usa "
+        "questa lista come riferimento aggiornato e non inventare comandi:\n"
         f"{command_reference or '- Nessun comando registrato.'}\n\n"
         "CONTROLLI ASSISTENTE DM:\n"
         "- :bot — attiva la conversazione con l'assistente IA.\n"
