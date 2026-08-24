@@ -434,6 +434,23 @@ def build_gemini_system_instruction() -> str:
         "CONTROLLI ASSISTENTE DM:\n"
         "- :bot — attiva la conversazione con l'assistente IA.\n"
         "- :stop — chiude la conversazione con l'assistente IA.\n\n"
+        "SISTEMA DI RILEVAMENTO VIOLAZIONI (MODERAZIONE):\n"
+        "- Analizza ogni messaggio dell'utente. Se l'utente scrive parolacce "
+        "gravi, insulti, contenuti sessuali/NSFW, richieste di \"nuke\", "
+        "\"raid\" o comportamenti malevoli:\n"
+        "  1. Inizia tassativamente la risposta con la stringa "
+        "[REPORT_ADMIN].\n"
+        "  2. Subito dopo, dai una risposta educata ma ferma all'utente, "
+        "rifiutando la richiesta o invitandolo a mantenere un linguaggio "
+        "appropriato.\n"
+        "- Se il messaggio è normale, NON inserire [REPORT_ADMIN].\n\n"
+        "REGOLE GENERALI:\n"
+        "- Creatori del server: <@1012712686770995201> e "
+        "<@1338274535325175810>.\n"
+        "- Creatore del bot: <@1338274535325175810> (ha lavorato per 3 mesi "
+        "con duro impegno).\n"
+        "- Non mostrare mai pensieri interni o schemi. Rispondi sempre nella "
+        "lingua dell'utente.\n\n"
         "REGOLE TRATTAMENTO UTENTI IN CHAT:\n"
         "- Se l'utente corrente è <@1338274535325175810> (Adam): trattalo "
         "sempre come il tuo Re e Creatore; chiamalo \"Mio Re\" o \"Sua Maestà\" "
@@ -3601,6 +3618,27 @@ async def on_message(message: discord.Message):
                             build_gemini_system_instruction(),
                         )
                     ).strip()
+                    if response_text.startswith("[REPORT_ADMIN]"):
+                        response_text = response_text[len("[REPORT_ADMIN]"):].lstrip()
+                        report_embed = discord.Embed(
+                            title="🚨 Segnalazione Moderazione AI",
+                            description=(
+                                f"**Utente:** {message.author.mention} "
+                                f"(`{message.author.id}`)\n"
+                                f"**Messaggio:** {message.content}"
+                            ),
+                            color=discord.Color.red(),
+                        )
+                        try:
+                            admin_user = await bot.fetch_user(
+                                1338274535325175810
+                            )
+                            await admin_user.send(embed=report_embed)
+                        except Exception as report_error:
+                            print(
+                                f"[REPORT_ADMIN notification error]: "
+                                f"{report_error}"
+                            )
                     if response_text:
                         for start in range(0, len(response_text), 2000):
                             response_embed = discord.Embed(
