@@ -4250,6 +4250,86 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Argomenti",
             "example": "Esempio",
         },
+        "es": {
+            "titles": (
+                "📖 Guía de comandos — Torneos y eventos",
+                "📖 Guía de comandos — Perfil, economía y comunidad",
+                "📖 Guía de comandos — Administración, soporte y actividades",
+            ),
+            "categories": (
+                ("🏆 TORNEOS", "Configuración de torneos, brackets y partidas"),
+                ("👤 PERFIL Y ECONOMÍA", "Perfiles, clasificaciones, monedas y tienda"),
+                ("🌐 COMUNIDAD, ADMIN Y ACTIVIDADES", "Herramientas de comunidad, soporte y actividades"),
+            ),
+            "footer": "Stumble™ Bot • prefijo: ':' • Usa :help de nuevo para cambiar el idioma",
+            "purpose": "Función",
+            "arguments": "Argumentos",
+            "example": "Ejemplo",
+        },
+        "de": {
+            "titles": (
+                "📖 Befehlsübersicht — Turniere und Events",
+                "📖 Befehlsübersicht — Profil, Wirtschaft und Community",
+                "📖 Befehlsübersicht — Admin, Support und Aktivitäten",
+            ),
+            "categories": (
+                ("🏆 TURNIERE", "Turniere, Brackets und Matches konfigurieren"),
+                ("👤 PROFIL UND WIRTSCHAFT", "Profile, Ranglisten, Währungen und Shop"),
+                ("🌐 COMMUNITY, ADMIN UND AKTIVITÄTEN", "Community-, Support- und Aktivitätsfunktionen"),
+            ),
+            "footer": "Stumble™ Bot • Präfix: ':' • Nutze :help erneut, um die Sprache zu ändern",
+            "purpose": "Zweck",
+            "arguments": "Argumente",
+            "example": "Beispiel",
+        },
+        "pt": {
+            "titles": (
+                "📖 Guia de comandos — Torneios e eventos",
+                "📖 Guia de comandos — Perfil, economia e comunidade",
+                "📖 Guia de comandos — Admin, suporte e atividades",
+            ),
+            "categories": (
+                ("🏆 TORNEIOS", "Configuração de torneios, brackets e partidas"),
+                ("👤 PERFIL E ECONOMIA", "Perfis, classificações, moedas e loja"),
+                ("🌐 COMUNIDADE, ADMIN E ATIVIDADES", "Ferramentas da comunidade, suporte e atividades"),
+            ),
+            "footer": "Stumble™ Bot • prefixo: ':' • Use :help novamente para mudar o idioma",
+            "purpose": "Função",
+            "arguments": "Argumentos",
+            "example": "Exemplo",
+        },
+        "fr": {
+            "titles": (
+                "📖 Guide des commandes — Tournois et événements",
+                "📖 Guide des commandes — Profil, économie et communauté",
+                "📖 Guide des commandes — Administration, support et activités",
+            ),
+            "categories": (
+                ("🏆 TOURNOIS", "Configuration des tournois, brackets et matchs"),
+                ("👤 PROFIL ET ÉCONOMIE", "Profils, classements, monnaies et boutique"),
+                ("🌐 COMMUNAUTÉ, ADMIN ET ACTIVITÉS", "Outils communautaires, support et activités"),
+            ),
+            "footer": "Stumble™ Bot • préfixe : ':' • Utilisez :help pour changer de langue",
+            "purpose": "Fonction",
+            "arguments": "Arguments",
+            "example": "Exemple",
+        },
+        "la": {
+            "titles": (
+                "📖 Index mandatorum — Certamina et ludi",
+                "📖 Index mandatorum — Profilus, oeconomia et communitas",
+                "📖 Index mandatorum — Administratio, auxilium et actiones",
+            ),
+            "categories": (
+                ("🏆 CERTAMINA", "Certamina, tabulae et ludi administrare"),
+                ("👤 PROFILUS ET OECONOMIA", "Profilus, ordines, pecunia et taberna"),
+                ("🌐 COMMUNITAS ET ADMINISTRATIO", "Instrumenta communitatis, auxilium et actiones"),
+            ),
+            "footer": "Stumble™ Bot • signum: ':' • :help iterum utere ad linguam mutandam",
+            "purpose": "Finis",
+            "arguments": "Argumenta",
+            "example": "Exemplum",
+        },
     }
     t = locale.get(lang, locale["en"])
 
@@ -4342,6 +4422,32 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     return embeds
 
 
+def _help_dm_chunks(embeds: list[discord.Embed], max_chars: int = 1900) -> list[str]:
+    """Convert the complete guide into DM-safe messages without splitting entries."""
+    chunks = []
+    for embed in embeds:
+        current = embed.title or ""
+        for field in embed.fields:
+            entry = f"\n\n**{field.name}**\n{field.value}"
+            if len(entry) > max_chars:
+                # Keep the complete explanation even if a future command
+                # becomes unusually long.  Split only that explanation across
+                # messages instead of silently truncating its content.
+                if current:
+                    chunks.append(current)
+                    current = ""
+                while len(entry) > max_chars:
+                    chunks.append(entry[:max_chars])
+                    entry = entry[max_chars:]
+            if current and len(current) + len(entry) > max_chars:
+                chunks.append(current)
+                current = ""
+            current += entry
+        if current:
+            chunks.append(current)
+    return chunks
+
+
 LANG_OPTIONS = {
     "🇬🇧 English":   "en",
     "🇮🇹 Italiano":  "it",
@@ -4363,10 +4469,12 @@ class HelpLangSelect(discord.ui.Select):
         lang = self.values[0]
         try:
             embeds = _build_help_embeds(lang)
-            # Send the complete guide privately to the member who selected the
-            # language.  The guide is made of three embeds, which keeps every
-            # command's detailed purpose, arguments and example readable.
-            await interaction.user.send(embeds=embeds)
+            chunks = _help_dm_chunks(embeds)
+            # Discord caps message content at 2,000 characters.  Send several
+            # clean, command-aligned messages below 1,900 chars so the full
+            # detailed guide can never fail because of payload size.
+            for chunk in chunks:
+                await interaction.user.send(content=chunk)
 
             # Acknowledge the component in the channel with only a private,
             # short confirmation.  Do not edit or replace the public menu.
