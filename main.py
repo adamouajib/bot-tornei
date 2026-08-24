@@ -4500,8 +4500,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                     usage = command_name
                     parameter_text = t["parameters_note"].format(parameters=parameter_syntax)
                 else:
-                    # Keep only the actual placeholder syntax in "Usage";
-                    # explanatory permission/default notes belong below it.
+                    # Keep only the actual placeholder syntax in the command
+                    # heading; permissions and defaults belong in the prose.
                     usage_tokens = parameter_syntax
                     if " optional " in usage_tokens.lower():
                         usage_tokens = usage_tokens[:usage_tokens.lower().index(" optional ")].strip()
@@ -4510,18 +4510,12 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                     if usage_tokens.lower().endswith(" text-channel mention"):
                         usage_tokens = usage_tokens[:-len(" text-channel mention")].strip()
                     usage = f"{command_name} {usage_tokens}"
-                    parameter_text = t["parameters_note"].format(parameters=parameter_syntax)
-                # The command identifier and its syntax are intentionally kept
-                # unchanged; all explanatory prose is localized per locale.
-                localized_purpose = purpose if lang == "en" else t["command_note"].format(command=command_name)
+                # Command names and syntax are universal Discord input.  The
+                # explanation itself is the command-specific catalog entry.
+                localized_purpose = purpose
                 embed.add_field(
-                    name=f"⚙️ `{command}`",
-                    value=(
-                        f"{localized_purpose}\n"
-                        f"**{t['usage']}:** `{usage}`\n"
-                        f"{parameter_text}\n"
-                        f"**{t['example_note']}:** `{example}`"
-                    ),
+                    name=f"⚙️ **`{usage}`**:",
+                    value=localized_purpose,
                     inline=False,
                 )
             if is_first:
