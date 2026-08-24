@@ -1,0 +1,1 @@
+- [Gemini response boundary](gemini-response-boundary.md) — Keep one output cleaner at the Gemini extraction boundary before any Discord delivery.

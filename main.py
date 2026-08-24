@@ -482,6 +482,7 @@ def clean_ai_response(text: str) -> str:
             keyword in stripped
             for keyword in [
                 "user message",
+                "user input",
                 "target persona",
                 "task:",
                 "persona:",
@@ -492,6 +493,11 @@ def clean_ai_response(text: str) -> str:
                 "context:",
                 "internal monologue",
                 "draft",
+                "analysis:",
+                "reasoning:",
+                "thought process:",
+                "internal analysis:",
+                "final answer:",
             ]
         ):
             continue
@@ -499,7 +505,8 @@ def clean_ai_response(text: str) -> str:
         if not recording and (
             stripped.startswith("•")
             or stripped.startswith("-")
-            or stripped.startswith("o")
+            or stripped.startswith("o ")
+            or stripped.startswith("o:")
         ):
             continue
 
