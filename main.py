@@ -3947,19 +3947,21 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:set-welcome #canale` — Imposta il canale benvenuto/addio.\n"
                 "`:set-supporter #canale` — Imposta il canale verifica supporter.\n"
                 "`:pex` — Controlla i ruoli rank di tutti gli staff e li promuove/retrocede se necessario.\n"
-          ": "⬆️ SISTEMA DE NIVELES",
+                "`:reset` — Reset completo dei dati (profili, torneo, economia). **Irreversibile.**"
+            ),
+            "level_title": "⬆️ SISTEMA LIVELLI",
             "level": (
-                f"Envía mensajes para ganar **XP** (+{XP_PER_MSG}/msg, cooldown 10s)\n"
-                "• Subida de nivel: +100 Ruby · cada 5 niveles: +500 Ruby +50 Cristales\n"
-                "• Roles especiales en niveles 5, 10, 15, 20, 30"
+                f"Scrivi messaggi per guadagnare **XP** (+{XP_PER_MSG}/msg, cooldown 10s)\n"
+                "• Level-up: +100 Ruby · ogni 5 livelli: +500 Ruby +50 Cristalli\n"
+                "• Ruoli speciali ai livelli 5, 10, 15, 20, 30"
             ),
             "community_title": "🌐 COMUNIDAD",
             "community": (
-                "`:link` — Conecta tu cuenta SG (necesario para gemas)\n"
-                "`:boost` — Beneficios de boost al servidor\n"
-                "`:supporter [@usuario]` — Ser Supporter (enlace en bio)\n"
-                "`:team @j1 [@j2]` — Crear equipo · `:myteam` · `:teamleave`\n"
-                "`:giveaway <tiempo> <ganadores> <premio>` — Iniciar sorteo"
+                "`:link` — Collega il tuo account SG (necessario per le gemme)\n"
+                "`:boost` — Mostra i premi del boost al server\n"
+                "`:supporter [@utente]` — Diventa Supporter aggiungendo il link del server alla bio SG\n"
+                "`:team @g1 [@g2]` — Crea un team · `:myteam` · `:teamleave`\n"
+                "`:giveaway <durata> <vincitori> <premio>` — Avvia un giveaway"
             ),
             "admin_title": "🛠️ ADMIN",
             "admin": (
