@@ -3391,22 +3391,23 @@ async def on_message(message: discord.Message):
 
         # ── Session-based AI support assistant ─────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            try:
-                async with message.channel.typing():
+            async with message.channel.typing():
+                try:
                     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-                    model = genai.GenerativeModel(
-                        "gemini-2.5-flash",
-                        system_instruction=(
-                            "Sei l'assistente del server Stumble Guys. "
-                            "Rispondi SEMPRE nella lingua usata dall'utente. "
-                            "Sii breve e cordiale."
-                        ),
-                    )
-                    res = await asyncio.to_thread(
-                        model.generate_content,
-                        message.content,
-                    )
-                    response_text = (res.text or "").strip()
+
+                    def call_gemini():
+                        model = genai.GenerativeModel(
+                            model_name="gemini-2.5-flash",
+                            system_instruction=(
+                                "Sei l'assistente ufficiale del server Stumble Guys. "
+                                "Rispondi SEMPRE nella stessa lingua dell'utente. "
+                                "Sii breve, chiaro e cordiale."
+                            ),
+                        )
+                        return model.generate_content(message.content)
+
+                    response = await asyncio.to_thread(call_gemini)
+                    response_text = (response.text if response else "").strip()
                     if response_text:
                         for start in range(0, len(response_text), 2000):
                             response_embed = discord.Embed(
@@ -3415,8 +3416,15 @@ async def on_message(message: discord.Message):
                             )
                             response_embed.set_footer(text="Scrivi :stop per chiudere la chat")
                             await message.channel.send(embed=response_embed)
-            except Exception as e:
-                print(f"Gemini Error: {e}")
+                    else:
+                        await message.channel.send(
+                            "⚠️ Non ho ricevuto una risposta valida dall'IA."
+                        )
+                except Exception as e:
+                    print(f"[ERRORE GEMINI DM]: {e}")
+                    await message.channel.send(
+                        f"⚠️ Errore durante la generazione della risposta: {e}"
+                    )
         await bot.process_commands(message)
         return
 
