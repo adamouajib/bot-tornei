@@ -3646,10 +3646,14 @@ async def on_message(message: discord.Message):
         if message.author.id in active_ai_sessions and message.content.strip():
             async with message.channel.typing():
                 try:
+                    # Keep the user prompt conversational. Structured labels
+                    # such as "User Question:" or "Goal:" can be copied by
+                    # the model as if they were part of its response.
+                    prompt = f"L'utente ha scritto: {message.content}"
                     response_text = (
                         await asyncio.to_thread(
                             get_working_response,
-                            message.content,
+                            prompt,
                             build_gemini_system_instruction(),
                         )
                     ).strip()
