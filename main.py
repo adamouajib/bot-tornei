@@ -10,7 +10,7 @@ import asyncio
 import inspect
 from datetime import datetime, timedelta
 import random
-from groq import AsyncGroq
+import google.generativeai as genai
 
 
 
@@ -332,14 +332,52 @@ _supporter_to_remove: set = set()
 
 # Pending SG link verifications: {user_id: {"sg_name": str, "guild_id": int}}
 pending_sg_links: dict = {}
-active_ai_sessions = set()
-groq_api_key = os.environ.get("GROQ_API_KEY")
-groq_client = AsyncGroq(api_key=groq_api_key) if groq_api_key else None
+ACTIVE_SESSIONS_FILE = "active_sessions.json"
+active_ai_sessions: set[int] = set()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 ALERT_RECIPIENT_ID = 1338274535325175810
 
 
-async def send_threat_alert(message: discord.Message, reply_text: str) -> None:
-    """Send Adam a detailed DM when Groq flags a moderation alert."""
+def load_sessions() -> None:
+    """Restore active DM AI sessions after a bot restart."""
+    if not os.path.exists(ACTIVE_SESSIONS_FILE):
+        return
+    try:
+        with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as session_file:
+            session_ids = json.load(session_file)
+        if not isinstance(session_ids, list):
+            raise ValueError("il file delle sessioni deve contenere una lista")
+        active_ai_sessions.update(int(user_id) for user_id in session_ids)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        print(f"[sessions] Impossibile caricare le sessioni: {exc}")
+
+
+def save_sessions() -> None:
+    """Persist active DM AI sessions in a small JSON file."""
+    try:
+        with open(ACTIVE_SESSIONS_FILE, "w", encoding="utf-8") as session_file:
+            json.dump(sorted(active_ai_sessions), session_file, indent=2)
+    except OSError as exc:
+        print(f"[sessions] Impossibile salvare le sessioni: {exc}")
+
+
+load_sessions()
+
+
+def clean_gemini_response(response) -> str:
+    """Extract the user-facing Gemini text at one centralized boundary."""
+    try:
+        return (response.text or "").strip()
+    except (AttributeError, ValueError):
+        return ""
+
+
+async def send_threat_alert(
+    message: discord.Message, offender_reply: str
+) -> None:
+    """Send Adam a detailed DM when Gemini flags a moderation alert."""
     try:
         recipient = bot.get_user(ALERT_RECIPIENT_ID)
         if recipient is None:
@@ -347,14 +385,13 @@ async def send_threat_alert(message: discord.Message, reply_text: str) -> None:
 
         guild_name = message.guild.name if message.guild else "DM"
         channel_name = getattr(message.channel, "mention", str(message.channel))
-        alert_body = reply_text.removeprefix("[ALERT]").strip()
-        if len(alert_body) > 1024:
-            alert_body = alert_body[:1021] + "..."
+        if len(offender_reply) > 1024:
+            offender_reply = offender_reply[:1021] + "..."
 
         embed = discord.Embed(
             title="🚨 Alert moderazione IA",
             description=(
-                "Groq ha rilevato un possibile **insulto, comportamento tossico "
+                "Gemini ha rilevato un possibile **insulto, comportamento tossico "
                 "o minaccia al server/bot**."
             ),
             color=discord.Color.red(),
@@ -374,7 +411,7 @@ async def send_threat_alert(message: discord.Message, reply_text: str) -> None:
         )
         embed.add_field(
             name="Risposta IA",
-            value=alert_body or "*(nessun dettaglio restituito)*",
+            value=offender_reply or "*(nessun dettaglio restituito)*",
             inline=False,
         )
         embed.add_field(
@@ -1041,7 +1078,7 @@ async def on_ready():
     load_db()
     print(f"🔥 Stumble™ bot ONLINE!")
     await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.listening, name=":tour"))
+        type=discord.ActivityType.listening, name=":bot in DM 📩"))
     if not auto_leaderboard.is_running():
         auto_leaderboard.start()
     if not auto_save.is_running():
@@ -3459,47 +3496,23 @@ async def on_message(message: discord.Message):
 
         if command_text == ":bot":
             active_ai_sessions.add(message.author.id)
-            if message.author.id == 1012712686770995201:
-                welcome_embed = discord.Embed(
-                    title="🤖 Assistente IA Attivato",
-                    description=(
-                        "Ciaoooo <@1012712686770995201>! Adam mi ha detto "
-                        "che saresti venuto a scrivermi hehe! 🤖✨\n\n"
-                        "Chiedimi pure qualsiasi cosa sui comandi o sul server.\n"
-                        "Quando hai finito, scrivi **`:stop`** per chiudere la "
-                        "conversazione."
-                    ),
-                    color=discord.Color.green(),
-                )
-            elif message.author.id == 1338274535325175810:
-                welcome_embed = discord.Embed(
-                    title="👑 Benvenuto Mio Re!",
-                    description=(
-                        "Sua Maestà <@1338274535325175810>! È un onore "
-                        "servirti. Dimmi pure cosa desideri, mio creatore e "
-                        "Re! 👑\n\n"
-                        "Quando hai finito, scrivi **`:stop`** per chiudere "
-                        "la conversazione."
-                    ),
-                    color=discord.Color.gold(),
-                )
-            else:
-                welcome_embed = discord.Embed(
-                    title="🤖 Assistente IA Attivato",
-                    description=(
-                        "Ciao! Sono l'assistente virtuale del server. "
-                        "Chiedimi pure qualsiasi cosa sui comandi o sul server "
-                        "nella tua lingua.\n\n"
-                        "Quando hai finito, scrivi **`:stop`** per chiudere la "
-                        "conversazione."
-                    ),
-                    color=discord.Color.green(),
-                )
+            save_sessions()
+            welcome_embed = discord.Embed(
+                title="🤖 Assistente IA Attivato",
+                description=(
+                    "OFFICIAL PCF SERVER BOT 🏆\n\n"
+                    "If you have any questions use :bot in dm to ask me anything!!\n\n"
+                    "PCF SERVER:\n"
+                    "https://discord.gg/pcf-cup-community-1046154910368014417"
+                ),
+                color=discord.Color.green(),
+            )
             await message.channel.send(embed=welcome_embed)
             return
 
         if command_text == ":stop":
             active_ai_sessions.discard(message.author.id)
+            save_sessions()
             closing_embed = discord.Embed(
                 title="👋 Conversazione Conclusa",
                 description=(
@@ -3612,9 +3625,9 @@ async def on_message(message: discord.Message):
 
         # ── Session-based AI support assistant ─────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            if not groq_client:
+            if not GEMINI_API_KEY:
                 await message.channel.send(
-                    "⚠️ `GROQ_API_KEY` non trovata nei Secrets di Replit!"
+                    "⚠️ `GEMINI_API_KEY` non trovata nei Secrets di Replit!"
                 )
                 return
 
@@ -3624,51 +3637,42 @@ async def on_message(message: discord.Message):
                     desc = (
                         cmd.help
                         or cmd.brief
-                        or "Esegue una funzione specifica del bot."
+                        or "Descrizione non disponibile nel codice."
                     )
                     bot_commands_list.append(f"- :{cmd.name} -> {desc}")
                 commands_string = "\n".join(bot_commands_list)
 
-                sys_prompt = f"""
-Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.
+                system_instruction = f"""
+1. Sei PCF™ system, l'assistente IA del server Discord PCF™.
+2. REGOLA ANTI-INVENZIONI: Se l'utente chiede informazioni su un comando non
+   presente nel database o privo di descrizione dettagliata nel codice, rispondi
+   chiaramente che non hai informazioni specifiche su quel comando. NON INVENTARE
+   mai funzioni inventate (es. RAM, processore, Node.js).
+3. Formattazione: usa il **grassetto** per parole chiave importanti. Usa SEMPRE
+   la sintassi link Markdown [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)
+   e mai il link esteso.
+4. ALLERTA SICUREZZA: Se il messaggio dell'utente contiene insulti, bestemmie,
+   minacce o menzioni di nukare/distruggere il server/bot, INIZIA TASSATIVAMENTE
+   la risposta con '[ALERT]'. Rispondi con tono fermo e serio dicendo che le
+   minacce non sono tollerate.
+5. Non mostrare mai analisi, bozze o pensieri interni. Rispondi esclusivamente
+   nella lingua dell'utente.
 
-REGOLE DI SICUREZZA E SEGNALAZIONE:
-- Se l'utente ti insulta, ti minaccia, mostra comportamento tossico, o dice di voler
-  danneggiare, nukare, raidare o distruggere il server/bot (anche usando parole come
-  "nuke" o "distruggerò"):
-  1. DEVI INIZIARE la tua risposta ESATTAMENTE con il tag '[ALERT]'.
-  2. NON essere troppo gentile e NON salutare con 'Ciao'. Rispondi in modo serio,
-     fermo e dettagliato, facendo presente che le minacce e gli insulti non sono
-     tollerati e che il creatore del server è stato notificato.
-- Il tag '[ALERT]' è obbligatorio per ogni insulto, minaccia o comportamento tossico
-  rivolto al bot o al server. Non usarlo per messaggi normali.
+INFO SERVER:
+- Creatori server: <@1012712686770995201> e <@1338274535325175810>.
+- Creatore bot: <@1338274535325175810>.
+- Utente attuale: {message.author.display_name} (<@{message.author.id}>).
 
-REGOLE GENERALI:
-- Metti in **grassetto** le parole chiave importanti.
-- Per i link al server usa [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417).
-- Non mostrare mai analisi o schemi interni.
-
-Creatori server: <@1012712686770995201> e <@1338274535325175810>.
-Creatore bot: <@1338274535325175810>.
-Utente attuale: {message.author.display_name} (<@{message.author.id}>).
-
-LISTA COMANDI:
+DATABASE COMPLETO DEI COMANDI:
 {commands_string}
 """
                 try:
-                    chat_completion = await groq_client.chat.completions.create(
-                        messages=[
-                            {"role": "system", "content": sys_prompt},
-                            {"role": "user", "content": message.content},
-                        ],
-                        model="openai/gpt-oss-20b",
-                        temperature=0.7,
-                        max_tokens=600,
+                    model = genai.GenerativeModel(
+                        "gemini-1.5-pro",
+                        system_instruction=system_instruction,
                     )
-
-                    reply_text = (
-                        chat_completion.choices[0].message.content or ""
-                    ).strip()
+                    response = model.generate_content(message.content)
+                    reply_text = clean_gemini_response(response)
                     if not reply_text:
                         await message.channel.send(
                             "⚠️ Ops! L'IA non ha restituito una risposta."
@@ -3676,6 +3680,7 @@ LISTA COMANDI:
                         return
 
                     if reply_text.startswith("[ALERT]"):
+                        reply_text = reply_text.removeprefix("[ALERT]").strip()
                         await send_threat_alert(message, reply_text)
 
                     response_embed = discord.Embed(
@@ -3687,9 +3692,9 @@ LISTA COMANDI:
                     )
                     await message.channel.send(embed=response_embed)
                 except Exception as e:
-                    print(f"[GROQ ERROR]: {e}")
+                    print(f"[GEMINI ERROR]: {e}")
                     await message.channel.send(
-                        f"⚠️ Errore Groq dettagliato: `{str(e)}`"
+                        f"⚠️ Errore Gemini dettagliato: `{str(e)}`"
                     )
             return
         await bot.process_commands(message)
