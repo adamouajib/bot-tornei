@@ -4527,6 +4527,67 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":reset-staff-week": "Azzera i contatori settimanali dei tornei gestiti da staff e host, lasciando invariati i totali storici.",
     }
 
+    # Short command-specific Hindi copy.  Syntax stays unchanged because it
+    # must remain directly usable in Discord.
+    hindi_descriptions = {
+        ":setup": "टूर्नामेंट हब और पंजीकरण बटन प्रकाशित करता है।",
+        ":big-tour": "बिग टूर्नामेंट हब प्रकाशित करता है और सत्यापित SG खाता आवश्यक करता है।",
+        ":assign-hosts": "सक्रिय टूर्नामेंट के मैच होस्टों में बाँटता है।",
+        ":add_bot": "ब्रैकेट बनाए बिना टूर्नामेंट में बॉट खिलाड़ी जोड़ता है।",
+        ":bracket": "पहला ब्रैकेट बनाता है या टूर्नामेंट को अगले राउंड में ले जाता है।",
+        ":match": "मैच का रूम कोड भेजकर उसे चालू दिखाता है।",
+        ":qual": "मैच विजेता दर्ज करता है, अंक देता है और ब्रैकेट अपडेट करता है।",
+        ":end": "टूर्नामेंट बंद करके विजेता को Ruby और Crystals देता है।",
+        ":team-winner": "टीम टूर्नामेंट बंद करके विजेता टीम को पुरस्कार देता है।",
+        ":close-tour": "सक्रिय टूर्नामेंट बंद करके उसका डेटा साफ करता है।",
+        ":event": "Flash Event का सेटअप पैनल प्रकाशित करता है।",
+        ":start-event": "Flash Event शुरू करता है और इवेंट भूमिका को टैग करता है।",
+        ":cod-event": "इवेंट की माप, इमोट और रूम कोड प्रकाशित करता है।",
+        ":set-winner": "सक्रिय इवेंट का विजेता दर्ज करता है।",
+        ":end-event": "इवेंट बंद करके विजेता को चुनी गई मुद्रा देता है।",
+        ":big-event": "बिग Event का सेटअप खोलता है और प्रशासनिक अनुमति मांगता है।",
+        ":big-start": "बिग Event शुरू करके `@everyone` घोषणा भेजता है।",
+        ":big-event-winner": "बिग Event के पहले तीन विजेताओं का पैनल खोलता है।",
+        ":profile": "सदस्य का rank, अंक, मुद्राएँ, स्तर और जीत दिखाता है।",
+        ":leaderboard": "Ranked Points के अनुसार सर्वर लीडरबोर्ड दिखाता है।",
+        ":set-leaderboard": "स्वचालित लीडरबोर्ड संदेश का चैनल तय करता है।",
+        ":hoster-lb": "स्टाफ और होस्ट की साप्ताहिक तथा कुल रैंकिंग दिखाता है।",
+        ":gems": "Stumble Guys Gems की रैंकिंग दिखाता है।",
+        ":give": "सदस्य को चुनी गई मुद्रा की मात्रा देता है।",
+        ":add-rubini": "सदस्य के प्रोफ़ाइल में Ruby जोड़ता है।",
+        ":remove-rubini": "सदस्य के प्रोफ़ाइल से Ruby हटाता है।",
+        ":add-cristalli": "सदस्य के प्रोफ़ाइल में Crystals जोड़ता है।",
+        ":add-gems": "सदस्य के प्रोफ़ाइल में SG Gems जोड़ता है।",
+        ":add-punti": "Ranked Points जोड़कर rank अपडेट करता है।",
+        ":set-rank": "सदस्य का rank दिए गए नाम पर सेट करता है।",
+        ":reset": "सदस्य की चुनी हुई मुद्रा या आँकड़ा शून्य करता है।",
+        ":shop": "W Items, Gems और मुद्रा विनिमय वाला shop खोलता है।",
+        ":drop": "पुरस्कार गतिविधि शुरू करता है; डिफ़ॉल्ट पुरस्कार 500 Ruby है।",
+        ":machine": "गोल चलाने के लिए slot machine खोलता है।",
+        ":test": "Shop इंटरैक्शन जाँचने का परीक्षण पैनल खोलता है।",
+        ":team": "सदस्यों को आमंत्रित करके टीम बनाता है।",
+        ":myteam": "आपकी टीम, उसके नेता और सदस्यों को दिखाता है।",
+        ":teamleave": "आपको आपकी वर्तमान टीम से निकालता है।",
+        ":1v1": "दूसरे सदस्य को 1v1 चुनौती भेजता है।",
+        ":stumble-top": "Stumble गतिविधि के शीर्ष खिलाड़ियों की सूची दिखाता है।",
+        ":boost": "सर्वर boost के Ruby, Crystals और role पुरस्कार दिखाता है।",
+        ":link": "Stumble Guys खाता जोड़ने और staff सत्यापन की प्रक्रिया शुरू करता है।",
+        ":supporter": "Supporter सत्यापन दिखाता या शुरू करता है और ज़रूरत पर ticket खोलता है।",
+        ":set-supporter": "Supporter सत्यापन चैनल तय करता है।",
+        ":giveaway": "समयबद्ध giveaway शुरू करके विजेताओं को पुरस्कार देता है।",
+        ":help": "भाषा चुनकर श्रेणियों में पूरी कमांड गाइड DM करता है।",
+        ":set-welcome": "स्वागत और विदाई संदेशों का चैनल तय करता है।",
+        ":add-ticket": "SG लिंक, रिपोर्ट और staff आवेदन वाला ticket पैनल प्रकाशित करता है।",
+        ":pex": "Staff अंक जाँचकर उनके rank roles अपडेट करता है।",
+        ":reset-all": "पुष्टि के बाद सभी प्रोफ़ाइल, अंक, टूर्नामेंट और event डेटा मिटाता है।",
+        ":reset-staff-week": "Staff और host के साप्ताहिक टूर्नामेंट काउंटर शून्य करता है।",
+    }
+
+    localized_descriptions = {
+        "it": italian_descriptions,
+        "hi": hindi_descriptions,
+    }
+
     embeds = []
     for page_index, entries in enumerate(commands_by_page):
         title = t["titles"][page_index]
@@ -4536,31 +4597,29 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         # one with the full visual header; continuation cards stay compact.
         for part_start in range(0, len(entries), 6):
             part_entries = entries[part_start:part_start + 6]
-            part_number = part_start // 6 + 1
-            is_first = not embeds
-            if is_first:
+            is_first_category_card = part_start == 0
+            if is_first_category_card:
                 card_title = title
                 card_description = (
                     f"**{category_name}**\n{category_description}\n\n"
                     f"{t['intro']}"
                 )
             else:
-                card_title = f"-# 📖 {title} · {t['part']} {len(embeds) + 1}"
+                card_title = f"-# 📖 {title} · {t['part']} {part_start // 6 + 1}"
                 card_description = f"**{category_name}** · {category_description}"
             embed = discord.Embed(
                 title=card_title,
                 description=card_description,
                 color=(discord.Color.gold(), discord.Color.green(), discord.Color.blurple())[page_index],
             )
+            command_lines = []
             for command, purpose, arguments, example in part_entries:
                 command_name = command.split(" (", 1)[0]
                 parameter_syntax = arguments.split(";", 1)[0].strip()
                 if parameter_syntax.lower().startswith(("no arguments", "no command arguments", "no text arguments")):
                     usage = command_name
-                    parameter_text = t["parameters_note"].format(parameters=parameter_syntax)
                 else:
-                    # Keep only the actual placeholder syntax in the command
-                    # heading; permissions and defaults belong in the prose.
+                    # Keep only usable syntax in the compact one-line heading.
                     usage_tokens = parameter_syntax
                     if " optional " in usage_tokens.lower():
                         usage_tokens = usage_tokens[:usage_tokens.lower().index(" optional ")].strip()
@@ -4571,17 +4630,17 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                     usage = f"{command_name} {usage_tokens}"
                 # Command names and syntax are universal Discord input.  The
                 # explanation itself is the command-specific catalog entry.
-                localized_purpose = (
-                    italian_descriptions.get(command_name, purpose)
-                    if lang == "it"
-                    else purpose
+                localized_purpose = localized_descriptions.get(lang, {}).get(
+                    command_name, purpose
                 )
-                embed.add_field(
-                    name=f"⚙️ **`{usage}`**:",
-                    value=localized_purpose,
-                    inline=False,
-                )
-            if is_first:
+                # Keep every card genuinely compact on mobile.  Never cut a
+                # localized sentence in the middle; the catalog entries are
+                # intentionally short, while this protects future additions.
+                if len(localized_purpose) > 140:
+                    localized_purpose = localized_purpose[:137].rsplit(" ", 1)[0] + "…"
+                command_lines.append(f"`{usage}` — {localized_purpose}")
+            embed.description = f"{card_description}\n\n" + "\n".join(command_lines)
+            if is_first_category_card:
                 embed.set_image(url=STUMBLE_IMG)
             else:
                 embed.set_thumbnail(url=STUMBLE_IMG)
@@ -4619,6 +4678,12 @@ def _help_dm_chunks(embeds: list[discord.Embed], max_chars: int = 1900) -> list[
 LANG_OPTIONS = {
     "🇬🇧 English":   "en",
     "🇮🇹 Italiano":  "it",
+    "🇪🇸 Español":   "es",
+    "🇩🇪 Deutsch":   "de",
+    "🇵🇹 Português": "pt",
+    "🇫🇷 Français":  "fr",
+    "🏛️ Latin":      "la",
+    "🇮🇳 Hindi":     "hi",
 }
 
 
@@ -4626,7 +4691,7 @@ class HelpLangSelect(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=label, value=code)
                    for label, code in LANG_OPTIONS.items()]
-        super().__init__(placeholder="🌍 Choose English or Italiano…", options=options, min_values=1, max_values=1)
+        super().__init__(placeholder="🌍 Choose your language…", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         lang = self.values[0]
