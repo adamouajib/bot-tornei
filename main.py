@@ -3603,9 +3603,9 @@ Se ti scrive l'utente con ID <@1012712686770995201>, sii amichevole e scherzoso.
                     )
                     await message.channel.send(embed=response_embed)
                 except Exception as e:
-                    print(f"[ERRORE GROQ]: {e}")
+                    print(f"[GROQ ERROR]: {e}")
                     await message.channel.send(
-                        "⚠️ Ops! C'è stato un errore di comunicazione con il cervello dell'IA."
+                        f"⚠️ Errore Groq dettagliato: `{str(e)}`"
                     )
             return
         await bot.process_commands(message)
