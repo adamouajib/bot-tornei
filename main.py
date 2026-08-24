@@ -438,6 +438,63 @@ def build_gemini_system_instruction() -> str:
         "gli argomenti e fai esempi pratici di utilizzo."
     )
 
+def get_working_response(prompt_text: str, system_instruction: str) -> str:
+    """Return a response from the first Gemini model available to the API key."""
+    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+    candidates = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-pro",
+    ]
+    attempted = set()
+
+    for model_name in candidates:
+        attempted.add(model_name)
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_instruction,
+            )
+            response = model.generate_content(prompt_text)
+            if response and response.text:
+                return response.text
+        except Exception as error:
+            print(f"[Gemini model unavailable: {model_name}]: {error}")
+
+    try:
+        available_models = genai.list_models()
+    except Exception as error:
+        print(f"[Gemini model discovery error]: {error}")
+        available_models = []
+
+    for model_info in available_models:
+        model_name = getattr(model_info, "name", "")
+        supported_methods = getattr(
+            model_info, "supported_generation_methods", []
+        )
+        if (
+            not model_name
+            or model_name in attempted
+            or "generateContent" not in supported_methods
+        ):
+            continue
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_instruction,
+            )
+            response = model.generate_content(prompt_text)
+            if response and response.text:
+                return response.text
+        except Exception as error:
+            print(f"[Gemini discovered model unavailable: {model_name}]: {error}")
+
+    raise Exception(
+        "Impossibile trovare un modello Gemini attivo sulla tua API Key."
+    )
+
+
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
 BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
@@ -3498,25 +3555,13 @@ async def on_message(message: discord.Message):
         if message.author.id in active_ai_sessions and message.content.strip():
             async with message.channel.typing():
                 try:
-                    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-                    def call_gemini(model_name):
-                        model = genai.GenerativeModel(
-                            model_name,
-                            system_instruction=build_gemini_system_instruction(),
+                    response_text = (
+                        await asyncio.to_thread(
+                            get_working_response,
+                            message.content,
+                            build_gemini_system_instruction(),
                         )
-                        return model.generate_content(message.content)
-
-                    try:
-                        response = await asyncio.to_thread(
-                            call_gemini, "gemini-2.5-flash"
-                        )
-                    except Exception as primary_error:
-                        print(f"[Gemini primary model error]: {primary_error}")
-                        response = await asyncio.to_thread(
-                            call_gemini, "gemini-1.5-flash"
-                        )
-                    response_text = (response.text if response else "").strip()
+                    ).strip()
                     if response_text:
                         for start in range(0, len(response_text), 2000):
                             response_embed = discord.Embed(
