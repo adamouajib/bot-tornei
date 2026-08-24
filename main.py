@@ -3580,7 +3580,7 @@ Se ti scrive l'utente con ID <@1012712686770995201>, sii amichevole e scherzoso.
                             {"role": "system", "content": system_instruction},
                             {"role": "user", "content": message.content},
                         ],
-                        model="llama-3.1-8b-instant",
+                        model="llama-3.3-70b-versatile",
                         temperature=0.7,
                         max_tokens=600,
                     )
