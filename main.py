@@ -470,6 +470,46 @@ def build_gemini_system_instruction() -> str:
         "5. Fornisci risposte dettagliate, chiare e cordiali."
     )
 
+def clean_ai_response(text: str) -> str:
+    """Remove leaked internal analysis and metadata before Discord delivery."""
+    lines = text.split("\n")
+    clean_lines = []
+    recording = False
+    for line in lines:
+        stripped = line.strip().lower()
+        # Check if the line is part of the unwanted internal monologue/analysis template
+        if any(
+            keyword in stripped
+            for keyword in [
+                "user message",
+                "target persona",
+                "task:",
+                "persona:",
+                "refining:",
+                "check rules:",
+                "language:",
+                "goal:",
+                "context:",
+                "internal monologue",
+                "draft",
+            ]
+        ):
+            continue
+        # Skip standalone bullet points at the beginning
+        if not recording and (
+            stripped.startswith("•")
+            or stripped.startswith("-")
+            or stripped.startswith("o")
+        ):
+            continue
+
+        recording = True
+        clean_lines.append(line)
+
+    result = "\n".join(clean_lines).strip()
+    return result if result else text
+
+
 def get_working_response(prompt_text: str, system_instruction: str) -> str:
     """Return a response from the first Gemini model available to the API key."""
     genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -490,7 +530,7 @@ def get_working_response(prompt_text: str, system_instruction: str) -> str:
             )
             response = model.generate_content(prompt_text)
             if response and response.text:
-                return response.text
+                return clean_ai_response(response.text)
         except Exception as error:
             print(f"[Gemini model unavailable: {model_name}]: {error}")
 
@@ -518,79 +558,13 @@ def get_working_response(prompt_text: str, system_instruction: str) -> str:
             )
             response = model.generate_content(prompt_text)
             if response and response.text:
-                return response.text
+                return clean_ai_response(response.text)
         except Exception as error:
             print(f"[Gemini discovered model unavailable: {model_name}]: {error}")
 
     raise Exception(
         "Impossibile trovare un modello Gemini attivo sulla tua API Key."
     )
-
-
-def clean_ai_response(text: str) -> str:
-    """Remove leaked planning, reasoning, and draft lines from AI output."""
-    lines = text.split("\n")
-    cleaned = []
-    skip_mode = False
-    markers = [
-        "user question",
-        "user input:",
-        "user id",
-        "identity:",
-        "target user behavior:",
-        "safety/moderation:",
-        "language:",
-        "language match:",
-        "goal:",
-        "context:",
-        "tone:",
-        "greeting:",
-        "status:",
-        "purpose:",
-        "proper persona:",
-        "draft",
-        "internal monologue",
-        "user identity",
-        "identify key",
-        "the user asked",
-        "response should",
-        "no internal",
-        "direct response",
-        "language matches",
-        "violation detected",
-    ]
-    for line in lines:
-        normalized_line = line.strip().lower()
-        if any(marker in normalized_line for marker in markers):
-            skip_mode = True
-            continue
-        if skip_mode:
-            stripped = line.strip()
-            is_bullet = stripped.startswith(("•", "-", "o", "◦"))
-            if is_bullet:
-                candidate = stripped.lstrip("•-o◦ ").strip()
-                # Some leaked templates put the actual final answer in a
-                # quoted bullet. Keep that sentence while dropping the
-                # surrounding analysis bullets.
-                if candidate.startswith(('"', "“")) and len(candidate) > 1:
-                    candidate = candidate.strip('"“”').strip()
-                    if candidate:
-                        cleaned.append(candidate)
-                        skip_mode = False
-                continue
-            if not stripped:
-                continue
-            if stripped.startswith(('"', "“")):
-                candidate = stripped.strip('"“”').strip()
-                if candidate:
-                    cleaned.append(candidate)
-                    skip_mode = False
-                continue
-            skip_mode = False
-        skip_mode = False
-        cleaned.append(line)
-    final_text = "\n".join(cleaned).strip()
-    return final_text if final_text else text
 
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
