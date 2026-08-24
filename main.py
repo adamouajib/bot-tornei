@@ -527,6 +527,38 @@ def get_working_response(prompt_text: str, system_instruction: str) -> str:
     )
 
 
+def clean_ai_response(text: str) -> str:
+    """Remove leaked planning, reasoning, and draft lines from AI output."""
+    lines = text.split("\n")
+    cleaned = []
+    skip_mode = False
+    markers = [
+        "User Question",
+        "Language:",
+        "Goal:",
+        "Context:",
+        "Tone:",
+        "Draft",
+        "Internal Monologue",
+        "User Identity",
+        "Identify key",
+    ]
+    for line in lines:
+        if any(marker in line for marker in markers):
+            skip_mode = True
+            continue
+        if skip_mode and (
+            line.strip().startswith("•")
+            or line.strip().startswith("-")
+            or line.strip().startswith("o")
+        ):
+            continue
+        skip_mode = False
+        cleaned.append(line)
+    final_text = "\n".join(cleaned).strip()
+    return final_text if final_text else text
+
+
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
 BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
@@ -3642,6 +3674,7 @@ async def on_message(message: discord.Message):
                                 f"[REPORT_ADMIN notification error]: "
                                 f"{report_error}"
                             )
+                    response_text = clean_ai_response(response_text)
                     if response_text:
                         for start in range(0, len(response_text), 2000):
                             response_embed = discord.Embed(
