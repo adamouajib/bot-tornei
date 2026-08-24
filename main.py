@@ -4233,6 +4233,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Purpose",
             "arguments": "Arguments",
             "example": "Example",
+            "guide_intro": "Every command includes its purpose, arguments and a practical example.",
         },
         "it": {
             "titles": (
@@ -4249,6 +4250,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Scopo",
             "arguments": "Argomenti",
             "example": "Esempio",
+            "guide_intro": "Ogni comando include lo scopo, gli argomenti e un esempio pratico.",
         },
         "es": {
             "titles": (
@@ -4265,6 +4267,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Función",
             "arguments": "Argumentos",
             "example": "Ejemplo",
+            "guide_intro": "Cada comando incluye su función, argumentos y un ejemplo práctico.",
         },
         "de": {
             "titles": (
@@ -4281,6 +4284,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Zweck",
             "arguments": "Argumente",
             "example": "Beispiel",
+            "guide_intro": "Jeder Befehl enthält Zweck, Argumente und ein praktisches Beispiel.",
         },
         "pt": {
             "titles": (
@@ -4297,6 +4301,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Função",
             "arguments": "Argumentos",
             "example": "Exemplo",
+            "guide_intro": "Cada comando inclui a sua função, argumentos e um exemplo prático.",
         },
         "fr": {
             "titles": (
@@ -4313,6 +4318,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Fonction",
             "arguments": "Arguments",
             "example": "Exemple",
+            "guide_intro": "Chaque commande comprend sa fonction, ses arguments et un exemple pratique.",
         },
         "la": {
             "titles": (
@@ -4329,6 +4335,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "purpose": "Finis",
             "arguments": "Argumenta",
             "example": "Exemplum",
+            "guide_intro": "Quodque mandatum finem, argumenta et exemplum practicum continet.",
         },
     }
     t = locale.get(lang, locale["en"])
@@ -4400,25 +4407,32 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     for page_index, entries in enumerate(commands_by_page):
         title = t["titles"][page_index]
         category_name, category_description = t["categories"][page_index]
-        embed = discord.Embed(
-            title=title,
-            description=f"**{category_name}**\n{category_description}\n\n"
-                        "Each command includes its purpose, arguments and an example.",
-            color=(discord.Color.gold(), discord.Color.green(), discord.Color.blurple())[page_index],
-        )
-        for command, purpose, arguments, example in entries:
-            embed.add_field(
-                name=command,
-                value=(
-                    f"**{t['purpose']}:** {purpose}\n"
-                    f"**{t['arguments']}:** {arguments}\n"
-                    f"**{t['example']}:** `{example}`"
-                ),
-                inline=False,
+        # Discord limits each embed to 6,000 characters.  Six detailed
+        # command cards per message leaves ample room for translated text,
+        # thumbnails and future longer explanations.
+        for part_start in range(0, len(entries), 6):
+            part_entries = entries[part_start:part_start + 6]
+            part_number = part_start // 6 + 1
+            part_suffix = f" · {part_number}" if len(entries) > 6 else ""
+            embed = discord.Embed(
+                title=f"{title}{part_suffix}",
+                description=f"**{category_name}**\n{category_description}\n\n"
+                            f"{t['guide_intro']}",
+                color=(discord.Color.gold(), discord.Color.green(), discord.Color.blurple())[page_index],
             )
-        embed.set_image(url=STUMBLE_IMG)
-        embed.set_footer(text=t["footer"])
-        embeds.append(embed)
+            for command, purpose, arguments, example in part_entries:
+                embed.add_field(
+                    name=f"`{command}`",
+                    value=(
+                        f"**{t['purpose']}:** {purpose}\n"
+                        f"**{t['arguments']}:** {arguments}\n"
+                        f"**{t['example']}:** `{example}`"
+                    ),
+                    inline=False,
+                )
+            embed.set_thumbnail(url=STUMBLE_IMG)
+            embed.set_footer(text=t["footer"])
+            embeds.append(embed)
     return embeds
 
 
@@ -4469,12 +4483,11 @@ class HelpLangSelect(discord.ui.Select):
         lang = self.values[0]
         try:
             embeds = _build_help_embeds(lang)
-            chunks = _help_dm_chunks(embeds)
-            # Discord caps message content at 2,000 characters.  Send several
-            # clean, command-aligned messages below 1,900 chars so the full
-            # detailed guide can never fail because of payload size.
-            for chunk in chunks:
-                await interaction.user.send(content=chunk)
+            # Send one rich embed per DM message.  Keeping each card small
+            # avoids both the 2,000-character content limit and Discord's
+            # 6,000-character per-embed limit.
+            for embed in embeds:
+                await interaction.user.send(embed=embed)
 
             # Acknowledge the component in the channel with only a private,
             # short confirmation.  Do not edit or replace the public menu.
