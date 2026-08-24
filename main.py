@@ -4234,6 +4234,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Arguments",
             "example": "Example",
             "guide_intro": "Every command includes its purpose, arguments and a practical example.",
+            "intro": "Choose a command below to see what it does, which parameters it accepts and a practical usage example.",
+            "usage": "Usage",
+            "part": "Part",
         },
         "it": {
             "titles": (
@@ -4251,6 +4254,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Argomenti",
             "example": "Esempio",
             "guide_intro": "Ogni comando include lo scopo, gli argomenti e un esempio pratico.",
+            "intro": "Consulta i comandi qui sotto per sapere cosa fanno, quali parametri accettano e come usarli in pratica.",
+            "usage": "Uso",
+            "part": "Parte",
         },
         "es": {
             "titles": (
@@ -4268,6 +4274,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Argumentos",
             "example": "Ejemplo",
             "guide_intro": "Cada comando incluye su función, argumentos y un ejemplo práctico.",
+            "intro": "Consulta los comandos para saber qué hacen, qué parámetros aceptan y cómo usarlos.",
+            "usage": "Uso",
+            "part": "Parte",
         },
         "de": {
             "titles": (
@@ -4285,6 +4294,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Argumente",
             "example": "Beispiel",
             "guide_intro": "Jeder Befehl enthält Zweck, Argumente und ein praktisches Beispiel.",
+            "intro": "Hier findest du Zweck, Parameter und ein praktisches Anwendungsbeispiel für jeden Befehl.",
+            "usage": "Verwendung",
+            "part": "Teil",
         },
         "pt": {
             "titles": (
@@ -4302,6 +4314,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Argumentos",
             "example": "Exemplo",
             "guide_intro": "Cada comando inclui a sua função, argumentos e um exemplo prático.",
+            "intro": "Consulta cada comando para saber a sua função, os parâmetros e um exemplo prático.",
+            "usage": "Uso",
+            "part": "Parte",
         },
         "fr": {
             "titles": (
@@ -4319,6 +4334,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Arguments",
             "example": "Exemple",
             "guide_intro": "Chaque commande comprend sa fonction, ses arguments et un exemple pratique.",
+            "intro": "Consultez chaque commande pour connaître sa fonction, ses paramètres et un exemple pratique.",
+            "usage": "Utilisation",
+            "part": "Partie",
         },
         "la": {
             "titles": (
@@ -4336,6 +4354,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "arguments": "Argumenta",
             "example": "Exemplum",
             "guide_intro": "Quodque mandatum finem, argumenta et exemplum practicum continet.",
+            "intro": "Infra vide quid quodque mandatum agat, quae argumenta accipiat et quomodo utatur.",
+            "usage": "Usus",
+            "part": "Pars",
         },
     }
     t = locale.get(lang, locale["en"])
@@ -4407,30 +4428,41 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     for page_index, entries in enumerate(commands_by_page):
         title = t["titles"][page_index]
         category_name, category_description = t["categories"][page_index]
-        # Discord limits each embed to 6,000 characters.  Six detailed
-        # command cards per message leaves ample room for translated text,
-        # thumbnails and future longer explanations.
+        # Keep category groups separate and keep each card comfortably below
+        # Discord's 6,000-character embed limit.  The first card is the only
+        # one with the full visual header; continuation cards stay compact.
         for part_start in range(0, len(entries), 6):
             part_entries = entries[part_start:part_start + 6]
             part_number = part_start // 6 + 1
-            part_suffix = f" · {part_number}" if len(entries) > 6 else ""
+            is_first = not embeds
+            if is_first:
+                card_title = title
+                card_description = (
+                    f"**{category_name}**\n{category_description}\n\n"
+                    f"{t['intro']}"
+                )
+            else:
+                card_title = f"-# 📖 {title} · {t['part']} {len(embeds) + 1}"
+                card_description = f"**{category_name}** · {category_description}"
             embed = discord.Embed(
-                title=f"{title}{part_suffix}",
-                description=f"**{category_name}**\n{category_description}\n\n"
-                            f"{t['guide_intro']}",
+                title=card_title,
+                description=card_description,
                 color=(discord.Color.gold(), discord.Color.green(), discord.Color.blurple())[page_index],
             )
             for command, purpose, arguments, example in part_entries:
                 embed.add_field(
-                    name=f"`{command}`",
+                    name=f"⚙️ `{command}`",
                     value=(
-                        f"**{t['purpose']}:** {purpose}\n"
-                        f"**{t['arguments']}:** {arguments}\n"
-                        f"**{t['example']}:** `{example}`"
+                        f"{purpose}\n"
+                        f"**{t['usage']}:** `{example}`\n"
+                        f"_{arguments}_"
                     ),
                     inline=False,
                 )
-            embed.set_thumbnail(url=STUMBLE_IMG)
+            if is_first:
+                embed.set_image(url=STUMBLE_IMG)
+            else:
+                embed.set_thumbnail(url=STUMBLE_IMG)
             embed.set_footer(text=t["footer"])
             embeds.append(embed)
     return embeds
