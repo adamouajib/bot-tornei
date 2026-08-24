@@ -21,6 +21,8 @@ def save_db():
             "welcome_channel_id": db.get("welcome_channel_id"),
             "supporter_channel_id": db.get("supporter_channel_id"),
             "supporter_msg_id": db.get("supporter_msg_id"),
+            "result_channel_id": db.get("result_channel_id"),
+            "betting_channel_id": db.get("betting_channel_id"),
             "supporters": db.get("supporters", {}),
             "gems":     db.get("gems",     {}),
             "sg_links": db.get("sg_links", {}),
@@ -54,6 +56,8 @@ def load_db():
         db["welcome_channel_id"]    = data.get("welcome_channel_id")
         db["supporter_channel_id"] = data.get("supporter_channel_id")
         db["supporter_msg_id"]     = data.get("supporter_msg_id")
+        db["result_channel_id"]    = data.get("result_channel_id")
+        db["betting_channel_id"]   = data.get("betting_channel_id")
         db["supporters"]           = data.get("supporters", {})
         db["gems"]                 = data.get("gems",     {})
         db["sg_links"]             = data.get("sg_links", {})
@@ -310,6 +314,8 @@ db = {
     "welcome_channel_id": None,
     "supporter_channel_id": None,
     "supporter_msg_id": None,
+    "result_channel_id": None,
+    "betting_channel_id": None,
     "supporters": {},
     "gems": {},       # {user_id_str: {"name": str, "sg_name": str, "total": int}}
     "sg_links": {},   # {user_id_str: sg_name}
@@ -406,6 +412,22 @@ def _format_prize(prize_text: str) -> str:
     result = re.sub(r'\b[Rr]ubini\b',     E_RUBY,    result)
     result = re.sub(r'\b[Cc]ristal[li]i?\b', E_CRYSTAL, result)
     return result
+
+def parse_tournament_prizes(prize_text: str) -> dict[int, str]:
+    """Parse `1. 500 Ruby, 2. 250 Ruby, 3. 50 Ruby` into position prizes."""
+    text = (prize_text or "").strip()
+    numbered = re.findall(r"(?:^|[,;\n])\s*(\d+)\.\s*([^,;\n]+)", text)
+    prizes = {int(position): value.strip() for position, value in numbered if value.strip()}
+    return prizes or ({1: text} if text else {})
+
+def format_tournament_prizes(prize_text: str) -> str:
+    prizes = parse_tournament_prizes(prize_text)
+    if not prizes:
+        return "—"
+    return "\n".join(
+        f"**{position}.** {_format_prize(prize)}"
+        for position, prize in sorted(prizes.items())
+    )
 
 def grant_prize(prize_text: str, member: discord.Member):
     """Parsa '5000 Ruby' / '3000 Cristalli' / '500 Gems' e aggiunge al profilo."""
@@ -549,7 +571,7 @@ def generate_bracket_embeds() -> list[tuple]:
             info = (
                 f"**Round {cur_round}"
                 + (f"/{total_rounds}" if total_rounds != "?" else "")
-                + f"**\n🗺️ **Map:** {t['mappa']}\n⚡ **Ability:** {t['emote']}\n🎁 **Prize:** {_format_prize(t['premio'])}\n"
+                + f"**\n🗺️ **Map:** {t['mappa']}\n⚡ **Ability:** {t['emote']}\n🎁 **Prizes:**\n{format_tournament_prizes(t['premio'])}\n"
             )
             if modalita not in TEAM_MODES:
                 info += f"👥 **Players:** {len(t['players'])}/{t['max']}\n"
@@ -1455,7 +1477,10 @@ class TourModal1(Modal):
         self.nome    = TextInput(label="📛 Nome Torneo",       placeholder="es. Stumble™ Classic #42", max_length=50)
         self.mappa   = TextInput(label="🗺️ Mappa",             placeholder="es. Laser Dash")
         self.abilita = TextInput(label="⚡ Abilità / Emote",   placeholder="es. Slap, Punch, Banana…")
-        self.premio  = TextInput(label="🎁 Premio",             placeholder="es. 5000 Ruby / 500 Cristalli")
+        self.premio  = TextInput(
+            label="🎁 Premi top 3",
+            placeholder="1. 500 Ruby, 2. 250 Ruby, 3. 50 Ruby",
+            max_length=200)
         self.add_item(self.nome)
         self.add_item(self.mappa)
         self.add_item(self.abilita)
@@ -1586,7 +1611,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         f"🎮 **Formato:** {actual}\n"
         f"🗺️ **Mappa:** {data['mappa']}\n"
         f"⚡ **Abilità:** {emote_s}\n"
-        f"🎁 **Premio:** {data['premio']}\n"
+        f"🎁 **Premi:**\n{format_tournament_prizes(data['premio'])}\n"
         f"⏰ **Inizio:** {time_str}"
     )
     if data.get("regione"):
@@ -1926,7 +1951,8 @@ async def bracket(ctx, next_round: int = None):
                 f"**{t['total_rounds']}** round(s).", delete_after=6.0)
         t["bracket_channel_id"] = ctx.channel.id
         await _update_bracket_messages(t)
-        await _post_match_bets(ctx.channel, t)
+        betting_channel = bot.get_channel(db.get("betting_channel_id")) or ctx.channel
+        await _post_match_bets(betting_channel, t)
         return
 
     if next_round is not None and next_round > cur:
@@ -2202,10 +2228,15 @@ async def close_tour(ctx):
 
 @bot.command(name="end", aliases=["winner-tour", "winner_tour"])
 @hoster_only()
-async def winner_tour(ctx, winner: discord.Member = None):
+async def winner_tour(ctx, *winners: discord.Member):
     t = db["tour"]
     if not t:
         return await ctx.send("❌ No active tournament.", delete_after=5.0)
+    if len(winners) > 4:
+        return await ctx.send(
+            "❌ Indica al massimo 4 persone: 1°, 2°, 3° e 4° posto.",
+            delete_after=6.0)
+    winner = winners[0] if winners else None
     # Auto-detect winner if not provided
     if winner is None:
         open_matches = [mid for mid, m in t["matches"].items()
@@ -2234,17 +2265,32 @@ async def winner_tour(ctx, winner: discord.Member = None):
         return await ctx.send(
             f"❌ There are still **{len(open_matches)}** open matches. "
             f"Use `:qual @winner` to finish them first.", delete_after=6.0)
-    prof = get_profile(winner.id, winner.display_name)
-    prof["tornei_v"] += 1
-    prof["punti"]    += 100
-    grant_prize(t["premio"], winner)
-    await update_rank_roles(ctx.guild, winner, prof["punti"])
+    placements = list(winners) if winners else [winner]
+    prize_map = parse_tournament_prizes(t.get("premio", ""))
+    for position, member in enumerate(placements, start=1):
+        prize_position = min(position, 3)
+        prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+        prof = get_profile(member.id, member.display_name)
+        prof["tornei_v"] += 1 if position == 1 else 0
+        prof["punti"] += 100 if position == 1 else 0
+        if prize_text:
+            grant_prize(prize_text, member)
+        await update_rank_roles(ctx.guild, member, prof["punti"])
+    # When four members are provided, places 3 and 4 share the third-place
+    # reward and are both displayed as third place.
+    result_rows = []
+    for position, member in enumerate(placements, start=1):
+        shown_position = min(position, 3)
+        reward = prize_map.get(shown_position) or prize_map.get(1, "—")
+        result_rows.append(
+            f"**{shown_position}.** {member.mention} — {_format_prize(reward)}")
+    result_lines = "\n".join(result_rows)
     embed = discord.Embed(
-        title="🏆 Tournament Complete!",
-        description=f"The tournament winner is {winner.mention}! 🎉",
+        title=f"🏆 {t.get('nome', 'Torneo')} — Risultati",
+        description=f"🎁 **Premi**\n{format_tournament_prizes(t.get('premio', ''))}\n\n"
+                    f"🏆 **Vincitori**\n{result_lines}",
         color=discord.Color.gold()
     )
-    embed.add_field(name="🎁 Prize",      value=_format_prize(t["premio"]), inline=True)
     embed.add_field(name=f"{E_XP} Bonus", value="+100 XP Points",           inline=True)
     embed.add_field(name="🗺️ Map",       value=t["mappa"],                  inline=True)
     embed.add_field(name="⚡ Ability",    value=t["emote"],                  inline=True)
@@ -2258,7 +2304,7 @@ async def winner_tour(ctx, winner: discord.Member = None):
     # Track gems in db["gems"] if it's a big tournament
     if is_big:
         sg_name    = db.get("sg_links", {}).get(str(winner.id), winner.display_name)
-        prize_text = t.get("premio", "")
+        prize_text = prize_map.get(1, t.get("premio", ""))
         gem_count  = 0
         _nums = re.findall(r'\d+', prize_text)
         if _nums:
@@ -2273,6 +2319,7 @@ async def winner_tour(ctx, winner: discord.Member = None):
     db["tour"] = None
     save_db()
 
+    result_channel = bot.get_channel(db.get("result_channel_id")) or ctx.channel
     if is_big and participants:
         _tour_nome_snap  = t.get("nome", "Big Tournament") if t else "Big Tournament"
         _prize_text_snap = prize_text if is_big else t.get("premio", "")
@@ -2313,9 +2360,11 @@ async def winner_tour(ctx, winner: discord.Member = None):
                         pass
                 await interaction.response.edit_message(
                     content=f"✅ Gem notification sent to **{count}** participants!", view=self)
-        await ctx.send(embed=embed, view=BigTourSentView())
+        await result_channel.send(embed=embed, view=BigTourSentView())
     else:
-        await ctx.send(embed=embed)
+        await result_channel.send(embed=embed)
+    if result_channel.id != ctx.channel.id:
+        await ctx.send(f"✅ Risultati pubblicati in {result_channel.mention}.", delete_after=8.0)
 
 @bot.command(name="team-winner", aliases=["team_winner"])
 @hoster_only()
@@ -2345,7 +2394,7 @@ async def team_winner(ctx):
         description=f"The winning team is **{winning_slot}**! 🎉",
         color=discord.Color.gold()
     )
-    embed.add_field(name="🎁 Prize",      value=_format_prize(t.get("premio","—")), inline=True)
+    embed.add_field(name="🎁 Prizes",     value=format_tournament_prizes(t.get("premio","—")), inline=False)
     embed.add_field(name=f"{E_XP} Bonus", value="+100 XP Points each",              inline=True)
     embed.add_field(name="🗺️ Map",       value=t.get("mappa","—"),                 inline=True)
     embed.add_field(name="⚡ Ability",    value=t.get("emote","—"),                 inline=True)
@@ -2378,6 +2427,22 @@ async def set_leaderboard(ctx, channel: discord.TextChannel):
     save_db()
     await ctx.send(f"✅ Leaderboard impostata in {channel.mention}. Si aggiornerà ogni ora.")
     await auto_leaderboard()
+
+@bot.command(name="setup-result", aliases=["setup_result"])
+@owner_only()
+async def setup_result(ctx, channel: discord.TextChannel):
+    """Imposta il canale per i risultati finali dei tornei."""
+    db["result_channel_id"] = channel.id
+    save_db()
+    await ctx.send(f"✅ Risultati torneo impostati in {channel.mention}.", delete_after=8.0)
+
+@bot.command(name="setup-scomesse", aliases=["setup_scomesse", "setup-scommesse"])
+@owner_only()
+async def setup_scomesse(ctx, channel: discord.TextChannel):
+    """Imposta il canale per le scommesse sui match."""
+    db["betting_channel_id"] = channel.id
+    save_db()
+    await ctx.send(f"✅ Scommesse torneo impostate in {channel.mention}.", delete_after=8.0)
 
 @bot.command(name="leaderboard")
 async def leaderboard(ctx):
@@ -4462,6 +4527,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
             (":giveaway", "Starts a timed giveaway and awards the configured prize to randomly selected winners.", "<duration> <number of winners> <prize>; duration examples: 30m, 2h or 1d.", ":giveaway 30m 1 5000 Ruby"),
             (":help (aliases :guide, :commands, :comandi, :guida)", "Shows the complete multilingual command guide in the selected member's private messages. The public channel only receives a private confirmation.", "No arguments; hoster access.", ":help"),
+            (":setup-result", "Sets the channel where final tournament result embeds are published.", "<#channel> text-channel mention; owner access.", ":setup-result #results"),
+            (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Posts the support ticket panel for SG linking, reports and staff applications.", "No arguments; administrator access.", ":add-ticket"),
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
@@ -4520,6 +4587,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":set-supporter": "Imposta il canale dedicato ai controlli degli account Supporter.",
         ":giveaway": "Avvia un giveaway temporizzato, raccoglie le partecipazioni e assegna casualmente il premio ai vincitori estratti.",
         ":help": "Mostra il menu delle lingue nel canale e invia in DM la guida completa dei comandi organizzata per categorie.",
+        ":setup-result": "Imposta il canale per pubblicare automaticamente i risultati finali dei tornei.",
+        ":setup-scomesse": "Imposta il canale per pubblicare i pannelli delle scommesse sui match.",
         ":set-welcome": "Imposta il canale in cui il bot pubblica i messaggi di benvenuto e di uscita dei membri.",
         ":add-ticket": "Pubblica il pannello ticket per collegamento SG, segnalazioni e candidature allo staff.",
         ":pex": "Controlla i Ranked Points dello staff e aggiorna i ruoli rank promuovendo o retrocedendo i membri quando necessario.",
@@ -4576,6 +4645,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":set-supporter": "Supporter सत्यापन चैनल तय करता है।",
         ":giveaway": "समयबद्ध giveaway शुरू करके विजेताओं को पुरस्कार देता है।",
         ":help": "भाषा चुनकर श्रेणियों में पूरी कमांड गाइड DM करता है।",
+        ":setup-result": "टूर्नामेंट के अंतिम परिणाम भेजने वाला चैनल तय करता है।",
+        ":setup-scomesse": "मैच सट्टेबाजी पैनल भेजने वाला चैनल तय करता है।",
         ":set-welcome": "स्वागत और विदाई संदेशों का चैनल तय करता है।",
         ":add-ticket": "SG लिंक, रिपोर्ट और staff आवेदन वाला ticket पैनल प्रकाशित करता है।",
         ":pex": "Staff अंक जाँचकर उनके rank roles अपडेट करता है।",
