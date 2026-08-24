@@ -4360,22 +4360,46 @@ class HelpLangSelect(discord.ui.Select):
         super().__init__(placeholder="🌍 Choose your language…", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
-        lang   = self.values[0]
-        embeds = _build_help_embeds(lang)
+        lang = self.values[0]
         try:
-            # Keep the whole guide in the channel by replacing the selector
-            # message with the complete set of embeds.  Sending to
-            # interaction.user would make the guide disappear for everyone
-            # else and would fail when the user has DMs disabled.
-            await interaction.response.edit_message(
+            # Acknowledge the component first.  Editing the message through the
+            # interaction response can fail after Discord has already
+            # acknowledged the click, which used to leave users with the
+            # generic "something went wrong" component error.
+            await interaction.response.defer()
+            embeds = _build_help_embeds(lang)
+            if interaction.message is None:
+                raise RuntimeError("Help menu message is unavailable")
+
+            # Edit the original channel message: never send the guide to the
+            # member's DMs, and keep the language selector available.
+            await interaction.message.edit(
                 content=None,
                 embeds=embeds,
                 view=self.view,
             )
-        except discord.HTTPException:
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as error:
+            print(f"[help] Unable to update language to {lang}: {error}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ I couldn't update the help message in this channel.",
+                    "❌ Non riesco ad aggiornare la guida in questo canale. Riprova.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ Non riesco ad aggiornare la guida in questo canale. Riprova.",
+                    ephemeral=True,
+                )
+        except Exception as error:
+            print(f"[help] Unexpected language-selection error ({lang}): {error}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ Si è verificato un errore nella guida. Riprova tra poco.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ Si è verificato un errore nella guida. Riprova tra poco.",
                     ephemeral=True,
                 )
 
