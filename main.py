@@ -458,13 +458,16 @@ def build_gemini_system_instruction() -> str:
         "- Se l'utente corrente è <@1012712686770995201> (Piccolofe): sii "
         "molto amichevole, scherzoso ed entusiasta.\n"
         "- Per tutti gli altri utenti: sii cordiale, chiaro e formale.\n\n"
-        "REGOLE OUTPUT:\n"
-        "1. NON mostrare mai pensieri interni o schemi di analisi.\n"
-        "2. Genera esclusivamente la risposta finale diretta per l'utente, "
-        "senza etichette o note interne.\n"
-        "3. Rispondi SEMPRE ed ESCLUSIVAMENTE nella stessa lingua usata "
+        "REGOLE TASSATIVE DI OUTPUT (FONDAMENTALE):\n"
+        "1. Rispondi DIRETTAMENTE ed ESCLUSIVAMENTE con il messaggio finale "
+        "destinato all'utente.\n"
+        "2. È SEVERAMENTE VIETATO mostrare la tua analisi interna, bozze o "
+        "schemi. NON scrivere mai frasi come \"User input:\", \"Context:\", "
+        "\"Greeting:\", \"Draft 1\", \"Internal Monologue\" o equivalenti.\n"
+        "3. Scrivi solo il testo finale pulito.\n"
+        "4. Rispondi SEMPRE ed ESCLUSIVAMENTE nella stessa lingua usata "
         "dall'utente.\n"
-        "4. Fornisci risposte dettagliate, chiare e cordiali."
+        "5. Fornisci risposte dettagliate, chiare e cordiali."
     )
 
 def get_working_response(prompt_text: str, system_instruction: str) -> str:
