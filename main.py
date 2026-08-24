@@ -536,10 +536,18 @@ def clean_ai_response(text: str) -> str:
         "user question",
         "user input:",
         "user id",
+        "identity:",
+        "target user behavior:",
+        "safety/moderation:",
         "language:",
+        "language match:",
         "goal:",
         "context:",
         "tone:",
+        "greeting:",
+        "status:",
+        "purpose:",
+        "proper persona:",
         "draft",
         "internal monologue",
         "user identity",
@@ -571,6 +579,12 @@ def clean_ai_response(text: str) -> str:
                         skip_mode = False
                 continue
             if not stripped:
+                continue
+            if stripped.startswith(('"', "“")):
+                candidate = stripped.strip('"“”').strip()
+                if candidate:
+                    cleaned.append(candidate)
+                    skip_mode = False
                 continue
             skip_mode = False
         skip_mode = False
