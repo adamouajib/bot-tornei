@@ -4229,7 +4229,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PROFILE & ECONOMY", "Profiles, rankings, currency and shop commands"),
                 ("🌐 COMMUNITY, ADMIN & ACTIVITIES", "Community tools, moderation and extra activities"),
             ),
-            "footer": "Stumble™ Bot • prefix: ':' • Select :help again to change language",
+            "footer": "PCF™ Bot • prefix: ':' • Select :help again to change language",
             "purpose": "Purpose",
             "arguments": "Arguments",
             "example": "Example",
@@ -4245,7 +4245,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PROFILO ED ECONOMIA", "Profili, classifiche, valute e shop"),
                 ("🌐 COMMUNITY, ADMIN E ATTIVITÀ", "Strumenti community, supporto e attività extra"),
             ),
-            "footer": "Stumble™ Bot • prefisso: ':' • Usa di nuovo :help per cambiare lingua",
+            "footer": "PCF™ Bot • prefisso: ':' • Usa di nuovo :help per cambiare lingua",
             "purpose": "Scopo",
             "arguments": "Argomenti",
             "example": "Esempio",
@@ -4261,7 +4261,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PERFIL Y ECONOMÍA", "Perfiles, clasificaciones, monedas y tienda"),
                 ("🌐 COMUNIDAD, ADMIN Y ACTIVIDADES", "Herramientas de comunidad, soporte y actividades"),
             ),
-            "footer": "Stumble™ Bot • prefijo: ':' • Usa :help de nuevo para cambiar el idioma",
+            "footer": "PCF™ Bot • prefijo: ':' • Usa :help de nuevo para cambiar el idioma",
             "purpose": "Función",
             "arguments": "Argumentos",
             "example": "Ejemplo",
@@ -4277,7 +4277,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PROFIL UND WIRTSCHAFT", "Profile, Ranglisten, Währungen und Shop"),
                 ("🌐 COMMUNITY, ADMIN UND AKTIVITÄTEN", "Community-, Support- und Aktivitätsfunktionen"),
             ),
-            "footer": "Stumble™ Bot • Präfix: ':' • Nutze :help erneut, um die Sprache zu ändern",
+            "footer": "PCF™ Bot • Präfix: ':' • Nutze :help erneut, um die Sprache zu ändern",
             "purpose": "Zweck",
             "arguments": "Argumente",
             "example": "Beispiel",
@@ -4293,7 +4293,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PERFIL E ECONOMIA", "Perfis, classificações, moedas e loja"),
                 ("🌐 COMUNIDADE, ADMIN E ATIVIDADES", "Ferramentas da comunidade, suporte e atividades"),
             ),
-            "footer": "Stumble™ Bot • prefixo: ':' • Use :help novamente para mudar o idioma",
+            "footer": "PCF™ Bot • prefixo: ':' • Use :help novamente para mudar o idioma",
             "purpose": "Função",
             "arguments": "Argumentos",
             "example": "Exemplo",
@@ -4309,7 +4309,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PROFIL ET ÉCONOMIE", "Profils, classements, monnaies et boutique"),
                 ("🌐 COMMUNAUTÉ, ADMIN ET ACTIVITÉS", "Outils communautaires, support et activités"),
             ),
-            "footer": "Stumble™ Bot • préfixe : ':' • Utilisez :help pour changer de langue",
+            "footer": "PCF™ Bot • préfixe : ':' • Utilisez :help pour changer de langue",
             "purpose": "Fonction",
             "arguments": "Arguments",
             "example": "Exemple",
@@ -4325,7 +4325,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 ("👤 PROFILUS ET OECONOMIA", "Profilus, ordines, pecunia et taberna"),
                 ("🌐 COMMUNITAS ET ADMINISTRATIO", "Instrumenta communitatis, auxilium et actiones"),
             ),
-            "footer": "Stumble™ Bot • signum: ':' • :help iterum utere ad linguam mutandam",
+            "footer": "PCF™ Bot • signum: ':' • :help iterum utere ad linguam mutandam",
             "purpose": "Finis",
             "arguments": "Argumenta",
             "example": "Exemplum",
@@ -4387,7 +4387,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
             (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
             (":giveaway", "Starts a timed giveaway and awards the configured prize to randomly selected winners.", "<duration> <number of winners> <prize>; duration examples: 30m, 2h or 1d.", ":giveaway 30m 1 5000 Ruby"),
-            (":help (aliases :guide, :commands, :comandi, :guida)", "Shows this complete multilingual command guide. Selecting a language edits this message in the current channel.", "No arguments; hoster access.", ":help"),
+            (":help (aliases :guide, :commands, :comandi, :guida)", "Shows the complete multilingual command guide in the selected member's private messages. The public channel only receives a private confirmation.", "No arguments; hoster access.", ":help"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Posts the support ticket panel for SG linking, reports and staff applications.", "No arguments; administrator access.", ":add-ticket"),
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
@@ -4520,14 +4520,14 @@ async def help_cmd(ctx):
     embed = discord.Embed(
         title="📖 Stumble™ Command Guide",
         description=(
-            "Select your language below and the bot will show the **complete guide here in this channel**! 🌍\n\n"
+            "Select your language below and the bot will send the **complete guide to your private messages**! 🌍\n\n"
             "🇬🇧 English · 🇮🇹 Italiano · 🇪🇸 Español · 🇩🇪 Deutsch\n"
             "🇵🇹 Português · 🇫🇷 Français · 🏛️ Latin"
         ),
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Stumble™ Bot • prefix: ':'")
+    embed.set_footer(text="PCF™ Bot • prefix: ':'")
     await ctx.send(embed=embed, view=HelpLangView())
 
 # ==========================================
