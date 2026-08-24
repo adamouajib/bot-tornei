@@ -9,6 +9,8 @@ from discord.ui import Button, View, Modal, TextInput
 import asyncio
 from datetime import datetime, timedelta
 import random
+from google import genai
+from google.genai import types
 
 
 
@@ -88,6 +90,15 @@ intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix=":", intents=intents, help_command=None)
+
+GEMINI_SYSTEM_INSTRUCTION = (
+    "Sei l'assistente virtuale del server Discord Stumble Guys. "
+    "Rispondi in modo gentile, chiaro e sintetico nella lingua dell'utente. "
+    "Spiega come funzionano i tornei e i comandi del bot se qualcuno te lo chiede."
+)
+_gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=_gemini_api_key) if _gemini_api_key else None
+GEMINI_MODEL = "gemini-2.0-flash"
 
 E_CRYSTAL = "<:crystal:1507440029323100301>"
 E_RUBY    = "<:ruby:1507420532402819093>"
@@ -493,11 +504,70 @@ def _is_ffa_match(m_data: dict) -> bool:
 
 MATCHES_PER_PAGE = 8
 
+class FinalWinnerModal(Modal, title="🏆 Set winner"):
+    winner_number = TextInput(
+        label="Numero del vincitore (1 o 2)",
+        placeholder="Scrivi 1 per il primo giocatore o 2 per il secondo",
+        min_length=1,
+        max_length=1,
+    )
+
+    def __init__(self, match_id, p1: str, p2: str):
+        super().__init__()
+        self.match_id = match_id
+        self.p1 = p1
+        self.p2 = p2
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.winner_number.value not in ("1", "2"):
+            return await interaction.response.send_message(
+                "❌ Scrivi solo **1** o **2**.", ephemeral=True
+            )
+        t = db.get("tour")
+        if not t or str(self.match_id) not in {str(mid) for mid in t.get("matches", {})}:
+            return await interaction.response.send_message(
+                "❌ Questo torneo non è più attivo.", ephemeral=True
+            )
+        match_key = next(mid for mid in t["matches"] if str(mid) == str(self.match_id))
+        match_data = t["matches"][match_key]
+        if match_data.get("winner"):
+            return await interaction.response.send_message(
+                "❌ Questo match ha già un vincitore.", ephemeral=True
+            )
+        winner = self.p1 if self.winner_number.value == "1" else self.p2
+        loser = self.p2 if self.winner_number.value == "1" else self.p1
+        match_data["winner"] = winner
+        match_data["loser"] = loser
+        match_data["in_progress"] = False
+
+        winner_id = match_data.get("id1" if self.winner_number.value == "1" else "id2")
+        if winner_id and str(winner_id).isdigit() and interaction.guild:
+            member = interaction.guild.get_member(int(winner_id))
+            if member:
+                prof = get_profile(member.id, member.display_name)
+                old_pts = prof["punti"]
+                prof["punti"] += 100
+                await update_rank_roles(interaction.guild, member, prof["punti"])
+                if get_rank_info(prof["punti"])[0] > get_rank_info(old_pts)[0]:
+                    new_rank = get_rank_info(prof["punti"])
+                    await interaction.channel.send(
+                        f"🎉 {member.mention} → **{new_rank[3]}** {new_rank[2]}!",
+                        delete_after=10.0,
+                    )
+        save_db()
+        await interaction.response.send_message(
+            f"✅ Vincitore registrato: **{winner}** (giocatore {self.winner_number.value}).",
+            ephemeral=True,
+        )
+        await _update_bracket_messages(t)
+
+
 class QualifyView(View):
     """Button shown on the last bracket embed to reveal qualified players."""
-    def __init__(self, qualified: list[str]):
+    def __init__(self, qualified: list[str], final_match=None):
         super().__init__(timeout=None)
         self.qualified = qualified
+        self.final_match = final_match
 
     @discord.ui.button(label="🏅 Qualify — See who advances", style=discord.ButtonStyle.success, custom_id="qualify_btn")
     async def qualify_btn(self, interaction: discord.Interaction, button: Button):
@@ -509,6 +579,21 @@ class QualifyView(View):
         await interaction.response.send_message(
             f"🏅 **Qualified for next round ({len(self.qualified)} players):**\n{lines}",
             ephemeral=True
+        )
+
+    @discord.ui.button(label="🏆 Set winner", style=discord.ButtonStyle.primary, custom_id="bracket_set_final_winner")
+    async def set_final_winner(self, interaction: discord.Interaction, button: Button):
+        is_host = any(r.id == HOSTER_ROLE_ID for r in interaction.user.roles)
+        is_admin = any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
+        if not is_host and not is_admin:
+            return await interaction.response.send_message("❌ Solo host/admin possono farlo.", ephemeral=True)
+        if not self.final_match:
+            return await interaction.response.send_message(
+                "❌ Il pulsante è disponibile solo nell'ultimo round 1v1.", ephemeral=True
+            )
+        match_id, match_data = self.final_match
+        await interaction.response.send_modal(
+            FinalWinnerModal(match_id, match_data["p1"], match_data["p2"])
         )
 
 
@@ -563,6 +648,11 @@ def generate_bracket_embeds() -> list[tuple]:
     result: list[tuple] = []
 
     qualified = [m["winner"] for m in t["matches"].values() if m.get("winner")]
+    final_match = None
+    if cur_round == total_rounds and len(t["matches"]) == 1:
+        only_match = next(iter(t["matches"].items()))
+        if not _is_ffa_match(only_match[1]) and only_match[1].get("p2") != "BYE":
+            final_match = only_match
 
     for pg, chunk in enumerate(chunks):
         is_first = pg == 0
@@ -589,7 +679,7 @@ def generate_bracket_embeds() -> list[tuple]:
         if is_last:
             embed.set_footer(text=f"Host: {t['host_name']} • :bracket <round> to advance")
             embed.set_image(url=STUMBLE_IMG)
-            view = QualifyView(qualified)
+            view = QualifyView(qualified, final_match=final_match)
         else:
             embed.set_footer(text=f"Host: {t['host_name']} • continues on next page →")
             view = None
@@ -2483,7 +2573,11 @@ class EventModal(Modal, title="⚡ Create Flash Event"):
         try:
             info_ch = bot.get_channel(EVENT_INFO_CHANNEL_ID)
             target  = info_ch if info_ch else self.target_channel
-            await target.send(embed=embed)
+            await target.send(
+                content=f"<@&{EVENT_PING_ROLE_ID}> 📢 **Nuovo evento creato!**",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
             await interaction.response.send_message("✅ Event created!", ephemeral=True)
         except Exception:
             await interaction.response.send_message(embed=embed)
@@ -2648,7 +2742,11 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
         try:
             info_ch = bot.get_channel(EVENT_INFO_CHANNEL_ID)
             target  = info_ch if info_ch else self.target_channel
-            await target.send(embed=embed)
+            await target.send(
+                content=f"<@&{EVENT_PING_ROLE_ID}> 🌟 **Nuovo Big Event creato!**",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
             await interaction.response.send_message("✅ Big Event published!", ephemeral=True)
         except Exception:
             await interaction.response.send_message(embed=embed)
@@ -2753,16 +2851,16 @@ async def big_start(ctx):
         color=discord.Color.green()
     )
     embed.add_field(name="🌟 Event",          value=big.get("nome", "—"),                          inline=False)
-    embed.add_field(name=f"{E_GOLD} 1st Place",  value=f"**{_format_prize(big.get('prize1','—'))}**", inline=True)
-    embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"**{_format_prize(big.get('prize2','—'))}**", inline=True)
-    embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"**{_format_prize(big.get('prize3','—'))}**", inline=True)
+    embed.add_field(name=f"{E_GOLD} 1st Place",  value=f"**{_format_prize(big.get('prize1','—'))}**", inline=False)
+    embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"**{_format_prize(big.get('prize2','—'))}**", inline=False)
+    embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"**{_format_prize(big.get('prize3','—'))}**", inline=False)
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"Started by {ctx.author.display_name} • Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     await start_ch.send(
-        content="@everyone 🌟 **THE BIG EVENT HAS STARTED — GET IN THERE!** 🔥",
+        content=f"<@&{EVENT_PING_ROLE_ID}> 🌟 **THE BIG EVENT HAS STARTED — GET IN THERE!** 🔥",
         embed=embed,
-        allowed_mentions=discord.AllowedMentions(everyone=True)
+        allowed_mentions=discord.AllowedMentions(roles=True)
     )
 
 
@@ -3030,7 +3128,7 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"User ID: {user.id}")
-    ping_content = f"<@&{STUMBLE_STAFF_ROLE_ID}> <@&{ADMIN_TOUR_ROLE_ID}>"
+    ping_content = f"<@&{STUMBLE_STAFF_ROLE_ID}>"
     await ch.send(content=ping_content, embed=embed, view=StaffRequestControlView(user_id=user.id))
 
 class TicketMainView(View):
@@ -3073,7 +3171,7 @@ class TicketMainView(View):
             color=discord.Color.blue()
         )
         ctrl_embed.set_image(url=STUMBLE_IMAGES[0])
-        ping_content = f"<@&{STUMBLE_STAFF_ROLE_ID}> <@&{ADMIN_TOUR_ROLE_ID}>"
+        ping_content = f"<@&{STUMBLE_STAFF_ROLE_ID}>"
         await ch.send(content=ping_content, embed=ctrl_embed, view=TicketControlView(user_id=interaction.user.id))
 
         try:
@@ -3262,6 +3360,25 @@ async def on_message(message: discord.Message):
                     fwd.set_image(url=message.attachments[0].url)
                 await ch.send(embed=fwd)
                 await message.add_reaction("✅")
+            return
+
+        # ── AI support assistant for ordinary private DMs ─────────────
+        if message.content.strip() and gemini_client:
+            try:
+                response = await asyncio.to_thread(
+                    gemini_client.models.generate_content,
+                    model=GEMINI_MODEL,
+                    contents=message.content.strip(),
+                    config=types.GenerateContentConfig(
+                        system_instruction=GEMINI_SYSTEM_INSTRUCTION,
+                    ),
+                )
+                reply = (response.text or "").strip()
+                if reply:
+                    for start in range(0, len(reply), 1900):
+                        await message.channel.send(reply[start:start + 1900])
+            except Exception as exc:
+                print(f"[Gemini DM] {exc}")
         return  # Non processare comandi in DM
 
     # ── Channel restrictions ─────────────────────────
@@ -5798,6 +5915,34 @@ def _machine_embed(prof: dict) -> discord.Embed:
     return e
 
 
+class SlotMachineAmountModal(Modal, title="🎰 Scegli la puntata"):
+    amount = TextInput(
+        label="Quanti Ruby vuoi puntare?",
+        placeholder="Da 300 a 3000, multipli di 300",
+        min_length=3,
+        max_length=4,
+    )
+
+    def __init__(self, view: "SlotMachineView"):
+        super().__init__()
+        self.machine_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(self.amount.value.strip())
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Inserisci un numero valido.", ephemeral=True
+            )
+        if amount < SLOT_MACHINE_COST or amount > SLOT_MACHINE_COST * 10 or amount % SLOT_MACHINE_COST:
+            return await interaction.response.send_message(
+                f"❌ La puntata deve essere un multiplo di {SLOT_MACHINE_COST}, "
+                f"tra {SLOT_MACHINE_COST} e {SLOT_MACHINE_COST * 10} Ruby.",
+                ephemeral=True,
+            )
+        await self.machine_view._play(interaction, amount // SLOT_MACHINE_COST)
+
+
 class SlotMachineView(View):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
@@ -5859,6 +6004,12 @@ class SlotMachineView(View):
     @discord.ui.button(label="🎰 x10  (3.000 Ruby)", style=discord.ButtonStyle.danger)
     async def play_x10(self, interaction: discord.Interaction, button: Button):
         await self._play(interaction, 10)
+
+    @discord.ui.button(label="🎯 Scegli puntata", style=discord.ButtonStyle.secondary)
+    async def choose_amount(self, interaction: discord.Interaction, button: Button):
+        if not self._check(interaction):
+            return await interaction.response.send_message("❌ Non è la tua macchina!", ephemeral=True)
+        await interaction.response.send_modal(SlotMachineAmountModal(self))
 
 
 @bot.command(name="machine")
@@ -6260,9 +6411,9 @@ async def stumble_top(ctx):
         profiles.items(),
         key=lambda kv: (kv[1].get("duel_wins", 0), kv[1].get("slot_ruby_won", 0)),
         reverse=True
-    )[:10]
+    )[:3]
 
-    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    medals = ["🥇", "🥈", "🥉"]
     lines  = []
     for i, (uid, p) in enumerate(ranked):
         name        = p.get("name", uid)
