@@ -7,6 +7,7 @@ import discord
 from discord.ext import commands, tasks
 from discord.ui import Button, View, Modal, TextInput
 import asyncio
+import inspect
 from datetime import datetime, timedelta
 import random
 import google.generativeai as genai
@@ -332,6 +333,79 @@ _supporter_to_remove: set = set()
 # Pending SG link verifications: {user_id: {"sg_name": str, "guild_id": int}}
 pending_sg_links: dict = {}
 active_ai_sessions = set()
+
+
+def build_gemini_system_instruction() -> str:
+    """Build Gemini's command reference from the commands registered in this bot."""
+    command_lines = []
+    seen = set()
+
+    def add_command(command, source_name=None):
+        name = source_name or getattr(command, "name", "")
+        if not name or name in seen:
+            return
+        seen.add(name)
+        callback = getattr(command, "callback", None)
+        signature = ""
+        description = getattr(command, "description", None) or ""
+        if callback:
+            try:
+                parameters = list(inspect.signature(callback).parameters.values())[1:]
+                parameter_tokens = []
+                for parameter in parameters:
+                    if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                        token = f"<{parameter.name}...>"
+                    elif parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+                        token = f"[<{parameter.name}>...]"
+                    elif parameter.default is inspect.Parameter.empty:
+                        token = f"<{parameter.name}>"
+                    else:
+                        token = f"[<{parameter.name}>]"
+                    parameter_tokens.append(token)
+                signature = f":{name}" + (
+                    " " + " ".join(parameter_tokens) if parameter_tokens else ""
+                )
+                description = inspect.getdoc(callback) or description
+            except (TypeError, ValueError):
+                signature = f":{name}"
+        aliases = getattr(command, "aliases", [])
+        alias_text = f" (alias: {', '.join(':' + alias for alias in aliases)})" if aliases else ""
+        description = description.strip() or "Comando del bot Discord."
+        command_lines.append(f"- {signature}{alias_text} — {description}")
+
+    for command in bot.commands:
+        add_command(command)
+
+    def add_app_commands(commands):
+        for command in commands:
+            add_command(command)
+            if hasattr(command, "commands"):
+                add_app_commands(command.commands)
+
+    add_app_commands(bot.tree.get_commands())
+    command_lines.sort(key=str.casefold)
+    command_reference = "\n".join(command_lines)
+
+    return (
+        "Sei PCF™ system, l'assistente IA ufficiale di questo server Discord.\n\n"
+        "CREATORE E SERVER:\n"
+        "- Sei stato creato da <@1338274535325175810> (Adam / PCF™ team). "
+        "Quando ti chiedono chi ti ha creato o chi è il proprietario, menziona "
+        "SEMPRE <@1338274535325175810>.\n\n"
+        "LISTA E SPIEGAZIONE COMPLETA DI TUTTI I COMANDI DEL BOT:\n"
+        f"La lista seguente contiene {len(command_lines)} comandi registrati "
+        "(gli alias sono indicati sulla stessa riga e non contano separatamente):\n"
+        f"{command_reference or '- Nessun comando registrato.'}\n\n"
+        "CONTROLLI ASSISTENTE DM:\n"
+        "- :bot — attiva la conversazione con l'assistente IA.\n"
+        "- :stop — chiude la conversazione con l'assistente IA.\n\n"
+        "REGOLE DI RISPOSTA:\n"
+        "1. Fornisci risposte MOLTO DETTAGLIATE e CHIARE. Se un utente chiede "
+        "come funziona un comando, spiegagli la sintassi, gli argomenti e fai "
+        "degli esempi pratici di utilizzo.\n"
+        "2. Rispondi SEMPRE ed ESCLUSIVAMENTE nella lingua in cui l'utente ti scrive.\n"
+        "3. Mantieni un tono cordiale, professionale ed esaustivo."
+    )
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
@@ -3398,11 +3472,7 @@ async def on_message(message: discord.Message):
                     def call_gemini(model_name):
                         model = genai.GenerativeModel(
                             model_name,
-                            system_instruction=(
-                                "Sei l'assistente ufficiale del server Stumble Guys. "
-                                "Rispondi SEMPRE nella stessa lingua dell'utente. "
-                                "Sii breve, chiaro e cordiale."
-                            ),
+                            system_instruction=build_gemini_system_instruction(),
                         )
                         return model.generate_content(message.content)
 
