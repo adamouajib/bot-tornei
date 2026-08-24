@@ -4212,6 +4212,136 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     return [e1, e2, e3]
 
 
+# The original guide above is kept for reference, but this catalog is the
+# source used by the interactive help menu.  Keeping one entry per registered
+# command prevents the guide from silently becoming incomplete when commands
+# are added to the bot.
+def _build_help_embeds(lang: str) -> list[discord.Embed]:
+    locale = {
+        "en": {
+            "titles": (
+                "📖 Command Guide — Tournaments & Events",
+                "📖 Command Guide — Profile, Economy & Community",
+                "📖 Command Guide — Admin, Support & Activities",
+            ),
+            "categories": (
+                ("🏆 TOURNAMENTS", "Tournament setup, brackets and match management"),
+                ("👤 PROFILE & ECONOMY", "Profiles, rankings, currency and shop commands"),
+                ("🌐 COMMUNITY, ADMIN & ACTIVITIES", "Community tools, moderation and extra activities"),
+            ),
+            "footer": "Stumble™ Bot • prefix: ':' • Select :help again to change language",
+            "purpose": "Purpose",
+            "arguments": "Arguments",
+            "example": "Example",
+        },
+        "it": {
+            "titles": (
+                "📖 Guida Comandi — Tornei ed Eventi",
+                "📖 Guida Comandi — Profilo, Economia e Community",
+                "📖 Guida Comandi — Admin, Supporto e Attività",
+            ),
+            "categories": (
+                ("🏆 TORNEI", "Configurazione tornei, bracket e gestione match"),
+                ("👤 PROFILO ED ECONOMIA", "Profili, classifiche, valute e shop"),
+                ("🌐 COMMUNITY, ADMIN E ATTIVITÀ", "Strumenti community, supporto e attività extra"),
+            ),
+            "footer": "Stumble™ Bot • prefisso: ':' • Usa di nuovo :help per cambiare lingua",
+            "purpose": "Scopo",
+            "arguments": "Argomenti",
+            "example": "Esempio",
+        },
+    }
+    t = locale.get(lang, locale["en"])
+
+    # Each tuple is (command label, purpose, arguments, example).  The
+    # descriptions intentionally include syntax, permissions and side effects
+    # so a user can run a command without opening the source code.
+    commands_by_page = [
+        [
+            (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
+            (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires a verified SG account for registration.", "No text arguments; admin access.", ":big-tour"),
+            (":assign-hosts (alias :assign_hosts)", "Distributes the active tournament’s matches among registered hosts.", "No arguments; hoster/admin access.", ":assign-hosts"),
+            (":add-bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :bracket afterwards.", ":add-bot 2"),
+            (":bracket", "Creates the first bracket or advances the tournament to a later round after matches are complete.", "[round] optional target round number; at least two players are required.", ":bracket 2"),
+            (":match", "Publishes a room code for a bracket match and marks that match as in progress.", "<match number> <room code>; the match number must exist in the active bracket.", ":match 3 ABC123"),
+            (":qual", "Records a 1v1 match winner, grants the related Ranked Points and updates the bracket.", "<@winner>; team formats can also use the team/captain syntax accepted by the command.", ":qual @Winner"),
+            (":end (aliases :winner-tour, :winner_tour)", "Closes a 1v1 tournament and awards the winner with Ruby and Crystals.", "[@winner] optional member mention; without it, the last remaining player is detected.", ":end @Winner"),
+            (":team-winner", "Closes a team-format tournament and awards the winning team.", "No arguments; the active tournament must contain a winning team.", ":team-winner"),
+            (":close-tour (alias :close_tour)", "Resets and closes the currently active tournament.", "No arguments; hoster/admin access. This clears the active tournament state.", ":close-tour"),
+            (":event", "Posts a Flash Event embed in the current channel with its registration controls.", "No command arguments; configure the event through the displayed controls.", ":event"),
+            (":start-event (alias :start_event)", "Starts the active Flash Event, mentions the event role and opens the room.", "No arguments; the event must already be configured.", ":start-event"),
+            (":cod-event (alias :cod_event)", "Posts the event room code together with the selected map and emote.", "<emote> <map> <room code>.", ":cod-event 🏃 Skyline ABC123"),
+            (":set-winner (alias :set_winner)", "Records the winner of the active Flash Event for prize distribution.", "<@winner> member mention.", ":set-winner @Winner"),
+            (":end-event (alias :end_event)", "Closes the active event and awards its configured prize.", "<amount> <currency>; currency is ruby, cristalli or punti.", ":end-event 5000 ruby"),
+            (":big-event", "Creates a Big Event configuration with broad announcement and prize details.", "No command arguments; admin access, then use the event controls.", ":big-event"),
+            (":big-start (aliases :bigstart, :big_start)", "Starts the configured Big Event and announces it with an @everyone mention.", "No arguments; admin access and a Big Event must be configured.", ":big-start"),
+            (":big-event-winner", "Opens the controls used to set first, second and third place Big Event winners.", "No arguments; admin access.", ":big-event-winner"),
+        ],
+        [
+            (":profile", "Shows a member’s rank, Ranked Points, Ruby, Crystals, Gems, level, W Items and tournament wins.", "[@user] optional member mention; defaults to the person using the command.", ":profile @Player"),
+            (":leaderboard", "Displays the server leaderboard ordered by Ranked Points with rank indicators and progress bars.", "No arguments.", ":leaderboard"),
+            (":set-leaderboard (alias :set_leaderboard)", "Sets the channel where the automatic leaderboard message is posted or refreshed.", "<#channel> text-channel mention; admin access.", ":set-leaderboard #leaderboard"),
+            (":hoster-lb (aliases :hosterlb, :hoster_lb, :staff-lb, :stafflb, :staff_lb, :classifica-staff)", "Shows the staff/hoster leaderboard for weekly and all-time hosted tournaments.", "No arguments.", ":hoster-lb"),
+            (":gems", "Displays the Stumble Guys gems leaderboard ordered by each profile’s gem balance.", "No arguments.", ":gems"),
+            (":give (alias :add)", "Gives a selected currency to a member.", "<@user> <ruby|cristalli|punti> <amount>; admin access.", ":give @Player ruby 5000"),
+            (":add-rubini (alias :add_rubini)", "Adds Ruby to a member’s profile.", "<@user> <amount>; admin access.", ":add-rubini @Player 1000"),
+            (":remove-rubini (alias :remove_rubini)", "Removes Ruby from a member’s profile.", "<@user> <amount>; admin access.", ":remove-rubini @Player 250"),
+            (":add-cristalli (alias :add_cristalli)", "Adds Crystals to a member’s profile.", "<@user> <amount>; admin access.", ":add-cristalli @Player 100"),
+            (":add-gems (alias :add_gems)", "Adds Stumble Guys Gems directly to a member’s profile.", "<@user> <amount>; admin access.", ":add-gems @Player 50"),
+            (":add-punti (alias :add_punti)", "Adds Ranked Points to a member and updates their rank where applicable.", "<@user> <amount>; admin access.", ":add-punti @Player 250"),
+            (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
+            (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
+            (":shop", "Opens the Stumble™ Shop with W Items, Gems packages and currency exchange controls.", "No arguments; use the buttons in the shop message.", ":shop"),
+            (":drop", "Starts the prize drop activity and posts the available prize interaction.", "[prize] optional prize description; defaults to 500 Ruby.", ":drop 1000 Ruby"),
+            (":machine", "Opens the slot-machine activity where a player can spin for a result.", "No arguments; use the controls in the machine message.", ":machine"),
+            (":test", "Opens the shop test panel used to check shop interactions.", "No arguments; intended for staff/testing.", ":test"),
+        ],
+        [
+            (":team", "Creates a tournament team and optionally invites multiple members.", "<@member1> [@member2…]; the author becomes the team leader.", ":team @Alice @Bob"),
+            (":myteam", "Shows the team you currently belong to, including its members and leader.", "No arguments.", ":myteam"),
+            (":teamleave", "Removes you from your current team.", "No arguments.", ":teamleave"),
+            (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
+            (":stumble-top (aliases :stumbletop)", "Shows the top players in the Stumble™ activity rankings.", "No arguments.", ":stumble-top"),
+            (":boost", "Explains the Ruby, Crystals and booster-role rewards granted for server boosts.", "No arguments.", ":boost"),
+            (":link", "Starts the Stumble Guys account-linking flow so staff can verify the account.", "No arguments; follow the button/modal instructions in the channel.", ":link"),
+            (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
+            (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
+            (":giveaway", "Starts a timed giveaway and awards the configured prize to randomly selected winners.", "<duration> <number of winners> <prize>; duration examples: 30m, 2h or 1d.", ":giveaway 30m 1 5000 Ruby"),
+            (":help (aliases :guide, :commands, :comandi, :guida)", "Shows this complete multilingual command guide. Selecting a language edits this message in the current channel.", "No arguments; hoster access.", ":help"),
+            (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
+            (":add-ticket (alias :add_ticket)", "Posts the support ticket panel for SG linking, reports and staff applications.", "No arguments; administrator access.", ":add-ticket"),
+            (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
+            (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
+            (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
+        ],
+    ]
+
+    embeds = []
+    for page_index, entries in enumerate(commands_by_page):
+        title = t["titles"][page_index]
+        category_name, category_description = t["categories"][page_index]
+        embed = discord.Embed(
+            title=title,
+            description=f"**{category_name}**\n{category_description}\n\n"
+                        "Each command includes its purpose, arguments and an example.",
+            color=(discord.Color.gold(), discord.Color.green(), discord.Color.blurple())[page_index],
+        )
+        for command, purpose, arguments, example in entries:
+            embed.add_field(
+                name=command,
+                value=(
+                    f"**{t['purpose']}:** {purpose}\n"
+                    f"**{t['arguments']}:** {arguments}\n"
+                    f"**{t['example']}:** `{example}`"
+                ),
+                inline=False,
+            )
+        embed.set_image(url=STUMBLE_IMG)
+        embed.set_footer(text=t["footer"])
+        embeds.append(embed)
+    return embeds
+
+
 LANG_OPTIONS = {
     "🇬🇧 English":   "en",
     "🇮🇹 Italiano":  "it",
@@ -4233,11 +4363,21 @@ class HelpLangSelect(discord.ui.Select):
         lang   = self.values[0]
         embeds = _build_help_embeds(lang)
         try:
-            for e in embeds:
-                await interaction.user.send(embed=e)
-            await interaction.response.send_message("✅ Help guide sent to your DMs!", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ I can't DM you. Enable DMs from this server.", ephemeral=True)
+            # Keep the whole guide in the channel by replacing the selector
+            # message with the complete set of embeds.  Sending to
+            # interaction.user would make the guide disappear for everyone
+            # else and would fail when the user has DMs disabled.
+            await interaction.response.edit_message(
+                content=None,
+                embeds=embeds,
+                view=self.view,
+            )
+        except discord.HTTPException:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "❌ I couldn't update the help message in this channel.",
+                    ephemeral=True,
+                )
 
 
 class HelpLangView(View):
@@ -4252,7 +4392,7 @@ async def help_cmd(ctx):
     embed = discord.Embed(
         title="📖 Stumble™ Command Guide",
         description=(
-            "Select your language below and the bot will **send the full guide to your DMs**! 🌍\n\n"
+            "Select your language below and the bot will show the **complete guide here in this channel**! 🌍\n\n"
             "🇬🇧 English · 🇮🇹 Italiano · 🇪🇸 Español · 🇩🇪 Deutsch\n"
             "🇵🇹 Português · 🇫🇷 Français · 🏛️ Latin"
         ),
