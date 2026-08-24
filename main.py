@@ -3669,29 +3669,21 @@ DATABASE COMPLETO DEI COMANDI:
 {commands_string}
 """
                 try:
-                    selected_model_name = "gemini-1.5-flash"
+                    model_name = None
                     try:
-                        available_models = [
-                            model.name
-                            for model in genai.list_models()
-                            if "generateContent" in model.supported_generation_methods
-                        ]
-                        for available_model in available_models:
-                            if (
-                                "1.5-flash" in available_model
-                                or "2.0-flash" in available_model
-                                or "1.5-pro" in available_model
-                            ):
-                                selected_model_name = available_model
-                                break
+                        for available_model in genai.list_models():
+                            if "generateContent" in available_model.supported_generation_methods:
+                                model_name = available_model.name
+                                if "flash" in model_name or "pro" in model_name:
+                                    break
                     except Exception as model_lookup_error:
-                        print(
-                            f"[GEMINI] Model lookup failed, using "
-                            f"{selected_model_name}: {model_lookup_error}"
-                        )
+                        print(f"Error fetching models: {model_lookup_error}")
+
+                    if not model_name:
+                        model_name = "models/gemini-1.5-flash"
 
                     model = genai.GenerativeModel(
-                        selected_model_name,
+                        model_name,
                         system_instruction=system_instruction,
                     )
                     response = model.generate_content(message.content)
