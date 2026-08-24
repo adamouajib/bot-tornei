@@ -4362,44 +4362,40 @@ class HelpLangSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         lang = self.values[0]
         try:
-            # Acknowledge the component first.  Editing the message through the
-            # interaction response can fail after Discord has already
-            # acknowledged the click, which used to leave users with the
-            # generic "something went wrong" component error.
-            await interaction.response.defer()
             embeds = _build_help_embeds(lang)
-            if interaction.message is None:
-                raise RuntimeError("Help menu message is unavailable")
+            # Send the complete guide privately to the member who selected the
+            # language.  The guide is made of three embeds, which keeps every
+            # command's detailed purpose, arguments and example readable.
+            await interaction.user.send(embeds=embeds)
 
-            # Edit the original channel message: never send the guide to the
-            # member's DMs, and keep the language selector available.
-            await interaction.message.edit(
-                content=None,
-                embeds=embeds,
-                view=self.view,
+            # Acknowledge the component in the channel with only a private,
+            # short confirmation.  Do not edit or replace the public menu.
+            await interaction.response.send_message(
+                "📩 Ti ho inviato la guida completa in chat privata!",
+                ephemeral=True,
             )
         except (discord.HTTPException, discord.Forbidden, discord.NotFound) as error:
-            print(f"[help] Unable to update language to {lang}: {error}")
+            print(f"[help] Unable to DM language guide ({lang}): {error}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ Non riesco ad aggiornare la guida in questo canale. Riprova.",
+                    "❌ Non riesco a inviarti la guida in DM. Controlla di avere i messaggi privati aperti e riprova.",
                     ephemeral=True,
                 )
             else:
                 await interaction.followup.send(
-                    "❌ Non riesco ad aggiornare la guida in questo canale. Riprova.",
+                    "❌ Non riesco a inviarti la guida in DM. Controlla di avere i messaggi privati aperti e riprova.",
                     ephemeral=True,
                 )
         except Exception as error:
-            print(f"[help] Unexpected language-selection error ({lang}): {error}")
+            print(f"[help] Unexpected DM language-guide error ({lang}): {error}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ Si è verificato un errore nella guida. Riprova tra poco.",
+                    "❌ Si è verificato un errore mentre preparavo la guida. Riprova tra poco.",
                     ephemeral=True,
                 )
             else:
                 await interaction.followup.send(
-                    "❌ Si è verificato un errore nella guida. Riprova tra poco.",
+                    "❌ Si è verificato un errore mentre preparavo la guida. Riprova tra poco.",
                     ephemeral=True,
                 )
 
