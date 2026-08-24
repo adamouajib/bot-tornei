@@ -3817,7 +3817,9 @@ async def giveaway_cmd(ctx, duration: str, winners_count: int, *, prize: str):
 # ❓ HELP — Multi-language Command Guide
 # ==========================================
 
-def _build_help_embeds(lang: str) -> list[discord.Embed]:
+# Retained only as historical source material; the catalog below is the
+# sole implementation used by the help menu.
+def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
     T = {
         "en": {
             "title1": "📖 Command Guide — Tournaments & Events",
@@ -4413,7 +4415,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
             (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires a verified SG account for registration.", "No text arguments; admin access.", ":big-tour"),
             (":assign-hosts (alias :assign_hosts)", "Distributes the active tournament’s matches among registered hosts.", "No arguments; hoster/admin access.", ":assign-hosts"),
-            (":add-bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :bracket afterwards.", ":add-bot 2"),
+            (":add_bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :add_bot afterwards.", ":add_bot 2"),
             (":bracket", "Creates the first bracket or advances the tournament to a later round after matches are complete.", "[round] optional target round number; at least two players are required.", ":bracket 2"),
             (":match", "Publishes a room code for a bracket match and marks that match as in progress.", "<match number> <room code>; the match number must exist in the active bracket.", ":match 3 ABC123"),
             (":qual", "Records a 1v1 match winner, grants the related Ranked Points and updates the bracket.", "<@winner>; team formats can also use the team/captain syntax accepted by the command.", ":qual @Winner"),
@@ -4468,6 +4470,63 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ],
     ]
 
+    # Italian is kept as a separate catalog instead of translating the
+    # English strings at render time.  This makes it impossible for a
+    # partially translated command to leak English into an Italian guide.
+    italian_descriptions = {
+        ":setup": "Pubblica l’Hub Torneo e apre i pulsanti di iscrizione per Classic, FFA e World Cup; la configurazione continua tramite i modal.",
+        ":big-tour": "Pubblica l’hub del Big Tournament, annuncia l’apertura al server e richiede un account Stumble Guys verificato per iscriversi.",
+        ":assign-hosts": "Distribuisce tra gli host registrati i match del torneo attivo, così ogni partita può essere gestita dal proprio host.",
+        ":add_bot": "Aggiunge alla lista del torneo il numero indicato di giocatori bot senza creare il bracket; il bracket va generato dopo con `:add_bot`.",
+        ":bracket": "Crea il primo bracket dai giocatori iscritti oppure fa avanzare il torneo al round indicato quando i match del round corrente sono terminati.",
+        ":match": "Pubblica il codice della stanza del match indicato e lo marca come in corso nel bracket del torneo attivo.",
+        ":qual": "Registra il vincitore del match 1v1, assegna i Ranked Points previsti e aggiorna il bracket con il giocatore qualificato.",
+        ":end": "Chiude il torneo 1v1 e assegna al vincitore Ruby e Cristalli; senza menzione prova a riconoscere automaticamente l’ultimo giocatore rimasto.",
+        ":team-winner": "Conclude il torneo a squadre e assegna il premio alla squadra vincitrice in base ai membri registrati.",
+        ":close-tour": "Chiude il torneo attivo e cancella il relativo stato, inclusi iscrizioni e dati del bracket.",
+        ":event": "Pubblica nel canale corrente il pannello di configurazione del Flash Event con i controlli per iscrizioni e dettagli.",
+        ":start-event": "Avvia il Flash Event configurato, menziona il ruolo dell’evento e rende disponibile la stanza di gioco.",
+        ":cod-event": "Pubblica il codice della stanza dell’evento insieme alla mappa e all’emote specificate.",
+        ":set-winner": "Registra il membro vincitore del Flash Event attivo, che verrà usato per assegnare il premio alla chiusura.",
+        ":end-event": "Chiude il Flash Event e assegna al vincitore il premio configurato nella valuta indicata: Ruby, Cristalli o Ranked Points.",
+        ":big-event": "Apre la configurazione di un Big Event con dettagli del premio e annuncio esteso; richiede i permessi amministrativi.",
+        ":big-start": "Avvia il Big Event configurato e pubblica l’annuncio con una menzione `@everyone`.",
+        ":big-event-winner": "Apre il pannello per registrare i vincitori del Big Event nelle posizioni primo, secondo e terzo.",
+        ":profile": "Mostra il profilo del membro con rank, Ranked Points, Ruby, Cristalli, Gemme, livello, W Item posseduti e vittorie nei tornei.",
+        ":leaderboard": "Pubblica la classifica completa del server ordinata per Ranked Points, con rank, indicatori e barre di avanzamento.",
+        ":set-leaderboard": "Imposta il canale in cui il bot pubblica e aggiorna automaticamente il messaggio della classifica.",
+        ":hoster-lb": "Mostra la classifica di staff e host ordinata per tornei gestiti nella settimana e per totale storico.",
+        ":gems": "Pubblica la classifica delle Gemme Stumble Guys ordinata dal saldo gemme di ogni profilo.",
+        ":give": "Aggiunge a un membro la quantità richiesta della valuta specificata tra Ruby, Cristalli e Ranked Points.",
+        ":add-rubini": "Aggiunge Ruby al profilo del membro indicato.",
+        ":remove-rubini": "Rimuove Ruby dal profilo del membro indicato, senza modificare le altre valute.",
+        ":add-cristalli": "Aggiunge Cristalli al profilo del membro indicato.",
+        ":add-gems": "Aggiunge direttamente Gemme Stumble Guys al profilo del membro indicato.",
+        ":add-punti": "Aggiunge Ranked Points al membro e ricalcola il rank quando la nuova soglia lo richiede.",
+        ":set-rank": "Imposta manualmente il rank del membro usando il nome del rank specificato.",
+        ":reset": "Azzera per il membro indicato la statistica o valuta richiesta, se supportata dal comando.",
+        ":shop": "Apre lo shop Stumble™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
+        ":drop": "Avvia l’attività di ricompensa e pubblica il premio da reclamare; se omesso, il premio predefinito è 500 Ruby.",
+        ":machine": "Apre la slot machine del bot, dove il giocatore può usare i controlli del messaggio per effettuare un giro.",
+        ":test": "Pubblica il pannello di prova dello shop per verificare le interazioni e i relativi acquisti.",
+        ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
+        ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
+        ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
+        ":1v1": "Invia a un altro membro una sfida 1v1 e avvia il flusso di accettazione e puntata del duello.",
+        ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività Stumble™.",
+        ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
+        ":link": "Avvia il collegamento dell’account Stumble Guys: il membro inserisce il nome SG e segue le istruzioni DM per la verifica dello staff.",
+        ":supporter": "Mostra o avvia la verifica Supporter; quando necessario apre un ticket staff per controllare il link del server nella bio SG.",
+        ":set-supporter": "Imposta il canale dedicato ai controlli degli account Supporter.",
+        ":giveaway": "Avvia un giveaway temporizzato, raccoglie le partecipazioni e assegna casualmente il premio ai vincitori estratti.",
+        ":help": "Mostra il menu delle lingue nel canale e invia in DM la guida completa dei comandi organizzata per categorie.",
+        ":set-welcome": "Imposta il canale in cui il bot pubblica i messaggi di benvenuto e di uscita dei membri.",
+        ":add-ticket": "Pubblica il pannello ticket per collegamento SG, segnalazioni e candidature allo staff.",
+        ":pex": "Controlla i Ranked Points dello staff e aggiorna i ruoli rank promuovendo o retrocedendo i membri quando necessario.",
+        ":reset-all": "Cancella definitivamente profili, punti, rank, tornei, squadre ed eventi dopo la conferma dell’amministratore.",
+        ":reset-staff-week": "Azzera i contatori settimanali dei tornei gestiti da staff e host, lasciando invariati i totali storici.",
+    }
+
     embeds = []
     for page_index, entries in enumerate(commands_by_page):
         title = t["titles"][page_index]
@@ -4512,7 +4571,11 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                     usage = f"{command_name} {usage_tokens}"
                 # Command names and syntax are universal Discord input.  The
                 # explanation itself is the command-specific catalog entry.
-                localized_purpose = purpose
+                localized_purpose = (
+                    italian_descriptions.get(command_name, purpose)
+                    if lang == "it"
+                    else purpose
+                )
                 embed.add_field(
                     name=f"⚙️ **`{usage}`**:",
                     value=localized_purpose,
@@ -4556,12 +4619,6 @@ def _help_dm_chunks(embeds: list[discord.Embed], max_chars: int = 1900) -> list[
 LANG_OPTIONS = {
     "🇬🇧 English":   "en",
     "🇮🇹 Italiano":  "it",
-    "🇪🇸 Español":   "es",
-    "🇩🇪 Deutsch":   "de",
-    "🇵🇹 Português": "pt",
-    "🇫🇷 Français":  "fr",
-    "🏛️ Latin":      "la",
-    "🇮🇳 हिन्दी":     "hi",
 }
 
 
@@ -4569,46 +4626,50 @@ class HelpLangSelect(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=label, value=code)
                    for label, code in LANG_OPTIONS.items()]
-        super().__init__(placeholder="🌍 Choose your language…", options=options, min_values=1, max_values=1)
+        super().__init__(placeholder="🌍 Choose English or Italiano…", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         lang = self.values[0]
         try:
             embeds = _build_help_embeds(lang)
-            # Send one rich embed per DM message.  Keeping each card small
-            # avoids both the 2,000-character content limit and Discord's
-            # 6,000-character per-embed limit.
+            # Each category is split into compact embed cards so the guide
+            # remains readable on mobile and stays below Discord limits.
             for embed in embeds:
                 await interaction.user.send(embed=embed)
 
             # Acknowledge the component in the channel with only a private,
             # short confirmation.  Do not edit or replace the public menu.
             await interaction.response.send_message(
-                "📩 Ti ho inviato la guida completa in chat privata!",
+                    "📩 Ti ho inviato la guida completa in DM!" if lang == "it"
+                    else "📩 I sent the complete guide to your DMs!",
                 ephemeral=True,
             )
         except (discord.HTTPException, discord.Forbidden, discord.NotFound) as error:
             print(f"[help] Unable to DM language guide ({lang}): {error}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ Non riesco a inviarti la guida in DM. Controlla di avere i messaggi privati aperti e riprova.",
+                    "❌ Non riesco a inviarti la guida in DM. Controlla i messaggi privati e riprova." if lang == "it"
+                    else "❌ I cannot DM the guide. Please enable private messages and try again.",
                     ephemeral=True,
                 )
             else:
                 await interaction.followup.send(
-                    "❌ Non riesco a inviarti la guida in DM. Controlla di avere i messaggi privati aperti e riprova.",
+                    "❌ Non riesco a inviarti la guida in DM. Controlla i messaggi privati e riprova." if lang == "it"
+                    else "❌ I cannot DM the guide. Please enable private messages and try again.",
                     ephemeral=True,
                 )
         except Exception as error:
             print(f"[help] Unexpected DM language-guide error ({lang}): {error}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ Si è verificato un errore mentre preparavo la guida. Riprova tra poco.",
+                    "❌ Si è verificato un errore mentre preparavo la guida. Riprova tra poco." if lang == "it"
+                    else "❌ An error occurred while preparing the guide. Please try again shortly.",
                     ephemeral=True,
                 )
             else:
                 await interaction.followup.send(
-                    "❌ Si è verificato un errore mentre preparavo la guida. Riprova tra poco.",
+                    "❌ Si è verificato un errore mentre preparavo la guida. Riprova tra poco." if lang == "it"
+                    else "❌ An error occurred while preparing the guide. Please try again shortly.",
                     ephemeral=True,
                 )
 
