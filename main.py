@@ -9,8 +9,7 @@ from discord.ui import Button, View, Modal, TextInput
 import asyncio
 from datetime import datetime, timedelta
 import random
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 
 
@@ -93,15 +92,6 @@ intents.members = True
 # both depend on the Message Content intent being enabled.
 intents.message_content = True
 bot = commands.Bot(command_prefix=":", intents=intents, help_command=None)
-
-GEMINI_SYSTEM_INSTRUCTION = (
-    "Sei l'assistente ufficiale del server Stumble Guys. "
-    "Rileva la lingua del messaggio dell'utente e rispondi SEMPRE ed "
-    "ESCLUSIVAMENTE nella sua stessa lingua. Sii breve, chiaro e cordiale."
-)
-_gemini_api_key = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=_gemini_api_key) if _gemini_api_key else None
-GEMINI_MODEL = "gemini-2.5-flash"
 
 E_CRYSTAL = "<:crystal:1507440029323100301>"
 E_RUBY    = "<:ruby:1507420532402819093>"
@@ -341,6 +331,7 @@ _supporter_to_remove: set = set()
 
 # Pending SG link verifications: {user_id: {"sg_name": str, "guild_id": int}}
 pending_sg_links: dict = {}
+active_ai_sessions = set()
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
@@ -3263,12 +3254,31 @@ async def add_ticket(ctx):
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
-        await bot.process_commands(message)
         return
 
     # ── DM → ticket channel ──────────────────────────
     if isinstance(message.channel, discord.DMChannel):
         uid = str(message.author.id)
+        command_text = message.content.strip().lower()
+
+        if command_text == ":bot":
+            active_ai_sessions.add(message.author.id)
+            await message.channel.send(
+                "🤖 **Assistente IA Attivato!** Ciao! Sono l'assistente virtuale del server. "
+                "Chiedimi pure qualsiasi cosa sui comandi o i tornei nella tua lingua. "
+                "Quando hai finito, scrivi **`:stop`** per chiudere la conversazione."
+            )
+            await bot.process_commands(message)
+            return
+
+        if command_text == ":stop":
+            active_ai_sessions.discard(message.author.id)
+            await message.channel.send(
+                "👋 **Conversazione conclusa!** Se hai di nuovo bisogno di me, "
+                "scrivi di nuovo **`:bot`** in questa chat."
+            )
+            await bot.process_commands(message)
+            return
 
         # ── SG Link screenshot flow ───────────────────
         if uid in pending_sg_links and message.attachments:
@@ -3369,24 +3379,28 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
 
-        # ── AI support assistant for ordinary private DMs ─────────────
-        if message.content.strip() and gemini_client:
+        # ── Session-based AI support assistant ─────────────────────────
+        if message.author.id in active_ai_sessions and message.content.strip():
             try:
-                response = await asyncio.to_thread(
-                    gemini_client.models.generate_content,
-                    model=GEMINI_MODEL,
-                    contents=message.content.strip(),
-                    config=types.GenerateContentConfig(
-                        system_instruction=GEMINI_SYSTEM_INSTRUCTION,
+                genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+                model = genai.GenerativeModel(
+                    "gemini-2.5-flash",
+                    system_instruction=(
+                        "Sei l'assistente del server Stumble Guys. "
+                        "Rispondi SEMPRE nella lingua usata dall'utente. "
+                        "Sii breve, utile e cordiale."
                     ),
+                )
+                response = await asyncio.to_thread(
+                    model.generate_content,
+                    message.content.strip(),
                 )
                 reply = (response.text or "").strip()
                 if reply:
-                    for start in range(0, len(reply), 1900):
-                        await message.channel.send(reply[start:start + 1900])
+                    for start in range(0, len(reply), 2000):
+                        await message.channel.send(reply[start:start + 2000])
             except Exception as exc:
-                print(f"[Gemini DM] {exc}")
-        # DM commands must still reach commands.Bot after the assistant.
+                print(f"Errore Gemini DM: {exc}")
         await bot.process_commands(message)
         return
 
