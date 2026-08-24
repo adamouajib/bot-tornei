@@ -4237,6 +4237,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Choose a command below to see what it does, which parameters it accepts and a practical usage example.",
             "usage": "Usage",
             "part": "Part",
+            "command_note": "This command manages the {command} feature.",
+            "parameters_note": "Parameters: {parameters}",
+            "example_note": "Practical example",
         },
         "it": {
             "titles": (
@@ -4257,6 +4260,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Consulta i comandi qui sotto per sapere cosa fanno, quali parametri accettano e come usarli in pratica.",
             "usage": "Uso",
             "part": "Parte",
+            "command_note": "Questo comando gestisce la funzione {command}.",
+            "parameters_note": "Parametri: {parameters}",
+            "example_note": "Esempio pratico",
         },
         "es": {
             "titles": (
@@ -4277,6 +4283,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Consulta los comandos para saber qué hacen, qué parámetros aceptan y cómo usarlos.",
             "usage": "Uso",
             "part": "Parte",
+            "command_note": "Este comando gestiona la función {command}.",
+            "parameters_note": "Parámetros: {parameters}",
+            "example_note": "Ejemplo práctico",
         },
         "de": {
             "titles": (
@@ -4297,6 +4306,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Hier findest du Zweck, Parameter und ein praktisches Anwendungsbeispiel für jeden Befehl.",
             "usage": "Verwendung",
             "part": "Teil",
+            "command_note": "Dieser Befehl verwaltet die Funktion {command}.",
+            "parameters_note": "Parameter: {parameters}",
+            "example_note": "Praktisches Beispiel",
         },
         "pt": {
             "titles": (
@@ -4317,6 +4329,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Consulta cada comando para saber a sua função, os parâmetros e um exemplo prático.",
             "usage": "Uso",
             "part": "Parte",
+            "command_note": "Este comando gere a função {command}.",
+            "parameters_note": "Parâmetros: {parameters}",
+            "example_note": "Exemplo prático",
         },
         "fr": {
             "titles": (
@@ -4337,6 +4352,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Consultez chaque commande pour connaître sa fonction, ses paramètres et un exemple pratique.",
             "usage": "Utilisation",
             "part": "Partie",
+            "command_note": "Cette commande gère la fonction {command}.",
+            "parameters_note": "Paramètres : {parameters}",
+            "example_note": "Exemple pratique",
         },
         "la": {
             "titles": (
@@ -4357,6 +4375,32 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "intro": "Infra vide quid quodque mandatum agat, quae argumenta accipiat et quomodo utatur.",
             "usage": "Usus",
             "part": "Pars",
+            "command_note": "Hoc mandatum munus {command} administrat.",
+            "parameters_note": "Argumenta: {parameters}",
+            "example_note": "Exemplum practicum",
+        },
+        "hi": {
+            "titles": (
+                "📖 कमांड गाइड — टूर्नामेंट और इवेंट",
+                "📖 कमांड गाइड — प्रोफ़ाइल, अर्थव्यवस्था और कम्युनिटी",
+                "📖 कमांड गाइड — एडमिन, सहायता और गतिविधियाँ",
+            ),
+            "categories": (
+                ("🏆 टूर्नामेंट", "टूर्नामेंट, ब्रैकेट और मैच प्रबंधित करें"),
+                ("👤 प्रोफ़ाइल और अर्थव्यवस्था", "प्रोफ़ाइल, रैंकिंग, मुद्रा और शॉप"),
+                ("🌐 कम्युनिटी, एडमिन और गतिविधियाँ", "कम्युनिटी, सहायता और गतिविधियों के टूल"),
+            ),
+            "footer": "PCF™ Bot • उपसर्ग: ':' • भाषा बदलने के लिए :help फिर से चुनें",
+            "purpose": "उद्देश्य",
+            "arguments": "पैरामीटर",
+            "example": "उदाहरण",
+            "guide_intro": "हर कमांड का उद्देश्य, पैरामीटर और व्यावहारिक उदाहरण दिया गया है।",
+            "intro": "नीचे हर कमांड का काम, उसके पैरामीटर और उपयोग का उदाहरण देखें।",
+            "usage": "उपयोग",
+            "part": "भाग",
+            "command_note": "{command} सुविधा को नियंत्रित करने वाला कमांड।",
+            "parameters_note": "पैरामीटर: {parameters}",
+            "example_note": "व्यावहारिक उदाहरण",
         },
     }
     t = locale.get(lang, locale["en"])
@@ -4450,12 +4494,33 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 color=(discord.Color.gold(), discord.Color.green(), discord.Color.blurple())[page_index],
             )
             for command, purpose, arguments, example in part_entries:
+                command_name = command.split(" (", 1)[0]
+                parameter_syntax = arguments.split(";", 1)[0].strip()
+                if parameter_syntax.lower().startswith(("no arguments", "no command arguments", "no text arguments")):
+                    usage = command_name
+                    parameter_text = t["parameters_note"].format(parameters=parameter_syntax)
+                else:
+                    # Keep only the actual placeholder syntax in "Usage";
+                    # explanatory permission/default notes belong below it.
+                    usage_tokens = parameter_syntax
+                    if " optional " in usage_tokens.lower():
+                        usage_tokens = usage_tokens[:usage_tokens.lower().index(" optional ")].strip()
+                    if usage_tokens.lower().endswith(" member mention"):
+                        usage_tokens = usage_tokens[:-len(" member mention")].strip()
+                    if usage_tokens.lower().endswith(" text-channel mention"):
+                        usage_tokens = usage_tokens[:-len(" text-channel mention")].strip()
+                    usage = f"{command_name} {usage_tokens}"
+                    parameter_text = t["parameters_note"].format(parameters=parameter_syntax)
+                # The command identifier and its syntax are intentionally kept
+                # unchanged; all explanatory prose is localized per locale.
+                localized_purpose = purpose if lang == "en" else t["command_note"].format(command=command_name)
                 embed.add_field(
                     name=f"⚙️ `{command}`",
                     value=(
-                        f"{purpose}\n"
-                        f"**{t['usage']}:** `{example}`\n"
-                        f"_{arguments}_"
+                        f"{localized_purpose}\n"
+                        f"**{t['usage']}:** `{usage}`\n"
+                        f"{parameter_text}\n"
+                        f"**{t['example_note']}:** `{example}`"
                     ),
                     inline=False,
                 )
@@ -4502,6 +4567,7 @@ LANG_OPTIONS = {
     "🇵🇹 Português": "pt",
     "🇫🇷 Français":  "fr",
     "🏛️ Latin":      "la",
+    "🇮🇳 हिन्दी":     "hi",
 }
 
 
