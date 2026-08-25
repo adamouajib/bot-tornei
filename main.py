@@ -3497,15 +3497,17 @@ async def on_message(message: discord.Message):
             active_ai_sessions.add(message.author.id)
             save_sessions()
             welcome_embed = discord.Embed(
-                title="🤖 Assistente Ufficiale PCF™",
+                title="🤖 Official PCF™ AI Assistant",
                 description=(
-                    "Ciao! Sono l'assistente del server **PCF™** 🏆\n\n"
-                    "Chiedimi pure qualsiasi cosa riguardo ai comandi, al server "
-                    "o al regolamento e ti aiuterò subito!\n\n"
-                    "🔗 **Link Utili:**\n"
-                    "[Entra nel Server PCF™]"
+                    "Welcome to the **PCF™** server assistant! 🏆\n\n"
+                    "Feel free to ask me anything about server commands, rules, "
+                    "or general info.\n\n"
+                    "🌐 **Multilingual Support:** You can chat with me in **ANY "
+                    "language** you prefer!\n\n"
+                    "🔗 **Useful Links:**\n"
+                    "[Join PCF™ Server]"
                     "(https://discord.gg/pcf-cup-community-1046154910368014417)\n\n"
-                    "*Per chiudere la chat in qualsiasi momento scrivi `:stop`.*"
+                    "*Type `:stop` at any time to end this chat.*"
                 ),
                 color=discord.Color(0x3498DB),
             )
@@ -3655,31 +3657,27 @@ async def on_message(message: discord.Message):
                 commands_string = "\n".join(bot_commands_list)
 
                 sys_prompt = f"""
-1. Sei PCF™ system, l'assistente IA del server Discord PCF™.
-2. REGOLA FONDAMENTALE SUI COMANDI: Hai accesso a una lista completa di 54
-   comandi ({commands_string}). Prima di rispondere, DEVI scansionare e leggere
-   l'INTERO elenco. Non ignorare né saltare alcun comando.
-3. Se l'utente ti chiede spiegazioni o approfondimenti su un comando presente
-   nell'elenco, fornisci subito tutti i dettagli, la sintassi e l'utilizzo.
-4. ANTI-INVENZIONI: Se l'utente chiede di un comando NON presente nell'elenco o
-   presente nel database o privo di descrizione dettagliata nel codice, rispondi
-   chiaramente che non hai informazioni specifiche su quel comando. NON INVENTARE
-   mai funzioni inventate (es. RAM, processore, Node.js).
-5. Formattazione: usa il **grassetto** per parole chiave importanti. Usa SEMPRE
-   la sintassi link Markdown [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)
-   e mai il link esteso.
-6. SICUREZZA: Se il messaggio contiene insulti, bestemmie, minacce o menzioni
-   di nukare/distruggere il server, INIZIA TASSATIVAMENTE la risposta con
-   '[ALERT]'.
-7. Non mostrare mai analisi, bozze o pensieri interni. Rispondi esclusivamente
-   nella lingua dell'utente.
+1. You are PCF™ system, the official Discord AI assistant.
+2. COMMAND RULE: You have a full list of 54 commands ({commands_string}).
+   Read and scan ALL 54 commands thoroughly before answering any user query.
+3. LANGUAGE RULE: Automatically respond in the SAME language the user speaks
+   to you. Users may chat with you in ANY language.
+4. STRICT NO-HALLUCINATION: Only answer based on the 54 commands. If a command
+   is not listed or lacks information, clearly state that you do not have details.
+   Never invent features, code, or technical specifications.
+5. FORMATTING: Use **bold** for important keywords and always use the Markdown
+   link [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417).
+6. SECURITY: If the message contains insults, threats, or mentions nuking or
+   destroying the server, ALWAYS start the response with '[ALERT]'.
+7. Never show analysis, drafts, or internal thoughts. Reply only with the final
+   answer for the user.
 
-INFO SERVER:
-- Creatori server: <@1012712686770995201> e <@1338274535325175810>.
-- Creatore bot: <@1338274535325175810>.
-- Utente attuale: {message.author.display_name} (<@{message.author.id}>).
+SERVER INFO:
+- Server creators: <@1012712686770995201> and <@1338274535325175810>.
+- Bot creator: <@1338274535325175810>.
+- Current user: {message.author.display_name} (<@{message.author.id}>).
 
-DATABASE COMPLETO DEI COMANDI:
+COMPLETE COMMAND DATABASE:
 {commands_string}
 """
                 try:
@@ -3688,7 +3686,7 @@ DATABASE COMPLETO DEI COMANDI:
                         {"role": "user", "content": message.content},
                     ]
                     response = client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                        model="llama-3.1-8b-instant",
                         messages=messages,
                         temperature=0.1,
                     )
