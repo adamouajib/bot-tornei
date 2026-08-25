@@ -620,13 +620,66 @@ async def send_threat_alert(
             print(f"[ALERT ERROR] Could not send DM to {recipient_id}: {exc}")
 
 
+def build_ai_source_context() -> str:
+    """Read the current bot source and project layout for the DM assistant."""
+    source_path = os.path.abspath(__file__)
+    try:
+        with open(source_path, "r", encoding="utf-8") as source_file:
+            source = source_file.read()
+    except OSError as exc:
+        source = f"[Unable to read the current main.py source: {exc}]"
+
+    project_root = os.path.dirname(source_path)
+    project_files = []
+    for root, directories, filenames in os.walk(project_root):
+        directories[:] = sorted(
+            directory for directory in directories
+            if directory not in {".git", ".pythonlibs", "__pycache__"}
+        )
+        for filename in sorted(filenames):
+            relative_path = os.path.relpath(
+                os.path.join(root, filename),
+                project_root,
+            )
+            project_files.append(relative_path)
+
+    return (
+        "PROJECT FILE STRUCTURE (generated at request time):\n"
+        + "\n".join(f"- {path}" for path in project_files)
+        + "\n\nPERSISTED DATABASE STRUCTURE:\n"
+        "- db.json is a local JSON file generated at runtime and is not a "
+        "source file or a secret.\n"
+        "- Top-level persisted sections include profiles, teams, tour, event, "
+        "big_event, event_history, event_bans, leaderboard_channel_id, "
+        "leaderboard_msg_ids, welcome_channel_id, level_channel_id, "
+        "supporter_channel_id, supporter_msg_id, result_channel_id, "
+        "betting_channel_id, log_channel_id, supporters, gems and sg_links.\n"
+        "- Each profile stores the member name, Ranked Points, Ruby, Crystals, "
+        "Gems, XP/message progression, level, staff counters, Stumble Guys "
+        "name and owned W Items. The exact keys and serialization behavior "
+        "are defined in the source below.\n"
+        "- Runtime-only interaction state includes active DM sessions, "
+        "conversation history, ticket state, tournament controls and betting "
+        "controls; do not claim these are permanent database records.\n\n"
+        "COMPLETE CURRENT main.py SOURCE:\n"
+        "The following is authoritative implementation context. Read it when "
+        "answering questions about commands, slash commands, arguments, "
+        "permissions, forms/modals, buttons, shop, tournaments, events, DM "
+        "behavior, links, moderation, progression or persistence.\n"
+        "----- BEGIN main.py -----\n"
+        f"{source}\n"
+        "----- END main.py -----"
+    )
+
+
 def build_ai_system_instruction() -> str:
-    """Build the AI's complete command reference from the live bot registry.
+    """Build the AI context from the live registry and current source.
 
     This intentionally reads ``bot.commands`` and ``bot.tree`` instead of
     maintaining a second, hand-written command list.  That keeps the AI
     reference synchronized when a command is added, renamed, or converted to
-    an application/slash command.
+    an application/slash command.  The source is also read at request time so
+    implementation details cannot become stale.
     """
     command_lines = []
     seen = set()
@@ -724,6 +777,7 @@ def build_ai_system_instruction() -> str:
     add_app_commands(bot.tree.get_commands())
     command_lines.sort(key=str.casefold)
     command_reference = "\n".join(command_lines)
+    source_context = build_ai_source_context()
     detailed_guide = ""
     try:
         # Reuse the same detailed catalogue shown by :help so the AI does not
@@ -762,6 +816,8 @@ def build_ai_system_instruction() -> str:
          "This is the same detailed guide used by :help. Use it to explain "
          "purpose, arguments, examples, permissions and side effects:\n"
          f"{detailed_guide or '- No detailed guide available.'}\n\n"
+         "COMPLETE SOURCE AND DATA CONTEXT:\n"
+         f"{source_context}\n\n"
         "PRIVATE CHAT CONTROL:\n"
         "- :start — opens a session with the Official PCF™ Assistant and shows the welcome message.\n"
         "- :end — closes the session; later messages receive no AI replies until :start is used again.\n\n"
