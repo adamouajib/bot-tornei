@@ -487,7 +487,9 @@ ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Keep initialization safe when the optional AI secret is not configured.
+# This is only a marker, never a real credential.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "MISSING_OPENROUTER_API_KEY"
 # Keep the DM assistant on one predictable free OpenRouter model.
 OPENROUTER_MODEL = "openrouter/free"
 OPENROUTER_FALLBACK_MODELS = ("liquid/lfm-2.5-2.6b:free",)
@@ -7461,8 +7463,8 @@ async def stumble_top(ctx):
 
 
 # --- AVVIO DEL BOT ---
-token = os.environ.get("DISCORD_TOKEN")
-if token:
+token = os.environ.get("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
+if token != "MISSING_DISCORD_TOKEN":
     bot.run(token)
 else:
     print("ERRORE: DISCORD_TOKEN non trovato.")
