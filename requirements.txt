@@ -1,10 +1,5 @@
 discord.py
-openai
 flask
 requests
 aiohttp
-aiohttp
-discord.py
-flask
-requests
 google-generativeai

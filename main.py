@@ -724,6 +724,21 @@ def build_ai_system_instruction() -> str:
     add_app_commands(bot.tree.get_commands())
     command_lines.sort(key=str.casefold)
     command_reference = "\n".join(command_lines)
+    detailed_guide = ""
+    try:
+        # Reuse the same detailed catalogue shown by :help so the AI does not
+        # drift from the user-facing command guide.
+        guide_chunks = []
+        for embed in _build_help_embeds("en"):
+            if embed.title:
+                guide_chunks.append(embed.title)
+            if embed.description:
+                guide_chunks.append(embed.description)
+        detailed_guide = "\n".join(guide_chunks)
+    except (NameError, AttributeError):
+        # The help catalogue is defined later in the module. This fallback is
+        # only for an unusual call during a partial import.
+        detailed_guide = command_reference
 
     return (
         "You are exclusively the Official PCF™ Server Assistant. "
@@ -743,17 +758,24 @@ def build_ai_system_instruction() -> str:
         "prefix and slash/application commands. Aliases are shown on the same line. "
         "Use this catalog as the source of truth and never invent commands:\n"
         f"{command_reference or '- No commands registered.'}\n\n"
+         "DETAILED COMMAND GUIDE:\n"
+         "This is the same detailed guide used by :help. Use it to explain "
+         "purpose, arguments, examples, permissions and side effects:\n"
+         f"{detailed_guide or '- No detailed guide available.'}\n\n"
         "PRIVATE CHAT CONTROL:\n"
         "- :start — opens a session with the Official PCF™ Assistant and shows the welcome message.\n"
         "- :end — closes the session; later messages receive no AI replies until :start is used again.\n\n"
         "MODERATION:\n"
         "- Analyze every user message. If it contains severe profanity, insults, sexual/NSFW content, "
-        "requests to nuke or raid the server, or malicious behavior, start the response with [REPORT_ADMIN], "
-        "then reply firmly and politely. Do not add [REPORT_ADMIN] to normal messages.\n\n"
+         "requests to nuke or raid the server, or malicious behavior, start the response with [ALERT], "
+         "then reply firmly and politely. Do not add [ALERT] to normal messages.\n\n"
         "OUTPUT RULES:\n"
         "1. Reply directly and exclusively with the final message for the user.\n"
         "2. Never show analysis, drafts, internal thoughts, or internal labels.\n"
-        "3. Reply exclusively in Italian. This instruction applies only to private DM conversations.\n"
+         "3. Reply in the same language as the user's latest message. Support "
+         "multilingual DM conversations and switch languages naturally whenever "
+         "the user switches. The :help command supports English, Italian, "
+         "Spanish, German, Portuguese, French, Latin and Hindi.\n"
         "4. Use the command catalog for command questions and clearly state required permissions.\n"
         "5. Staff applications require server activity and the ticket panel; Supporter status is not required.\n"
         "6. `:boost` only shows booster perks; it never performs a boost."
@@ -4237,10 +4259,12 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
- 3. LANGUAGE RULE: This is a private DM conversation. Reply in the same
-    language used by the user and support multilingual conversations. Users
-    may switch languages at any time; follow the current language naturally.
-    The :help menu sends the complete command guide in the selected language.
+  3. LANGUAGE RULE: This is a private DM conversation. Reply in the same
+     language used by the user's latest message and support multilingual
+     conversations. Users may switch languages at any time; follow the current
+     language naturally. The :help menu supports English, Italian, Spanish,
+     German, Portuguese, French, Latin and Hindi and sends the complete guide
+     in the selected language.
  4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
     welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
@@ -4273,8 +4297,14 @@ async def on_message(message: discord.Message):
  only when the user explicitly asks for it.
  14. SECURITY: If the message contains insults, threats, or mentions nuking or
    destroying the server, ALWAYS start the response with '[ALERT]'.
- 15. Never show analysis, drafts, or internal thoughts. Reply only with the final
-   answer for the user.
+  15. Never show analysis, drafts, or internal thoughts. Reply only with the final
+     answer for the user.
+  16. KNOWLEDGE SCOPE: You know the complete bot behavior from the command
+     database below, including :profile, :setup, tournaments, events, shop,
+     economy, teams, giveaways, account linking, Supporter verification,
+     Staff applications, points, ranks, XP, levels, moderation and DM controls.
+     Explain exact syntax, permissions, steps and side effects when asked.
+     Do not claim that a user can execute a command if their role lacks access.
 
 SERVER INFO:
  - The bot was created exclusively by Adam (<@1338274535325175810>).
@@ -5543,19 +5573,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "example_note": "व्यावहारिक उदाहरण",
         },
     }
-    # Language selection was intentionally removed: all bot-facing copy is
-    # English, including command guides and permissions.
-    t = locale["en"].copy()
-    t["titles"] = (
-        "📖 Command Guide — Community",
-        "📖 Command Guide — Staff & Events",
-        "📖 Command Guide — Admin & Manager",
-    )
-    t["categories"] = (
-        ("🟢 COMMUNITY COMMANDS (USERS)", "Commands available to all server members"),
-        ("🟡 EVENTS / STAFF COMMANDS", "Requires a Staff or Host role"),
-        ("🔴 ADMIN / MANAGER COMMANDS", "Server, event and data-management tools"),
-    )
+    # Keep the language selected by the member. Command syntax stays
+    # universal, while headings, labels and available translations follow it.
+    t = locale.get(lang, locale["en"]).copy()
 
     # Each tuple is (command label, purpose, arguments, example).  The
     # descriptions intentionally include syntax, permissions and side effects
@@ -5814,7 +5834,10 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                     usage = f"{command_name} {usage_tokens}"
                 # Command names and syntax are universal Discord input.  The
                 # explanation itself is the command-specific catalog entry.
-                localized_purpose = purpose
+                localized_purpose = localized_descriptions.get(lang, {}).get(
+                    command_name,
+                    purpose,
+                )
                 if page_index == 0:
                     permission_label = "User"
                 elif page_index == 1:
