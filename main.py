@@ -3286,7 +3286,7 @@ async def setup_result(ctx, channel: discord.TextChannel):
     """Imposta il canale per i risultati finali dei tornei."""
     db["result_channel_id"] = channel.id
     save_db()
-    await ctx.send(f"✅ Risultati torneo impostati in {channel.mention}.", delete_after=8.0)
+    await ctx.send(f"✅ Tournament results channel set to {channel.mention}.", delete_after=8.0)
 
 @bot.command(name="setup-scomesse", aliases=["setup_scomesse", "setup-scommesse"])
 @owner_only()
@@ -4096,10 +4096,10 @@ async def on_message(message: discord.Message):
             welcome_embed = discord.Embed(
                 title="🤖 Official PCF™ Assistant",
                 description=(
-                    "Benvenuto nell’assistente ufficiale del server PCF™! 🏆\n\n"
-                    "Chiedimi informazioni sui comandi, sulle regole o sul server.\n\n"
-                    "🇮🇹 Comunico esclusivamente in italiano nelle chat private.\n\n"
-                    "*Scrivi `:end` per chiudere la chat.*"
+                    "Welcome to the official PCF™ Server Assistant! 🏆\n\n"
+                    "Ask me about commands, rules, or the server.\n\n"
+                    "I can communicate in the language you choose.\n\n"
+                    "*Write `:end` to close the chat.*"
                 ),
                 color=discord.Color(0x3498DB),
             )
@@ -4108,7 +4108,7 @@ async def on_message(message: discord.Message):
             return
 
         if command_text == ":end":
-            await message.channel.send("Chat chiusa. Scrivi `:start` per riaprirla!")
+            await message.channel.send("Chat closed. Write `:start` to open it again!")
             await _cleanup_dm_session(message.author.id, message.channel)
             await _log_dm(message, "OUT", "DM SESSION END — AI chat closed")
             return
@@ -4218,9 +4218,9 @@ async def on_message(message: discord.Message):
             greeting_embed = discord.Embed(
                 title="🤖 Official PCF™ Assistant",
                 description=(
-                    "Ciao! 👋 Sono l’assistente ufficiale PCF™.\n\n"
-                    "Posso aiutarti con comandi, regole e informazioni sul server.\n"
-                    "Scrivi `:start` per aprire la chat privata completa."
+                    "Hello! 👋 I am the official PCF™ Server Assistant.\n\n"
+                    "I can help with commands, rules, and server information in your language.\n"
+                    "Write `:start` to open the full private chat."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -4248,10 +4248,10 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
- 3. LANGUAGE RULE: Reply exclusively in the user's selected language:
-    {next((label for label, code in LANG_OPTIONS.items() if code == dm_language_preferences.get(message.author.id, "it")), "🇮🇹 Italiano")}.
-    The user can change this preference at any time with :help. Never switch
-    languages unless the user explicitly asks you to.
+ 3. LANGUAGE RULE: Reply in the same language used by the user. The user may
+    speak any language and may switch languages at any time; follow the current
+    language naturally. The :help menu can also be used to choose the language
+    of the command guide.
  4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
     welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
@@ -4904,10 +4904,10 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
     embed  = discord.Embed(
         title="🎉 GIVEAWAY!",
         description=(
-            f"**Premio:** {_format_prize(prize)}\n"
-            f"**Vincitori:** {winners_count}\n"
-            f"**Partecipanti:** 0\n"
-            f"**Termina:** <t:{end_ts}:R> (<t:{end_ts}:f>)\n\n"
+            f"**Prize:** {_format_prize(prize)}\n"
+            f"**Winners:** {winners_count}\n"
+            f"**Participants:** 0\n"
+            f"**Ends:** <t:{end_ts}:R> (<t:{end_ts}:f>)\n\n"
             f"Press the button below to enter!"
         ),
         color=discord.Color.gold()
@@ -4929,7 +4929,7 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
             child.disabled = True
         if not entrants:
             result_embed = discord.Embed(
-                title="🎉 Giveaway terminato",
+                title="🎉 Giveaway ended",
                 description="❌ No participants joined the giveaway.",
                 color=discord.Color.red()
             )
@@ -4943,11 +4943,11 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
                 if mbr:
                     grant_prize(prize, mbr)
             result_embed = discord.Embed(
-                title="🎉 Giveaway terminato!",
+                title="🎉 Giveaway ended!",
                 description=(
-                    f"**Premio:** {_format_prize(prize)}\n"
-                    f"**Vincitori:** {winner_mentions} 🎊\n"
-                    f"**Partecipanti totali:** {len(entrants)}\n\n"
+                    f"**Prize:** {_format_prize(prize)}\n"
+                    f"**Winners:** {winner_mentions} 🎊\n"
+                    f"**Total participants:** {len(entrants)}\n\n"
                     f"The prize was added to the winners' profiles."
                 ),
                 color=discord.Color.gold()
