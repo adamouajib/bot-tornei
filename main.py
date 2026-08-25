@@ -428,8 +428,8 @@ async def send_threat_alert(
         print(f"[ALERT ERROR] Impossibile inviare il DM ad Adam: {exc}")
 
 
-def build_gemini_system_instruction() -> str:
-    """Build Gemini's complete command reference from the live bot registry.
+def build_ai_system_instruction() -> str:
+    """Build the AI's complete command reference from the live bot registry.
 
     This intentionally reads ``bot.commands`` and ``bot.tree`` instead of
     maintaining a second, hand-written command list.  That keeps the AI
@@ -3713,14 +3713,14 @@ DATABASE COMPLETO DEI COMANDI:
                     await message.channel.send(embed=response_embed)
                 except Exception as e:
                     print(f"[GROQ API ERROR] {e}")
-                    busy_embed = discord.Embed(
+                    error_embed = discord.Embed(
                         description=(
-                            "⏳ L'assistente è momentaneamente occupato. "
-                            "Riprova tra pochissimi secondi!"
+                            "⚠️ Non sono riuscito a elaborare la richiesta. "
+                            "Riprova più tardi."
                         ),
                         color=discord.Color.orange(),
                     )
-                    await message.channel.send(embed=busy_embed)
+                    await message.channel.send(embed=error_embed)
             return
         await bot.process_commands(message)
         return
