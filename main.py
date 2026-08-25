@@ -475,6 +475,7 @@ pending_sg_links: dict = {}
 ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
+dm_conversations: dict[int, list[dict[str, str]]] = {}
 DM_IDLE_SECONDS = 15 * 60
 DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
@@ -487,8 +488,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENROUTER_CONFIGURED = bool(OPENROUTER_API_KEY or OPENAI_API_KEY)
 AI_PROVIDER = "openrouter" if OPENROUTER_API_KEY else ("openai" if OPENAI_API_KEY else None)
-AI_MODEL = "liquid/lfm-2.5-2.6b:free" if AI_PROVIDER == "openrouter" else "gpt-4o-mini"
-AI_FALLBACK_MODELS = ()
+AI_MODEL = "google/gemma-2-9b-it:free" if AI_PROVIDER == "openrouter" else "gpt-4o-mini"
+AI_FALLBACK_MODELS = ("qwen/qwen-2.5-72b-instruct:free",) if AI_PROVIDER == "openrouter" else ()
 # Backwards-compatible names used by older diagnostics and integrations.
 OPENROUTER_MODEL = AI_MODEL
 OPENROUTER_FALLBACK_MODELS = AI_FALLBACK_MODELS
@@ -1235,7 +1236,7 @@ async def _advance_round_if_complete(ctx, t: dict) -> bool:
     t["matches"] = _build_ffa_matches(winners) if t.get("modalita") == "FFA" else _build_round_matches(winners)
     t["bracket_channel_id"] = t.get("bracket_channel_id") or ctx.channel.id
     save_db()
-    await ctx.send(f"🔄 **Round {t['round']}** avviato automaticamente — {len(winners)} qualificati!", delete_after=6.0)
+    await ctx.send(f"🔄 **Round {t['round']}** started automatically — {len(winners)} qualified!", delete_after=6.0)
     await _update_bracket_messages(t)
     betting_channel = bot.get_channel(db.get("betting_channel_id")) or ctx.channel
     await _post_match_bets(betting_channel, t)
@@ -1323,6 +1324,7 @@ async def _cleanup_dm_session(user_id: int, channel=None):
     """Reset an AI session and remove every DM message the bot can delete."""
     active_ai_sessions.discard(user_id)
     dm_last_activity.pop(user_id, None)
+    dm_conversations.pop(user_id, None)
     ai_user_locks.pop(user_id, None)
     if channel is None:
         return
@@ -1431,10 +1433,9 @@ async def send_setup_notifications():
         aliases = f" (alias: {', '.join(':' + a for a in command.aliases)})" if command.aliases else ""
         rows.append(f"`:{command.name}`{aliases}")
     embed = discord.Embed(
-        title="ADAM TI HA MANDATO QUESTI COMANDI IMPORTANTI",
+        title="IMPORTANT SETUP COMMANDS",
         description=(
-            "Ecco a te, gatzue, prego.\n\n"
-            "Questi sono esclusivamente i comandi di setup del bot:"
+            "Here are the bot setup commands:"
         ),
         color=discord.Color.gold(),
     )
@@ -1716,7 +1717,7 @@ async def ban_event(ctx, member: discord.Member, channel: discord.TextChannel):
 # ==========================================
 # 👤 PROFILO ED ECONOMIA
 # ==========================================
-@bot.command(aliases=["profilo"])
+@bot.command()
 async def profile(ctx, member: discord.Member = None):
     target = member or ctx.author
     prof   = get_profile(target.id, target.display_name)
@@ -1729,28 +1730,28 @@ async def profile(ctx, member: discord.Member = None):
         done  = punti - prev
         pct   = min(done / need, 1.0) if need > 0 else 1.0
         bar   = "▰" * int(pct * 10) + "▱" * (10 - int(pct * 10))
-        prog  = f"{bar} `{done}/{need}`\nProssimo: {next_rank[2]} **{next_rank[3]}** ({next_rank[0]} punti)"
+        prog  = f"{bar} `{done}/{need}`\nNext: {next_rank[2]} **{next_rank[3]}** ({next_rank[0]} points)"
     else:
         prog  = "🏆 **You reached the highest rank!**"
     embed = discord.Embed(
         title=f"{rank_emoji} {target.display_name}",
-        description=f"**Rank attuale:** {rank_emoji} **{rank_name}**\n"
-                    f"Profilo di {target.mention} · progressi e statistiche personali",
+        description=f"**Current rank:** {rank_emoji} **{rank_name}**\n"
+                    f"Profile for {target.mention} · personal progress and statistics",
         color=discord.Color.blue()
     )
     level_msg = prof.get("level_msg", 0)
     embed.add_field(name=f"{E_XP} Ranked Points",
         value=f"**{format_num(punti)}** punti\n{prog}", inline=False)
-    embed.add_field(name="💰 Saldo",
+    embed.add_field(name="💰 Balance",
         value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Crystals · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gems",
         inline=False)
-    embed.add_field(name="🏅 Statistiche",
-        value=f"{E_CROWN} **{prof['tornei_v']}** tornei vinti · {E_TROPHY} **{prof['eventi_v']}** eventi vinti",
+    embed.add_field(name="🏅 Statistics",
+         value=f"{E_CROWN} **{prof['tornei_v']}** tournaments won · {E_TROPHY} **{prof['eventi_v']}** events won",
         inline=False)
-    embed.add_field(name="⬆️ Livello chat",
-        value=f"Livello **{level_msg}** · {format_num(prof.get('xp_msg',0))} XP",
+    embed.add_field(name="⬆️ Chat Level",
+         value=f"Level **{level_msg}** · {format_num(prof.get('xp_msg',0))} XP",
         inline=True)
-    embed.set_footer(text="PCF™ · Profilo giocatore")
+    embed.set_footer(text="PCF™ · Player profile")
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.set_image(url=STUMBLE_IMG)
     await ctx.send(embed=embed)
@@ -1856,15 +1857,15 @@ RESET_KEYS = {
 async def reset_stat(ctx, member: discord.Member, cosa: str):
     cosa_l = cosa.lower()
     if cosa_l not in RESET_KEYS:
-        return await ctx.send("❌ Usa: `punti / ruby / cristalli / tornei / eventi / tutto`", delete_after=5.0)
+        return await ctx.send("❌ Use: `points / ruby / crystals / tournaments / events / all`", delete_after=5.0)
     prof = get_profile(member.id, member.display_name)
     if cosa_l == "tutto":
         for k in ["punti","rubini","cristalli","tornei_v","eventi_v"]:
             prof[k] = 0
-        desc = "Tutti i dati resettati a 0"
+        desc = "All data reset to 0"
     else:
         prof[RESET_KEYS[cosa_l]] = 0
-        desc = f"{cosa} resettati a 0"
+        desc = f"{cosa} reset to 0"
     if cosa_l in ("punti","xp","tutto"):
         to_remove = [r for r in member.roles if r.id in ALL_RANK_IDS]
         try:
@@ -1993,13 +1994,13 @@ async def _check_team_complete(guild, team_id: str):
 async def team(ctx, *args):
     """
     Usi:
-      :team @p1 [@p2 ...]          — invita giocatori reali
-      :team Bot <N>                — team di N giocatori tutti Bot (escluso te)
-      :team @p1 Bot [@p2 Bot ...]  — mix di utenti reali e Bot
+      :team @p1 [@p2 ...]          — invite real players
+      :team Bot <N>                — team of N players, all bots (excluding you)
+      :team @p1 Bot [@p2 Bot ...]  — mix real users and bots
     """
     if not args:
         return await ctx.send(
-            "❌ Usa: `:team @p1 [@p2 ...]` oppure `:team Bot 3` per un team con i Bot.",
+            "❌ Use: `:team @p1 [@p2 ...]` or `:team Bot 3` for a bot team.",
             delete_after=8.0
         )
 
@@ -2007,7 +2008,7 @@ async def team(ctx, *args):
     if len(args) == 2 and args[0].lower() == "bot" and args[1].isdigit():
         total = int(args[1])
         if total < 2 or total > 8:
-            return await ctx.send("❌ La dimensione del team deve essere tra 2 e 8.", delete_after=5.0)
+            return await ctx.send("❌ Team size must be between 2 and 8.", delete_after=5.0)
         bot_n  = total - 1
         all_names = [ctx.author.display_name] + [f"🤖 Bot {i+1}" for i in range(bot_n)]
         all_ids   = [str(ctx.author.id)]       + [f"Bot_{i+1}"    for i in range(bot_n)]
@@ -2268,7 +2269,7 @@ class _TourStep2View(View):
         super().__init__(timeout=300)
         self.uid = uid
 
-    @discord.ui.button(label="⚙️ Vai al Passo 2 / 3", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="⚙️ Go to Step 2 / 3", style=discord.ButtonStyle.primary)
     async def step2(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.uid:
             return await interaction.response.send_message("❌ This is not your setup!", ephemeral=True)
@@ -2282,7 +2283,7 @@ class _TourStep3View(View):
         super().__init__(timeout=300)
         self.uid = uid
 
-    @discord.ui.button(label="📝 Vai al Passo 3 / 3", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="📝 Go to Step 3 / 3", style=discord.ButtonStyle.success)
     async def step3(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.uid:
             return await interaction.response.send_message("❌ This is not your setup!", ephemeral=True)
@@ -2290,17 +2291,17 @@ class _TourStep3View(View):
 
 
 class TourModal1(Modal):
-    """Step 1/3 — Nome · Mappa · Abilità · Premio"""
+    """Step 1/3 — Name · Map · Ability · Prize"""
     def __init__(self, modalita: str, is_big: bool = False):
         prefix = "🌟 BIG — " if is_big else ""
         super().__init__(title=f"{prefix}🏆 {modalita} (1/3)"[:45])
         self.modalita = modalita
         self.is_big   = is_big
-        self.nome    = TextInput(label="📛 Nome Torneo",       placeholder="es. Stumble™ Classic #42", max_length=50)
-        self.mappa   = TextInput(label="🗺️ Mappa",             placeholder="es. Laser Dash")
-        self.abilita = TextInput(label="⚡ Abilità / Emote",   placeholder="es. Slap, Punch, Banana…")
+        self.nome    = TextInput(label="📛 Tournament Name",       placeholder="e.g. Stumble™ Classic #42", max_length=50)
+        self.mappa   = TextInput(label="🗺️ Map",             placeholder="e.g. Laser Dash")
+        self.abilita = TextInput(label="⚡ Ability / Emote",   placeholder="e.g. Slap, Punch, Banana…")
         self.premio  = TextInput(
-            label="🎁 Premi top 3",
+            label="🎁 Top 3 prizes",
             placeholder="1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby",
             max_length=200)
         self.add_item(self.nome)
@@ -2311,8 +2312,8 @@ class TourModal1(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         if not _validate_tournament_prize_input(self.premio.value):
             return await interaction.response.send_message(
-                "❌ Formato premio non valido. Usa `1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby` "
-                "oppure Cristalli.",
+                "❌ Invalid prize format. Use `1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby` "
+                "or Crystals.",
                 ephemeral=True)
         uid = str(interaction.user.id)
         _pending_tour_setup[uid] = {
@@ -2324,22 +2325,22 @@ class TourModal1(Modal):
             "is_big":   self.is_big,
         }
         await interaction.response.send_message(
-            f"✅ **Passo 1 / 3 completato!**\nNome: `{self.nome.value.strip()}` · "
-            f"Mappa: `{self.mappa.value.strip()}`\nPremi il pulsante per continuare.",
+            f"✅ **Step 1 / 3 complete!**\nName: `{self.nome.value.strip()}` · "
+            f"Map: `{self.mappa.value.strip()}`\nPress the button to continue.",
             view=_TourStep2View(uid), ephemeral=True)
 
 
 class TourModal2(Modal):
-    """Step 2/3 — Orario · Max giocatori · Regione"""
+    """Step 2/3 — Schedule · Max players · Region"""
     def __init__(self, uid: str, is_big: bool = False):
         super().__init__(title=f"🏆 Tournament Setup (2/3)")
         self.uid    = uid
         self.is_big = is_big
-        timing_label = "⏰ Orario (HH:MM ora italiana)" if is_big else "⏰ Inizio tra… (es. 15 min)"
-        timing_ph    = "es. 20:00" if is_big else "es. 15 min"
+        timing_label = "⏰ Time (HH:MM Italy)" if is_big else "⏰ Starts in… (e.g. 15 min)"
+        timing_ph    = "e.g. 20:00" if is_big else "e.g. 15 min"
         self.timing  = TextInput(label=timing_label, placeholder=timing_ph, max_length=20, required=False)
-        self.max_p   = TextInput(label="👥 Max Giocatori (opzionale)", placeholder="es. 32 — lascia vuoto per default", max_length=3, required=False)
-        self.regione = TextInput(label="🌍 Regione (opzionale)", placeholder="es. EU, NA, GLOBAL", required=False)
+        self.max_p   = TextInput(label="👥 Max Players (optional)", placeholder="e.g. 32 — leave blank for default", max_length=3, required=False)
+        self.regione = TextInput(label="🌍 Region (optional)", placeholder="e.g. EU, NA, GLOBAL", required=False)
         self.add_item(self.timing)
         self.add_item(self.max_p)
         self.add_item(self.regione)
@@ -2361,8 +2362,8 @@ class TourModal2(Modal):
         max_txt    = str(max_val) if max_val else "default"
         reg_txt    = self.regione.value.strip() or "—"
         await interaction.response.send_message(
-            f"✅ **Passo 2 / 3 completato!**\nOrario: `{timing_txt}` · Max: `{max_txt}` · Regione: `{reg_txt}`\n"
-            f"Premi il pulsante per inserire le note finali e pubblicare il torneo.",
+            f"✅ **Step 2 / 3 complete!**\nTime: `{timing_txt}` · Max: `{max_txt}` · Region: `{reg_txt}`\n"
+            f"Press the button to add final notes and publish the tournament.",
             view=_TourStep3View(uid), ephemeral=True)
 
 
@@ -2371,8 +2372,8 @@ class TourModal3(Modal):
     def __init__(self, uid: str):
         super().__init__(title="🏆 Tournament Setup (3/3)")
         self.uid = uid
-        self.note   = TextInput(label="📝 Note per i giocatori (opzionale)", placeholder="es. Nessun lag, connessione stabile…", required=False, style=discord.TextStyle.paragraph, max_length=200)
-        self.colore = TextInput(label="🎨 Colore embed (opzionale)", placeholder="gold / green / red / blue / #FF5733", required=False, max_length=20)
+        self.note   = TextInput(label="📝 Player notes (optional)", placeholder="e.g. No lag, stable connection…", required=False, style=discord.TextStyle.paragraph, max_length=200)
+        self.colore = TextInput(label="🎨 Embed color (optional)", placeholder="gold / green / red / blue / #FF5733", required=False, max_length=20)
         self.add_item(self.note)
         self.add_item(self.colore)
 
@@ -2436,13 +2437,13 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     embed = discord.Embed(title=f"🏆 {'BIG — ' if is_big else ''}{nome}", color=color)
     info_val = (
         f"🎮 **Formato:** {actual}\n"
-        f"🗺️ **Mappa:** {data['mappa']}\n"
-        f"⚡ **Abilità:** {emote_s}\n"
-        f"🎁 **Premi:**\n{format_tournament_prizes(data['premio'])}\n"
+        f"🗺️ **Map:** {data['mappa']}\n"
+        f"⚡ **Ability:** {emote_s}\n"
+        f"🎁 **Prizes:**\n{format_tournament_prizes(data['premio'])}\n"
         f"⏰ **Inizio:** {time_str}"
     )
     if data.get("regione"):
-        info_val += f"\n🌍 **Regione:** {data['regione']}"
+        info_val += f"\n🌍 **Region:** {data['regione']}"
     if is_big:
         info_val += "\n🔗 Account SG verificato richiesto per registrarsi!"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
@@ -2765,8 +2766,8 @@ async def add_bot(ctx, n: int = 1):
     save_db()
     total = len(t["player_names"])
     await ctx.send(
-        f"🤖 Aggiunti **{added}** bot. Giocatori ora: **{total}/{t['max']}**. "
-        f"Usa `:bracket` per avviare!", delete_after=8.0)
+        f"🤖 Added **{added}** bot(s). Players now: **{total}/{t['max']}**. "
+        f"Use `:bracket` to start!", delete_after=8.0)
 
 
 @bot.command()
@@ -2785,7 +2786,7 @@ async def bracket(ctx, next_round: int = None):
         ok = _generate_bracket_now(t)
         if ok:
             await ctx.send(
-                f"✅ Bracket generato! **{len(t['player_names'])}** giocatori · "
+                f"✅ Bracket generated! **{len(t['player_names'])}** players · "
                 f"**{t['total_rounds']}** round(s).", delete_after=6.0)
         t["bracket_channel_id"] = ctx.channel.id
         await _update_bracket_messages(t)
@@ -2798,7 +2799,7 @@ async def bracket(ctx, next_round: int = None):
                       if not m.get("winner") and m.get("p2") != "BYE"]
         if incomplete:
             hint = ":qual team @captain" if modalita in TEAM_MODES else ":qual @winner"
-            return await ctx.send(f"❌ **{len(incomplete)}** match ancora aperti. Usa `{hint}`.")
+            return await ctx.send(f"❌ **{len(incomplete)}** matches are still open. Use `{hint}`.")
         winners = [m["winner"] for m in t["matches"].values() if m.get("winner")]
         if len(winners) < 2:
             return await ctx.send("🏆 Only 1 winner remains — use `:winner-tour` or `:team-winner` to close!")
@@ -2808,7 +2809,7 @@ async def bracket(ctx, next_round: int = None):
         else:
             t["matches"] = _build_round_matches(winners)
         save_db()
-        await ctx.send(f"🔄 **Round {next_round}** avviato — {len(winners)} giocatori!", delete_after=5.0)
+        await ctx.send(f"🔄 **Round {next_round}** started — {len(winners)} players!", delete_after=5.0)
     t["bracket_channel_id"] = ctx.channel.id
     await _update_bracket_messages(t)
 
@@ -3136,14 +3137,16 @@ async def winner_tour(ctx, *winners: discord.Member):
     embed = discord.Embed(
         title=f"🏆 {t.get('nome', 'Tournament')} — Results",
         description=f"🎁 **Prizes**\n{format_tournament_prizes(t.get('premio', ''))}\n\n"
-                    f"🏆 **Vincitori**\n{result_lines}",
+                    f"🏆 **Winners**\n{result_lines}",
         color=discord.Color.gold()
     )
     embed.add_field(name=f"{E_XP} Bonus", value="+100 XP Points",           inline=True)
     embed.add_field(name="🗺️ Map",       value=t["mappa"],                  inline=True)
     embed.add_field(name="⚡ Ability",    value=t["emote"],                  inline=True)
     embed.set_thumbnail(url=winner.display_avatar.url)
-    embed.set_image(url=STUMBLE_IMG)
+    tournament_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+    if tournament_file:
+        embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
     embed.set_footer(text=f"Host: {t['host_name']}")
 
     is_big = t.get("is_big", False)
@@ -3204,11 +3207,11 @@ async def winner_tour(ctx, *winners: discord.Member):
                         pass
                 await interaction.response.edit_message(
                     content=f"✅ Gem notification sent to **{count}** participants!", view=self)
-        await result_channel.send(embed=embed, view=BigTourSentView())
+        await result_channel.send(embed=embed, file=tournament_file, view=BigTourSentView())
     else:
-        await result_channel.send(embed=embed)
+        await result_channel.send(embed=embed, file=tournament_file)
     if result_channel.id != ctx.channel.id:
-        await ctx.send(f"✅ Risultati pubblicati in {result_channel.mention}.", delete_after=8.0)
+        await ctx.send(f"✅ Results published in {result_channel.mention}.", delete_after=8.0)
 
 @bot.command(name="team-winner", aliases=["team_winner"])
 @hoster_only()
@@ -3242,7 +3245,9 @@ async def team_winner(ctx):
     embed.add_field(name=f"{E_XP} Bonus", value="+100 XP Points each",              inline=True)
     embed.add_field(name="🗺️ Map",       value=t.get("mappa","—"),                 inline=True)
     embed.add_field(name="⚡ Ability",    value=t.get("emote","—"),                 inline=True)
-    embed.set_image(url=STUMBLE_IMG)
+    tournament_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+    if tournament_file:
+        embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
     embed.set_footer(text=f"Host: {t.get('host_name','—')}")
     if winning_team:
         for uid, name in zip(winning_team["ids"], winning_team["names"]):
@@ -3261,7 +3266,7 @@ async def team_winner(ctx):
                 pass
     db["tour"] = None
     save_db()
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, file=tournament_file)
 
 # ==========================================
 # 📊 LEADERBOARD
@@ -3288,7 +3293,7 @@ async def setup_scomesse(ctx, channel: discord.TextChannel):
     """Imposta il canale per le scommesse sui match."""
     db["betting_channel_id"] = channel.id
     save_db()
-    await ctx.send(f"✅ Scommesse torneo impostate in {channel.mention}.", delete_after=8.0)
+    await ctx.send(f"✅ Tournament betting channel set to {channel.mention}.", delete_after=8.0)
 
 @bot.command(name="leaderboard")
 @manager_or_admin_only()
@@ -3302,8 +3307,6 @@ async def leaderboard(ctx):
 class EventModal(Modal, title="⚡ Create Flash Event"):
     orario = TextInput(label="⏰ Time (HH:MM)", placeholder="e.g. 21:00", max_length=5)
     premio = TextInput(label="🎁 Prize",         placeholder="e.g. 1000 Ruby")
-    regole = TextInput(label="📋 Rules",          placeholder="Write the rules...",
-                       style=discord.TextStyle.paragraph)
 
     def __init__(self, channel: discord.TextChannel):
         super().__init__()
@@ -3331,14 +3334,20 @@ class EventModal(Modal, title="⚡ Create Flash Event"):
         try:
             info_ch = bot.get_channel(EVENT_INFO_CHANNEL_ID)
             target  = info_ch if info_ch else self.target_channel
+            event_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+            if event_file:
+                embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
+            published = False
             await target.send(
-                content=f"<@&{EVENT_PING_ROLE_ID}> 📢 **Nuovo evento creato!**",
-                embed=embed,
+                content=f"<@&{EVENT_PING_ROLE_ID}> 📢 **New flash event created!**",
+                embed=embed, file=event_file,
                 allowed_mentions=discord.AllowedMentions(roles=True),
             )
+            published = True
             await interaction.response.send_message("✅ Event created!", ephemeral=True)
         except Exception:
-            await interaction.response.send_message(embed=embed)
+            if not published and not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed)
 
 class EventSetupView(View):
     def __init__(self, host_id: int, channel: discord.TextChannel):
@@ -3360,11 +3369,16 @@ async def event(ctx):
         title="⚡ Flash Event Setup",
         description=(
             f"Click below to configure the Flash Event, {ctx.author.mention}!\n\n"
-            "Fill in the prize, time, and rules."
+            "Fill in the prize and time. Rules are added automatically."
         ),
         color=discord.Color.purple()
     )
     embed.set_footer(text=f"Setup by {ctx.author.display_name}")
+    if os.path.exists(STUMBLE_TOUR_IMG_PATH):
+        embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
+        await ctx.send(embed=embed, view=view,
+                       file=discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME))
+        return
     embed.set_image(url=STUMBLE_IMG)
     await ctx.send(embed=embed, view=view)
 
@@ -3376,22 +3390,24 @@ async def start_event(ctx):
         return await ctx.send("❌ No active event. Use `:event` or `:big-event` first.")
     is_big = bool(db.get("big_event")) and not bool(db.get("event"))
     embed = discord.Embed(
-        title="🟢 EVENTO AVVIATO!",
+        title="🟢 EVENT STARTED!",
         description="**Get ready: the room code will arrive shortly! 🏁**",
         color=discord.Color.green()
     )
     if db.get("event"):
         ev_data = db["event"]
-        embed.add_field(name="🎁 Premio",         value=_format_prize(ev_data["premio"]), inline=True)
+        embed.add_field(name="🎁 Prize",         value=_format_prize(ev_data["premio"]), inline=True)
         if ev_data.get("regole"):
-            embed.add_field(name=f"{E_RULES} Regole", value=ev_data["regole"],             inline=False)
+            embed.add_field(name=f"{E_RULES} Rules", value=ev_data["regole"],             inline=False)
     elif db.get("big_event"):
         big = db["big_event"]
         embed.add_field(name="🌟 Event",            value=big.get("nome", "—"),                     inline=False)
         embed.add_field(name=f"{E_GOLD} 1° Posto",  value=_format_prize(big.get("prize1", "—")),   inline=True)
         embed.add_field(name=f"{E_GOLD} 2° Posto",  value=_format_prize(big.get("prize2", "—")),   inline=True)
         embed.add_field(name=f"{E_BRONZE} 3° Posto",value=_format_prize(big.get("prize3", "—")),   inline=True)
-    embed.set_image(url=STUMBLE_IMG)
+    event_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+    if event_file:
+        embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
     embed.set_footer(text=f"Started by {ctx.author.display_name}  •  Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     ping_txt  = (f"<@&{EVENT_PING_ROLE_ID}> @here" if is_big
@@ -3400,7 +3416,7 @@ async def start_event(ctx):
                  if is_big else discord.AllowedMentions(roles=True))
     await start_ch.send(
         content=f"{ping_txt} 🟢 **The event has started: have fun!**",
-        embed=embed,
+        embed=embed, file=event_file,
         allowed_mentions=allowed
     )
 
@@ -3414,16 +3430,18 @@ async def cod_event(ctx, emote: str, mappa: str, codice: str):
     elif db.get("big_event"):
         db["big_event"]["room_counter"] = current["room_counter"]
     room_no = current["room_counter"]
-    embed = discord.Embed(title=f"🎮 FLASH EVENT — Stanza {room_no}", color=discord.Color.dark_teal())
-    embed.add_field(name="🗺️ Mappa",   value=mappa,        inline=True)
+    embed = discord.Embed(title=f"🎮 FLASH EVENT — Room {room_no}", color=discord.Color.dark_teal())
+    embed.add_field(name="🗺️ Map",   value=mappa,        inline=True)
     embed.add_field(name="💥 Emote", value=emote,        inline=True)
-    embed.add_field(name="🔑 Codice stanza", value=f"```{codice}```", inline=False)
-    embed.set_image(url=STUMBLE_IMG)
+    embed.add_field(name="🔑 Room Code", value=f"```{codice}```", inline=False)
+    event_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+    if event_file:
+        embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
     prof_staff = get_profile(ctx.author.id, ctx.author.display_name)
     prof_staff["staff_matches"]      += 1
     prof_staff["staff_week_matches"] += 1
     save_db()
-    code_message = await ctx.send(embed=embed)
+    code_message = await ctx.send(embed=embed, file=event_file)
     asyncio.create_task(delete_message_later(code_message, 120))
 
 @bot.command(name="set-winner", aliases=["set_winner", "win-event", "win_event"])
@@ -3480,9 +3498,11 @@ async def end_event(ctx, base_premio: int, valuta: str):
     db["event"] = None
     save_db()
     embed = discord.Embed(title="🏁 FLASH EVENT ENDED", description=desc, color=discord.Color.red())
-    embed.set_image(url=STUMBLE_IMG)
+    event_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+    if event_file:
+        embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
     embed.set_footer(text=f"Closed by {ctx.author.display_name}")
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, file=event_file)
 
 # ==========================================
 # 🌟 BIG EVENT
@@ -3493,8 +3513,6 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
     prize1 = TextInput(label="🥇 1st Place Prize", placeholder="e.g. 5000 Ruby")
     prize2 = TextInput(label="🥈 2nd Place Prize", placeholder="e.g. 3000 Ruby")
     prize3 = TextInput(label="🥉 3rd Place Prize", placeholder="e.g. 1000 Ruby")
-    regole = TextInput(label="Rules",              placeholder="Write the rules...",
-                       style=discord.TextStyle.paragraph)
 
     def __init__(self, channel: discord.TextChannel):
         super().__init__()
@@ -3528,14 +3546,20 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
         try:
             info_ch = bot.get_channel(EVENT_INFO_CHANNEL_ID)
             target  = info_ch if info_ch else self.target_channel
+            event_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
+            if event_file:
+                embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
+            published = False
             await target.send(
-                content=f"<@&{EVENT_PING_ROLE_ID}> 🌟 **Nuovo Big Event creato!**",
-                embed=embed,
+                content=f"<@&{EVENT_PING_ROLE_ID}> 🌟 **New Big Event created!**",
+                embed=embed, file=event_file,
                 allowed_mentions=discord.AllowedMentions(roles=True),
             )
+            published = True
             await interaction.response.send_message("✅ Big Event published!", ephemeral=True)
         except Exception:
-            await interaction.response.send_message(embed=embed)
+            if not published and not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed)
 
 class BigEventSetupView(View):
     def __init__(self, host_id: int, channel: discord.TextChannel):
@@ -3557,7 +3581,7 @@ async def big_event(ctx):
         title="🌟 Big Event Setup",
         description=(
             f"Click below to configure the Big Event, {ctx.author.mention}!\n\n"
-            "Fill in the name, schedule, prizes, and rules.\n"
+            "Fill in the name, schedule, and prizes. Rules are added automatically.\n"
             "This will ping **@everyone** when you use `:start-event`."
         ),
         color=discord.Color.from_rgb(255, 215, 0)
@@ -3680,24 +3704,24 @@ class ResetConfirmView(View):
         save_db()
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="✅ **Reset completato.**", embed=None, view=self)
+        await interaction.response.edit_message(content="✅ **Reset complete.**", embed=None, view=self)
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: Button):
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="❌ Reset annullato.", embed=None, view=self)
+        await interaction.response.edit_message(content="❌ Reset cancelled.", embed=None, view=self)
 
 @bot.command(name="reset-all")
 @owner_only()
 async def reset_all(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.send("❌ Administrators only.", delete_after=5.0)
-    embed = discord.Embed(title="⚠️ RESET TOTALE", color=discord.Color.red())
+    embed = discord.Embed(title="⚠️ FULL RESET", color=discord.Color.red())
     embed.description = (
-        "Stai per cancellare **tutti i dati**:\n\n"
-        "• Profili, punti e rank\n• Tornei e bracket\n"
-        "• Team\n• Dati eventi\n\n"
+        "You are about to delete **all data**:\n\n"
+        "• Profiles, points, and ranks\n• Tournaments and brackets\n"
+        "• Teams\n• Event data\n\n"
         "**This action is irreversible.**"
     )
     await ctx.send(embed=embed, view=ResetConfirmView())
@@ -4122,7 +4146,6 @@ async def on_message(message: discord.Message):
                     await message.author.send("📬 Screenshot received! Staff will verify shortly.")
                 except Exception as e:
                     print(f"[sg_link ticket] {e}")
-            await bot.process_commands(message)
             return
 
         # ── Staff application DM flow ─────────────────
@@ -4136,7 +4159,6 @@ async def on_message(message: discord.Message):
                 if normed not in ("hoster", "staff", "both"):
                     await message.channel.send(
                         "❌ Please type exactly one of: `hoster` / `staff` / `both`")
-                    await bot.process_commands(message)
                     return
                 app["answers"]["role_type"] = normed
             else:
@@ -4165,7 +4187,6 @@ async def on_message(message: discord.Message):
                 # Send next question
                 next_q = STAFF_APP_QUESTIONS[app["step"]]
                 await message.channel.send(next_q)
-            await bot.process_commands(message)
             return
 
         if uid in active_tickets:
@@ -4261,9 +4282,12 @@ COMPLETE COMMAND DATABASE:
 {commands_string}
 """
                 try:
+                    conversation = dm_conversations.setdefault(message.author.id, [])
+                    conversation.append({"role": "user", "content": message.content})
+                    conversation[:] = conversation[-12:]
                     messages = [
                         {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": message.content},
+                        *conversation,
                     ]
                     response = await openrouter_completion_with_retries(
                         messages=messages,
@@ -4271,9 +4295,7 @@ COMPLETE COMMAND DATABASE:
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
-                        await message.channel.send(
-                            "⚠️ The AI provider returned an empty response. Please try again."
-                        )
+                        await message.channel.send("⚠️ Non riesco a rispondere in questo momento. Riprova tra poco.")
                         return
 
                     if reply_text.startswith("[ALERT]"):
@@ -4285,6 +4307,8 @@ COMPLETE COMMAND DATABASE:
                         color=discord.Color.blurple(),
                     )
                     await message.channel.send(embed=response_embed)
+                    conversation.append({"role": "assistant", "content": reply_text})
+                    conversation[:] = conversation[-12:]
                     await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
@@ -4301,11 +4325,7 @@ COMPLETE COMMAND DATABASE:
                             "⚠️ Non riesco a elaborare questa richiesta in questo momento. "
                             "Riprova tra poco."
                         )
-                    error_embed = discord.Embed(
-                        description=error_message,
-                        color=discord.Color.orange(),
-                    )
-                    await message.channel.send(embed=error_embed)
+                    await message.channel.send(error_message)
             return
         await bot.process_commands(message)
         return
@@ -7225,7 +7245,7 @@ class DuelView(View):
         self.confirmed.add(interaction.user.id)
         wait_txt = "Waiting for the other player..." if len(self.confirmed) < 2 else "Everyone confirmed!"
         await interaction.response.send_message(
-            f"✅ {interaction.user.display_name} ha confermato! ({wait_txt})",
+            f"✅ {interaction.user.display_name} confirmed! ({wait_txt})",
             ephemeral=True)
         if len(self.confirmed) >= 2:
             await self._start_arbiter()
@@ -7304,7 +7324,7 @@ class DuelView(View):
 async def duel_cmd(ctx, opponent: discord.Member = None):
     """⚔️ Challenge a member to a Ruby wager duel!"""
     if opponent is None:
-        return await ctx.send("❌ Usa: `:1v1 @utente`", delete_after=5.0)
+        return await ctx.send("❌ Use: `:1v1 @user`", delete_after=5.0)
     if opponent.id == ctx.author.id:
         return await ctx.send("❌ You cannot challenge yourself!", delete_after=5.0)
     if opponent.bot:
@@ -7313,7 +7333,7 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
     em = discord.Embed(
         title="⚔️ Sfida 1v1!",
         description=(
-            f"{ctx.author.mention} ha sfidato {opponent.mention} a un duello!\n\n"
+            f"{ctx.author.mention} challenged {opponent.mention} to a duel!\n\n"
             f"**{opponent.display_name}**, accetti la sfida?\n\n"
             f"Il vincitore riceve tutta la puntata e il ruolo **{BLOCK_DASH_LEGEND_ROLE_NAME}**! 🏅"
         ),
@@ -7398,7 +7418,7 @@ class MatchBettingView(View):
                 competitor_ids.update(str(uid) for uid in team.get("ids", []))
         if str(interaction.user.id) in competitor_ids:
             return await interaction.response.send_message(
-                "❌ I giocatori non possono scommettere sui propri match!", ephemeral=True)
+                "❌ Players cannot bet on their own matches!", ephemeral=True)
         await interaction.response.send_modal(_BetAmountModal(self.match_id, choice))
 
 
@@ -7419,7 +7439,7 @@ async def _post_match_bets(channel: discord.TextChannel, t: dict):
         mid_str = str(mid)
         active_bets[mid_str] = {"p1": p1, "p2": p2, "bets": {}, "channel_id": channel.id}
         em = discord.Embed(
-            title=f"💎 Scommesse — Match #{mid} (Round {cur_round})",
+            title=f"💎 Betting — Match #{mid} (Round {cur_round})",
             description=(
                 f"**{p1}** ⚔️ **{p2}**\n\n"
                 f"Bet your {E_CRYSTAL} **Crystals** on the winner!\n"
@@ -7475,8 +7495,8 @@ async def stumble_top(ctx):
         slot_wins   = p.get("slot_wins", 0)
         lines.append(
             f"{medals[i]} **{name}**\n"
-            f"  ⚔️ Vittorie 1v1: `{duel_wins}` · 🎰 Machine wins: `{slot_wins}` · "
-            f"Ruby vinti: `{format_num(slot_ruby)}` {E_RUBY}"
+            f"  ⚔️ 1v1 wins: `{duel_wins}` · 🎰 Machine wins: `{slot_wins}` · "
+            f"Ruby won: `{format_num(slot_ruby)}` {E_RUBY}"
         )
 
     em = discord.Embed(
@@ -7490,7 +7510,7 @@ async def stumble_top(ctx):
 
 
 # --- AVVIO DEL BOT ---
-token = os.getenv("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
+token = os.getenv("DISCORD_API_TOKEN") or os.getenv("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
 if token != "MISSING_DISCORD_TOKEN":
     bot.run(token)
 else:

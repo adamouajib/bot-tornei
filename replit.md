@@ -8,7 +8,7 @@ The project runs as a Python Discord bot through the `Discord bot` workflow:
 python main.py
 ```
 
-The workflow is configured as a console process and starts automatically. The bot requires the `DISCORD_TOKEN` secret in Replit Secrets. Never place the token in source files or commit it.
+The workflow is configured as a console process and starts automatically. The bot requires the `DISCORD_API_TOKEN` secret in Replit Secrets. Never place the token in source files or commit it.
 
 Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime dependency is `discord.py`.
 
