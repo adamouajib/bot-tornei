@@ -489,13 +489,15 @@ dm_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
 # Keep initialization safe when the optional AI secret is not configured.
 # This is only a marker, never a real credential.
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or "MISSING_OPENROUTER_API_KEY"
+api_key = os.getenv("OPENROUTER_API_KEY") or "MISSING_OPENROUTER_API_KEY"
+OPENROUTER_API_KEY = api_key
+OPENROUTER_CONFIGURED = api_key != "MISSING_OPENROUTER_API_KEY"
 # Keep the DM assistant on one predictable free OpenRouter model.
 OPENROUTER_MODEL = "openrouter/free"
 OPENROUTER_FALLBACK_MODELS = ("liquid/lfm-2.5-2.6b:free",)
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
+    api_key=api_key,
     max_retries=0,
     timeout=30.0,
 )
@@ -4186,7 +4188,7 @@ async def on_message(message: discord.Message):
 
         # ── Single OpenRouter DM assistant ───────────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            if not OPENROUTER_API_KEY:
+            if not OPENROUTER_CONFIGURED:
                 await message.channel.send(
                     "⚠️ Il servizio IA non è configurato in questo momento."
                 )
@@ -7463,7 +7465,7 @@ async def stumble_top(ctx):
 
 
 # --- AVVIO DEL BOT ---
-token = os.environ.get("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
+token = os.getenv("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
 if token != "MISSING_DISCORD_TOKEN":
     bot.run(token)
 else:

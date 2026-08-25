@@ -21,3 +21,8 @@ openai
 sift-stack-py
 flask
 nest-asyncio
+discord.py
+flask
+nest-asyncio
+openai
+sift-stack-py
