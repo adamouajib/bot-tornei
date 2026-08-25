@@ -1,1 +1,2 @@
 - [Gemini response boundary](gemini-response-boundary.md) — Keep one output cleaner at the Gemini extraction boundary before any Discord delivery.
+- [Keep-alive bootstrap](keep-alive-bootstrap.md) — Preserve the Flask/nest_asyncio startup block at the beginning of main.py and in bot.zip.
