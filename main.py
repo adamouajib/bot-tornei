@@ -12,7 +12,7 @@ import inspect
 from datetime import datetime, timedelta
 import random
 import traceback
-from groq import Groq
+from openai import OpenAI
 
 
 
@@ -391,8 +391,13 @@ pending_sg_links: dict = {}
 ACTIVE_SESSIONS_FILE = "active_sessions.json"
 active_ai_sessions: set[int] = set()
 ai_user_locks: dict[int, asyncio.Lock] = {}
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-client = Groq(api_key=GROQ_API_KEY, max_retries=0, timeout=30.0)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    max_retries=0,
+    timeout=30.0,
+)
 ALERT_RECIPIENT_ID = 1338274535325175810
 
 
@@ -429,8 +434,8 @@ def clean_ai_response(response) -> str:
     except (AttributeError, IndexError, TypeError, ValueError):
         return ""
 
-async def groq_completion_with_retries(**kwargs):
-    """Call Groq with bounded retries for rate limits and transient failures."""
+async def openrouter_completion_with_retries(**kwargs):
+    """Call OpenRouter with bounded retries for rate limits and network blips."""
     last_error = None
     for attempt in range(3):
         try:
@@ -458,7 +463,7 @@ async def groq_completion_with_retries(**kwargs):
 async def send_threat_alert(
     message: discord.Message, offender_reply: str
 ) -> None:
-    """Send Adam a detailed DM when Groq flags a moderation alert."""
+    """Send Adam a detailed DM when the AI flags a moderation alert."""
     try:
         recipient = bot.get_user(ALERT_RECIPIENT_ID)
         if recipient is None:
@@ -472,7 +477,7 @@ async def send_threat_alert(
         embed = discord.Embed(
             title="🚨 Alert moderazione IA",
             description=(
-                "Groq ha rilevato un possibile **insulto, comportamento tossico "
+                "The AI detected a possible **insult, toxic behavior, "
                 "o minaccia al server/bot**."
             ),
             color=discord.Color.red(),
@@ -569,7 +574,34 @@ def build_ai_system_instruction() -> str:
         aliases = getattr(command, "aliases", [])
         alias_text = f" (alias: {', '.join(':' + alias for alias in aliases)})" if aliases else ""
         description = description.strip() or f"Comando :{name} del bot Discord."
-        command_lines.append(f"- {signature}{alias_text} — {description}")
+        owner_commands = {
+            "set-log", "set-welcome", "set-leaderboard", "setup-result",
+            "setup-scomesse", "leaderboard", "staff-lb", "hoster-lb",
+            "reset-staff-week", "machine", "reset-all", "setup", "big-tour",
+        }
+        manager_commands = {"giveaway", "set-rank", "add-gems"}
+        admin_commands = {
+            "warn", "time", "give", "reset", "add-punti", "big-event",
+            "big-start", "big-event-winner", "drop", "add-ticket",
+        }
+        host_commands = {
+            "match", "set-winner", "qual", "bracket", "end", "cod-event",
+            "start-event", "assign-hosts", "add-bot", "close-tour",
+            "team-winner", "event",
+        }
+        if name in owner_commands:
+            permission = "Owner"
+        elif name in manager_commands:
+            permission = "Manager"
+        elif name in admin_commands:
+            permission = "Admin"
+        elif name in host_commands:
+            permission = "Host"
+        else:
+            permission = "User"
+        command_lines.append(
+            f"- {signature}{alias_text} — Permission: {permission} — {description}"
+        )
 
     for command in bot.commands:
         add_command(command)
@@ -794,7 +826,7 @@ def grant_prize(prize_text: str, member: discord.Member):
         prof["rubini"] += amount
     elif any(w in lower for w in ("crystal", "cristal")):
         prof["cristalli"] += amount
-    elif any(w in lower for w in ("punt", "xp")):
+    elif any(w in lower for w in ("punt", "point", "xp")):
         prof["punti"] += amount
     elif any(w in lower for w in ("gem",)):
         _record_gems(member, amount)
@@ -3926,7 +3958,7 @@ async def on_message(message: discord.Message):
 
         # ── Session-based AI support assistant ─────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            if not GROQ_API_KEY:
+            if not OPENROUTER_API_KEY:
                 await message.channel.send(
                     "⚠️ The AI service is not configured right now."
                 )
@@ -3934,40 +3966,26 @@ async def on_message(message: discord.Message):
 
             user_lock = ai_user_locks.setdefault(message.author.id, asyncio.Lock())
             async with user_lock, message.channel.typing():
-                bot_commands_list = []
-                for cmd in bot.commands:
-                    desc = (
-                        cmd.help
-                        or cmd.brief
-                        or "Descrizione non disponibile nel codice."
-                    )
-                    usage = f":{cmd.name} {cmd.signature}".strip()
-                    aliases = (
-                        ", ".join(f":{alias}" for alias in cmd.aliases)
-                        or "nessun alias"
-                    )
-                    bot_commands_list.append(
-                        f"- Nome: :{cmd.name}\n"
-                        f"  Descrizione: {desc}\n"
-                        f"  Utilizzo: {usage}\n"
-                        f"  Alias: {aliases}"
-                    )
-                commands_string = "\n".join(bot_commands_list)
+                commands_string = build_ai_system_instruction()
 
                 sys_prompt = f"""
 1. You are PCF™ system, the official Discord AI assistant.
-2. COMMAND RULE: You have a full list of 54 commands ({commands_string}).
-   Read and scan ALL 54 commands thoroughly before answering any user query.
+2. COMMAND RULE: The complete live command reference is provided below. It
+   includes prefix and slash commands, syntax, and the permission level for
+   each command. Use it as the source of truth and never invent a command.
 3. LANGUAGE RULE: Automatically respond in the SAME language the user speaks
    to you. Users may chat with you in ANY language.
-4. STRICT NO-HALLUCINATION: Only answer based on the 54 commands. If a command
+4. CONVERSATION RULE: For greetings, personal questions, or informal messages,
+   always answer enthusiastically, politely, and positively, then offer help
+   with the bot or server.
+5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
    is not listed or lacks information, clearly state that you do not have details.
    Never invent features, code, or technical specifications.
-5. FORMATTING: Use **bold** for important keywords and always use the Markdown
+6. FORMATTING: Use **bold** for important keywords and always use the Markdown
    link [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417).
-6. SECURITY: If the message contains insults, threats, or mentions nuking or
+7. SECURITY: If the message contains insults, threats, or mentions nuking or
    destroying the server, ALWAYS start the response with '[ALERT]'.
-7. Never show analysis, drafts, or internal thoughts. Reply only with the final
+8. Never show analysis, drafts, or internal thoughts. Reply only with the final
    answer for the user.
 
 SERVER INFO:
@@ -3983,8 +4001,8 @@ COMPLETE COMMAND DATABASE:
                         {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": message.content},
                     ]
-                    response = await groq_completion_with_retries(
-                            model="openai/gpt-oss-20b",
+                    response = await openrouter_completion_with_retries(
+                            model="openrouter/free",
                             messages=messages,
                             temperature=0.1,
                     )
@@ -4009,7 +4027,7 @@ COMPLETE COMMAND DATABASE:
                     await message.channel.send(embed=response_embed)
                     await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
-                    await _log_exception(message.guild, "Groq DM completion", e)
+                    await _log_exception(message.guild, "OpenRouter DM completion", e)
                     error_embed = discord.Embed(
                         description=(
                             "⚠️ I couldn't process that request. Please try again later."
@@ -6119,15 +6137,18 @@ _active_drops: dict = {}   # channel_id → {prize, claimer_id, count, max, msg_
 
 @bot.command(name="drop")
 @admin_only()
-async def drop_cmd(ctx, *, prize: str = "500 Ruby"):
-    """Start a drop — first to click the Claim button wins!"""
-    max_claims = 1
-    drop_id    = ctx.channel.id
-    _active_drops[drop_id] = {
-        "prize":      prize,
-        "claimer_id": None,
-        "claimed":    False,
-    }
+async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
+    """Start a limited drop: :drop <people> <amount> <currency>."""
+    if max_people < 1 or max_people > 100 or amount < 1:
+        return await ctx.send("❌ People and amount must be positive; people cannot exceed 100.", delete_after=6.0)
+    currency_key = _normalise_currency(currency)
+    if currency_key not in {"Ruby", "Cristalli", "Gems", "Punti"}:
+        return await ctx.send("❌ Currency must be Ruby, Crystals, Gems, or Ranked Points.", delete_after=6.0)
+    display_currency = {"Ruby": "Ruby", "Cristalli": "Crystals", "Gems": "Gems", "Punti": "Ranked Points"}[currency_key]
+    prize = f"{amount} {display_currency}"
+    drop_id = ctx.channel.id
+    _active_drops[drop_id] = {"prize": prize, "amount": amount, "currency": currency_key,
+                              "claimed_ids": [], "max_claims": max_people}
 
     class DropView(View):
         def __init__(self):
@@ -6136,46 +6157,47 @@ async def drop_cmd(ctx, *, prize: str = "500 Ruby"):
         @discord.ui.button(label="🎁 CLAIM", style=discord.ButtonStyle.success)
         async def claim(self, interaction: discord.Interaction, button: Button):
             drop = _active_drops.get(drop_id)
-            if not drop or drop["claimed"]:
-                return await interaction.response.send_message("❌ Already claimed!", ephemeral=True)
-            drop["claimed"]    = True
-            drop["claimer_id"] = interaction.user.id
-            button.disabled = True
-            button.label    = f"✅ Claimed by {interaction.user.display_name}!"
-            button.style    = discord.ButtonStyle.secondary
-            # Award to winner
+            if not drop or len(drop["claimed_ids"]) >= drop["max_claims"]:
+                return await interaction.response.send_message("❌ This drop has ended.", ephemeral=True)
+            if interaction.user.id in drop["claimed_ids"]:
+                return await interaction.response.send_message("❌ You have already claimed this drop.", ephemeral=True)
+            drop["claimed_ids"].append(interaction.user.id)
             prof = get_profile(interaction.user.id, interaction.user.display_name)
             grant_prize(prize, interaction.user)
             save_db()
+            remaining = drop["max_claims"] - len(drop["claimed_ids"])
+            if remaining == 0:
+                _active_drops.pop(drop_id, None)
+                button.disabled = True
+                button.label = "✅ Drop ended"
             await interaction.response.edit_message(
                 content=(
-                    f"🎉 **{interaction.user.mention}** claimed the drop and won **{prize}**! 🎊\n"
-                    f"*(+added to profile)*"
+                    f"🎉 **{interaction.user.mention}** claimed **{prize}**! "
+                    f"{'The drop is now finished.' if remaining == 0 else f'{remaining} claim(s) remaining.'}"
                 ),
                 view=self)
             # Ping in chat
             try:
                 await interaction.channel.send(
-                    f"🏆 <@{interaction.user.id}> just snatched the **{prize}** drop! Congrats! 🎉",
+                    f"🏆 <@{interaction.user.id}> claimed the **{prize}** drop! Congrats! 🎉",
                     allowed_mentions=discord.AllowedMentions(users=True))
             except Exception:
                 pass
 
-    bar_str   = "▰" * 10
-
     embed = discord.Embed(
-        title="🪂 DROP!",
+        title="🎁 Drop Released! Claim before it runs out!",
         description=(
-            f"A drop has appeared! 🎁\n\n"
-            f"**Prize:** `{prize}`\n\n"
-            f"{bar_str}\n\n"
-            f"⬇️ **Click CLAIM before anyone else!**"
+            f"**Prize:** {amount} {display_currency}\n"
+            f"**Available claims:** {max_people}\n\n"
+            "Click **CLAIM** below before the drop runs out!"
         ),
         color=discord.Color.green()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text=f"Drop started by {ctx.author.display_name} • Expires in 2 minutes")
-    await ctx.send(embed=embed, view=DropView())
+    embed.set_footer(text=f"Released by {ctx.author.display_name} • Limited claims")
+    sent = await ctx.send(embed=embed, view=DropView())
+    _active_drops[drop_id]["message_id"] = sent.id
+    await _log_event(ctx.guild, "DROP", f"{max_people} × {prize}", actor=ctx.author)
 
 
 # ==========================================

@@ -1,8 +1,4 @@
 discord.py
-groq
-discord.py
-groq
+openai
 sift-stack-py
-discord.py
-groq
-sift-stack-py
+openai
