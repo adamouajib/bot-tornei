@@ -274,6 +274,15 @@ def manager_or_owner_only():
     return commands.check(predicate)
 
 
+def manager_or_admin_only():
+    async def predicate(ctx):
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or any(r.id in MANAGER_ROLE_IDS | ADMIN_ROLE_IDS for r in ctx.author.roles)
+        )
+    return commands.check(predicate)
+
+
 def interaction_role_check(interaction: discord.Interaction, roles: set[int]) -> bool:
     member = interaction.user
     return isinstance(member, discord.Member) and (
@@ -285,12 +294,13 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
 # permission) from becoming available to ordinary community members.
 OWNER_COMMANDS = {
     "set-log", "set-welcome", "set-lvl", "set-leaderboard", "setup-result",
-    "setup-scomesse", "leaderboard", "reset-all", "pex", "setup", "big-tour",
+    "setup-scomesse", "reset-all", "pex", "setup", "big-tour",
 }
 ADMIN_COMMANDS = {
     "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
+    "linked", "leaderboard", "gems", "stumble-top",
 }
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
@@ -448,7 +458,8 @@ dm_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # Keep the DM assistant on one predictable free OpenRouter model.
-OPENROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
+OPENROUTER_MODEL = "openrouter/free"
+OPENROUTER_FALLBACK_MODELS = ("liquid/lfm-2.5-2.6b:free",)
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
@@ -461,33 +472,49 @@ ALERT_RECIPIENT_ID = 1338274535325175810
 def clean_ai_response(response) -> str:
     """Extract the user-facing AI text at one centralized boundary."""
     try:
-        return (response.choices[0].message.content or "").strip()
+        text = (response.choices[0].message.content or "").strip()
     except (AttributeError, IndexError, TypeError, ValueError):
         return ""
+    # Some OpenRouter models leak their private reasoning or answer labels.
+    # Remove those artifacts before the text can reach Discord.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"^\s*(?:assistant|final answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^\s*(?:analysis|reasoning|internal monologue|draft(?:\s+\d+)?)\s*:?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = text.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
+    return text
 
 async def openrouter_completion_with_retries(**kwargs):
     """Call OpenRouter with bounded retries for rate limits and network blips."""
     last_error = None
-    for attempt in range(3):
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(client.chat.completions.create, **kwargs),
-                timeout=35.0,
-            )
-        except Exception as exc:
-            last_error = exc
-            status_code = getattr(exc, "status_code", None)
-            error_name = type(exc).__name__.lower()
-            retryable = (
-                status_code == 429
-                or "ratelimit" in error_name
-                or "rate limit" in str(exc).lower()
-                or isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
-                or any(word in error_name for word in ("connection", "timeout", "tempor"))
-            )
-            if not retryable or attempt == 2:
-                raise
-            await asyncio.sleep(1.5 * (attempt + 1))
+    for model in (OPENROUTER_MODEL, *OPENROUTER_FALLBACK_MODELS):
+        for attempt in range(3):
+            request_kwargs = dict(kwargs)
+            request_kwargs["model"] = model
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(client.chat.completions.create, **request_kwargs),
+                    timeout=35.0,
+                )
+            except Exception as exc:
+                last_error = exc
+                status_code = getattr(exc, "status_code", None)
+                error_name = type(exc).__name__.lower()
+                retryable = (
+                    status_code == 429
+                    or status_code is None
+                    or "ratelimit" in error_name
+                    or "rate limit" in str(exc).lower()
+                    or isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
+                    or any(word in error_name for word in ("connection", "timeout", "tempor"))
+                )
+                if not retryable or attempt == 2:
+                    break
+                await asyncio.sleep(1.5 * (attempt + 1))
     raise last_error
 
 
@@ -607,10 +634,13 @@ def build_ai_system_instruction() -> str:
         description = description.strip() or f"Comando :{name} del bot Discord."
         owner_commands = {
             "set-log", "set-welcome", "set-leaderboard", "setup-result",
-            "setup-scomesse", "leaderboard", "staff-lb", "hoster-lb",
+            "setup-scomesse", "staff-lb", "hoster-lb",
             "reset-staff-week", "machine", "reset-all", "setup", "big-tour",
         }
-        manager_commands = {"giveaway", "set-rank", "add-gems"}
+        manager_commands = {
+            "giveaway", "set-rank", "add-gems", "linked", "leaderboard",
+            "gems", "stumble-top",
+        }
         admin_commands = {
             "warn", "time", "give", "reset", "add-punti", "big-event",
             "big-start", "big-event-winner", "drop", "add-ticket",
@@ -1354,44 +1384,32 @@ async def on_error(event_method, *args, **kwargs):
 _setup_notifications_sent = False
 
 async def send_setup_notifications():
-    """DM both owners the live owner/admin/staff setup command catalogue once."""
+    """DM both owners one embed containing only the setup commands."""
     global _setup_notifications_sent
     if _setup_notifications_sent:
         return
-    privileged = OWNER_COMMANDS | ADMIN_COMMANDS | STAFF_COMMANDS
+    setup_names = {"setup", "setup-result", "setup-scomesse", "big-tour"}
     rows = []
     for command in sorted(bot.commands, key=lambda item: item.name.casefold()):
-        if command.name not in privileged:
+        if command.name not in setup_names:
             continue
-        if command.name in OWNER_COMMANDS:
-            level = "👑 OWNER ONLY"
-        elif command.name in ADMIN_COMMANDS:
-            level = "🛡️ ADMIN / MANAGER"
-        else:
-            level = "🟨 STAFF / HOST"
         aliases = f" (alias: {', '.join(':' + a for a in command.aliases)})" if command.aliases else ""
-        rows.append(f"`:{command.name}`{aliases} — {level}")
-    rows.insert(0, "`:set-lvl <#canale>` — 👑 OWNER ONLY — canale annunci Level-Up")
-    rows.append("`/warn` e `/time` — 🛡️ ADMIN / MANAGER — moderazione server")
-    embeds = []
-    for start in range(0, len(rows), 20):
-        embed = discord.Embed(
-            title="⚙️ Setup e comandi amministrativi",
-            description=(
-                "Adam ti ha mandato questi importanti comandi prego grazie buona giornata\n\n"
-                if start == 0 else "Continua la lista completa dei comandi privilegiati."
-            ),
-            color=discord.Color.gold(),
-        )
-        embed.add_field(name="Comandi autorizzati", value="\n".join(rows[start:start + 20]), inline=False)
-        embed.set_footer(text=f"PCF™ Bot • Pagina {start // 20 + 1}")
-        embeds.append(embed)
+        rows.append(f"`:{command.name}`{aliases}")
+    embed = discord.Embed(
+        title="ADAM TI HA MANDATO QUESTI COMANDI IMPORTANTI",
+        description=(
+            "Ecco a te, gatzue, prego.\n\n"
+            "Questi sono esclusivamente i comandi di setup del bot:"
+        ),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="⚙️ Comandi setup", value="\n".join(rows), inline=False)
+    embed.set_footer(text="PCF™ Bot • Setup")
     failures = []
     for owner_id in OWNER_USER_IDS:
         try:
             owner = await bot.fetch_user(owner_id)
-            for embed in embeds:
-                await owner.send(embed=embed)
+            await owner.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException) as exc:
             failures.append(f"{owner_id}: {type(exc).__name__}")
     _setup_notifications_sent = True
@@ -3221,7 +3239,7 @@ async def setup_scomesse(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Scommesse torneo impostate in {channel.mention}.", delete_after=8.0)
 
 @bot.command(name="leaderboard")
-@owner_only()
+@manager_or_admin_only()
 async def leaderboard(ctx):
     for embed in build_leaderboard_embeds():
         await ctx.send(embed=embed)
@@ -4165,9 +4183,8 @@ COMPLETE COMMAND DATABASE:
                         {"role": "user", "content": message.content},
                     ]
                     response = await openrouter_completion_with_retries(
-                            model=OPENROUTER_MODEL,
-                            messages=messages,
-                            temperature=0.1,
+                        messages=messages,
+                        temperature=0.1,
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
@@ -6052,10 +6069,32 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
     view = SGLinkChannelView(guild_id=ctx.guild.id)
     await ctx.send(embed=embed, view=view)
 
+
+@bot.command(name="linked")
+@manager_or_admin_only()
+async def linked_cmd(ctx):
+    """Mostra agli staff autorizzati gli account Stumble Guys collegati."""
+    links = db.get("sg_links", {})
+    if not links:
+        return await ctx.send("❌ Nessun account Stumble Guys collegato.", delete_after=6.0)
+    lines = []
+    for uid, sg_name in sorted(links.items(), key=lambda item: str(item[1]).casefold()):
+        lines.append(f"<@{uid}> — `{str(sg_name)[:30]}`")
+    embed = discord.Embed(
+        title="🔗 Account Stumble Guys collegati",
+        description="\n".join(lines[:50]),
+        color=discord.Color.purple(),
+    )
+    if len(lines) > 50:
+        embed.set_footer(text=f"Mostrati 50 account su {len(lines)}")
+    await ctx.send(embed=embed)
+
+
 # ==========================================
 # 💎 GEMS LEADERBOARD
 # ==========================================
 @bot.command(name="gems")
+@manager_or_admin_only()
 async def gems_cmd(ctx):
     profiles = db.get("profiles", {})
     gems_list = []
@@ -7330,6 +7369,7 @@ async def _resolve_bets_for_match(match_id: str, winner_name: str):
 # ==========================================
 
 @bot.command(name="stumble-top", aliases=["stumbletop"])
+@manager_or_admin_only()
 async def stumble_top(ctx):
     """🏆 Top 10 per vittorie 1v1 e Ruby vinti alla Stumble Machine."""
     profiles = db.get("profiles", {})

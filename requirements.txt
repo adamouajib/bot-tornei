@@ -10,3 +10,6 @@ sift-stack-py
 discord.py
 openai
 sift-stack-py
+discord.py
+openai
+sift-stack-py
