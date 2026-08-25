@@ -476,6 +476,7 @@ ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
 dm_conversations: dict[int, list[dict[str, str]]] = {}
+dm_language_preferences: dict[int, str] = {}
 DM_IDLE_SECONDS = 15 * 60
 DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
@@ -4247,8 +4248,10 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
-                3. LANGUAGE RULE: Reply exclusively in Italian. This is a private DM
-                conversation, so never answer in English unless quoting a command name.
+ 3. LANGUAGE RULE: Reply exclusively in the user's selected language:
+    {next((label for label, code in LANG_OPTIONS.items() if code == dm_language_preferences.get(message.author.id, "it")), "🇮🇹 Italiano")}.
+    The user can change this preference at any time with :help. Never switch
+    languages unless the user explicitly asks you to.
  4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
     welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
@@ -5892,6 +5895,11 @@ class HelpLangSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         lang = self.values[0]
+        dm_language_preferences[interaction.user.id] = lang
+        language_name = next(
+            (label for label, code in LANG_OPTIONS.items() if code == lang),
+            "the selected language",
+        )
         try:
             embeds = _build_help_embeds(lang)
             # Each category is split into compact embed cards so the guide
@@ -5902,8 +5910,7 @@ class HelpLangSelect(discord.ui.Select):
             # Acknowledge the component in the channel with only a private,
             # short confirmation.  Do not edit or replace the public menu.
             await interaction.response.send_message(
-                    "📩 Ti ho inviato la guida completa in DM!" if lang == "it"
-                    else "📩 I sent the complete guide to your DMs!",
+                    f"📩 I sent the complete guide in {language_name} to your DMs!",
                 ephemeral=True,
             )
         except (discord.HTTPException, discord.Forbidden, discord.NotFound) as error:
@@ -5947,19 +5954,15 @@ async def help_cmd(ctx):
     embed = discord.Embed(
         title="📖 Stumble™ Command Guide",
         description=(
-            "The bot will send the **complete command guide to your DMs** in English. 🌍"
+            "Choose a language below and the bot will send the **complete command guide "
+            "to your DMs** in that language. 🌍\n\n"
+            "The selected language is also used by the private AI assistant."
         ),
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text="PCF™ Bot • prefix: ':'")
-    await ctx.send(embed=embed)
-    try:
-        for guide_embed in _build_help_embeds("en"):
-            await ctx.author.send(embed=guide_embed)
-        await ctx.send("📩 The complete command guide has been sent to your DMs!", delete_after=6.0)
-    except (discord.Forbidden, discord.HTTPException):
-        await ctx.send("❌ I could not send the guide. Please enable DMs and try again.", delete_after=8.0)
+    await ctx.send(embed=embed, view=HelpLangView())
 
 # ==========================================
 # 🚀 BOOST INFO
