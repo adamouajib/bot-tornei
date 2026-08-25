@@ -23,6 +23,7 @@ def save_db():
             "leaderboard_channel_id": db["leaderboard_channel_id"],
             "leaderboard_msg_ids": db["leaderboard_msg_ids"],
             "welcome_channel_id": db.get("welcome_channel_id"),
+            "level_channel_id": db.get("level_channel_id"),
             "supporter_channel_id": db.get("supporter_channel_id"),
             "supporter_msg_id": db.get("supporter_msg_id"),
             "result_channel_id": db.get("result_channel_id"),
@@ -37,6 +38,7 @@ def save_db():
             ],
             "tour": None,
             "event": None,
+            "big_event": db.get("big_event"),
             "event_history": db.get("event_history", []),
             "event_bans": db.get("event_bans", {}),
         }
@@ -61,6 +63,7 @@ def load_db():
         db["leaderboard_channel_id"] = data.get("leaderboard_channel_id")
         db["leaderboard_msg_ids"] = data.get("leaderboard_msg_ids", [])
         db["welcome_channel_id"]    = data.get("welcome_channel_id")
+        db["level_channel_id"]      = data.get("level_channel_id")
         db["supporter_channel_id"] = data.get("supporter_channel_id")
         db["supporter_msg_id"]     = data.get("supporter_msg_id")
         db["result_channel_id"]    = data.get("result_channel_id")
@@ -277,6 +280,37 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
         member.id in OWNER_USER_IDS or any(role.id in roles for role in member.roles)
     )
 
+# Prefix commands are guarded here as a second, centralized boundary.  This
+# prevents a command that forgot a decorator (or only checked a Discord
+# permission) from becoming available to ordinary community members.
+OWNER_COMMANDS = {
+    "set-log", "set-welcome", "set-lvl", "set-leaderboard", "setup-result",
+    "setup-scomesse", "leaderboard", "reset-all", "pex", "setup", "big-tour",
+}
+ADMIN_COMMANDS = {
+    "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
+    "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
+    "drop", "machine", "giveaway", "reset-staff-week",
+}
+STAFF_COMMANDS = {
+    "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
+    "team-winner", "close-tour", "event", "start-event", "cod-event",
+    "set-winner", "end-event", "ban-event", "test",
+}
+
+def _prefix_access_allowed(ctx) -> bool:
+    name = getattr(ctx.command, "qualified_name", "").lower()
+    if name in OWNER_COMMANDS:
+        return ctx.author.id in OWNER_USER_IDS
+    if name in ADMIN_COMMANDS:
+        return ctx.author.id in OWNER_USER_IDS or any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
+    if name in STAFF_COMMANDS:
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or any(r.id in ADMIN_ROLE_IDS | STAFF_ROLE_IDS | {HOSTER_ROLE_ID} for r in ctx.author.roles)
+        )
+    return True
+
 RANK_DATA = [
     (0,     None,                "<:ranked:1507509359985295491>",        "Nessun Rank"),
     (1000,  1410695954641850521, "<:RankWood:1505325324672696511>",       "Legno"),
@@ -338,6 +372,25 @@ async def update_level_role(guild: discord.Guild, member: discord.Member, level:
     except (discord.Forbidden, discord.HTTPException) as exc:
         print(f"[level role] {exc}")
 
+async def assign_winner_role(guild: discord.Guild, member: discord.Member) -> None:
+    """Give match winners the visible W role and persist the bracket marker."""
+    role = discord.utils.get(guild.roles, name="W")
+    if role is None:
+        try:
+            role = await guild.create_role(name="W", color=discord.Color.gold(),
+                                           reason="Winner role for tournament brackets")
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[winner role] {exc}")
+            return
+    try:
+        if role not in member.roles:
+            await member.add_roles(role, reason="Tournament match winner")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[winner role] {exc}")
+    prof = get_profile(member.id, member.display_name)
+    if "W" not in prof.setdefault("w_owned", []):
+        prof["w_owned"].append("W")
+
 def get_profile_by_name(name: str):
     name_lower = name.lower()
     for prof in db["profiles"].values():
@@ -370,6 +423,7 @@ db = {
     "leaderboard_channel_id": None,
     "leaderboard_msg_ids": [],
     "welcome_channel_id": None,
+    "level_channel_id": None,
     "supporter_channel_id": None,
     "supporter_msg_id": None,
     "result_channel_id": None,
@@ -760,22 +814,30 @@ def _normalise_currency(value: str) -> str | None:
     return None
 
 def _validate_tournament_prize_input(value: str) -> bool:
-    """Require one or more `position. amount currency` entries."""
-    entries = [part.strip() for part in re.split(r"[,;\n]+", value or "") if part.strip()]
-    if not entries:
-        return False
-    for entry in entries:
-        match = re.fullmatch(r"(\d+)\.\s*(\d+)\s*(.*)", entry)
-        if not match or not _normalise_currency(match.group(3)):
-            return False
-    return True
+    """Accept numbered prizes or a compact list such as ``500, 300, 100 Ruby``."""
+    return bool(parse_tournament_prizes(value))
 
 def parse_tournament_prizes(prize_text: str) -> dict[int, str]:
-    """Parse `1. 500 Ruby, 2. 250 Ruby, 3. 50 Ruby` into position prizes."""
+    """Parse numbered prizes and compact amount lists into position prizes."""
     text = (prize_text or "").strip()
     numbered = re.findall(r"(?:^|[,;\n])\s*(\d+)\.\s*([^,;\n]+)", text)
     prizes = {int(position): value.strip() for position, value in numbered if value.strip()}
-    return prizes or ({1: text} if text else {})
+    if prizes:
+        return prizes
+    if not text:
+        return {}
+    currency = _normalise_currency(text)
+    if not currency:
+        return {}
+    # Commas are separators in compact input; accept one currency suffix for
+    # the entire list, or a currency on each individual entry.
+    amounts = re.findall(r"\d[\d.,]*", text)
+    if not amounts:
+        return {}
+    return {
+        position: f"{amount.replace(',', '')} {currency}"
+        for position, amount in enumerate(amounts, start=1)
+    }
 
 def format_tournament_prizes(prize_text: str) -> str:
     prizes = parse_tournament_prizes(prize_text)
@@ -894,6 +956,7 @@ class FinalWinnerModal(Modal, title="🏆 Set winner"):
         if winner_id and str(winner_id).isdigit() and interaction.guild:
             member = interaction.guild.get_member(int(winner_id))
             if member:
+                await assign_winner_role(interaction.guild, member)
                 prof = get_profile(member.id, member.display_name)
                 old_pts = prof["punti"]
                 prof["punti"] += 100
@@ -1205,6 +1268,8 @@ async def auto_save():
 
 @bot.before_invoke
 async def auto_delete_invoke(ctx):
+    if not _prefix_access_allowed(ctx):
+        raise commands.CheckFailure("restricted command")
     try:
         await ctx.message.delete()
     except Exception:
@@ -1255,6 +1320,53 @@ async def on_error(event_method, *args, **kwargs):
     guild = getattr(args[0], "guild", None) if args else None
     await _log_event(guild, "ERROR", f"event={event_method}: {exc[-1800:]}")
 
+_setup_notifications_sent = False
+
+async def send_setup_notifications():
+    """DM both owners the live owner/admin/staff setup command catalogue once."""
+    global _setup_notifications_sent
+    if _setup_notifications_sent:
+        return
+    privileged = OWNER_COMMANDS | ADMIN_COMMANDS | STAFF_COMMANDS
+    rows = []
+    for command in sorted(bot.commands, key=lambda item: item.name.casefold()):
+        if command.name not in privileged:
+            continue
+        if command.name in OWNER_COMMANDS:
+            level = "👑 OWNER ONLY"
+        elif command.name in ADMIN_COMMANDS:
+            level = "🛡️ ADMIN / MANAGER"
+        else:
+            level = "🟨 STAFF / HOST"
+        aliases = f" (alias: {', '.join(':' + a for a in command.aliases)})" if command.aliases else ""
+        rows.append(f"`:{command.name}`{aliases} — {level}")
+    rows.insert(0, "`:set-lvl <#canale>` — 👑 OWNER ONLY — canale annunci Level-Up")
+    rows.append("`/warn` e `/time` — 🛡️ ADMIN / MANAGER — moderazione server")
+    embeds = []
+    for start in range(0, len(rows), 20):
+        embed = discord.Embed(
+            title="⚙️ Setup e comandi amministrativi",
+            description=(
+                "Adam ti ha mandato questi importanti comandi prego grazie buona giornata\n\n"
+                if start == 0 else "Continua la lista completa dei comandi privilegiati."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Comandi autorizzati", value="\n".join(rows[start:start + 20]), inline=False)
+        embed.set_footer(text=f"PCF™ Bot • Pagina {start // 20 + 1}")
+        embeds.append(embed)
+    failures = []
+    for owner_id in OWNER_USER_IDS:
+        try:
+            owner = await bot.fetch_user(owner_id)
+            for embed in embeds:
+                await owner.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            failures.append(f"{owner_id}: {type(exc).__name__}")
+    _setup_notifications_sent = True
+    if failures:
+        print(f"[on_ready] Setup DM failures: {', '.join(failures)}")
+
 @bot.event
 async def on_ready():
     load_db()
@@ -1266,6 +1378,7 @@ async def on_ready():
         await _log_exception(None, "slash command sync", exc)
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
+    await send_setup_notifications()
     if not auto_leaderboard.is_running():
         auto_leaderboard.start()
     if not auto_save.is_running():
@@ -1277,6 +1390,7 @@ async def on_ready():
         for role_name, color in [
             (STUMBLE_GAMBLER_ROLE_NAME,   discord.Color.gold()),
             (BLOCK_DASH_LEGEND_ROLE_NAME, discord.Color.purple()),
+            ("W", discord.Color.gold()),
         ]:
             if not discord.utils.get(guild.roles, name=role_name):
                 try:
@@ -1382,6 +1496,14 @@ async def set_welcome(ctx, channel: discord.TextChannel):
     db["welcome_channel_id"] = channel.id
     save_db()
     await ctx.send(f"✅ Welcome channel set to {channel.mention}.", delete_after=6.0)
+
+@bot.command(name="set-lvl", aliases=["set_lvl", "set-level", "set_level"])
+@owner_only()
+async def set_level_channel(ctx, channel: discord.TextChannel):
+    """Set the dedicated channel for automatic level-up announcements."""
+    db["level_channel_id"] = channel.id
+    save_db()
+    await ctx.send(f"✅ Level-Up announcements will be sent to {channel.mention}.", delete_after=6.0)
 
 async def _system_log(guild, text: str):
     channel_id = db.get("log_channel_id")
@@ -2654,6 +2776,7 @@ async def qual(ctx):
             try:
                 mbr = ctx.guild.get_member(int(uid))
                 if mbr:
+                    await assign_winner_role(ctx.guild, mbr)
                     prof    = get_profile(mbr.id, mbr.display_name)
                     old_pts = prof["punti"]
                     prof["punti"] += 100
@@ -2684,6 +2807,7 @@ async def qual(ctx):
         m["winner"] = win_slot
         m["losers"] = losers
         prof    = get_profile(winner.id, win_name)
+        await assign_winner_role(ctx.guild, winner)
         old_pts = prof["punti"]
         prof["punti"] += 100
         await update_rank_roles(ctx.guild, winner, prof["punti"])
@@ -2705,6 +2829,7 @@ async def qual(ctx):
         if found_mid is None:
             return await ctx.send(f"❌ No open match for **{win_name}**.", delete_after=6.0)
         await _give_xp_and_rank(ctx, winner, t["matches"][found_mid], win_name)
+        await assign_winner_role(ctx.guild, winner)
         # Resolve any tournament bets on this match
         if found_mid is not None:
             asyncio.ensure_future(_resolve_bets_for_match(str(found_mid), t["matches"][found_mid].get("winner", "")))
@@ -2866,6 +2991,7 @@ async def winner_tour(ctx, *winners: discord.Member):
     for position, member in enumerate(placements, start=1):
         prize_position = min(position, 3)
         prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+        await assign_winner_role(ctx.guild, member)
         prof = get_profile(member.id, member.display_name)
         prof["tornei_v"] += 1 if position == 1 else 0
         prof["punti"] += 100 if position == 1 else 0
@@ -2897,17 +3023,13 @@ async def winner_tour(ctx, *winners: discord.Member):
     is_big = t.get("is_big", False)
     participants = list(t.get("players", []))
 
-    # Track gems in db["gems"] if it's a big tournament
+    # The normal prize grant above is the single source of truth for rewards.
+    # Do not grant the Big Tournament first-place prize a second time here.
     if is_big:
         sg_name    = db.get("sg_links", {}).get(str(winner.id), winner.display_name)
         prize_text = prize_map.get(1, t.get("premio", ""))
-        gem_count  = 0
-        _nums = re.findall(r'\d+', prize_text)
-        if _nums:
-            gem_count = int(_nums[0])
-        prof_gems = get_profile(winner.id, winner.display_name)
-        prof_gems["gemme"] = prof_gems.get("gemme", 0) + gem_count
-        if gem_count > 0:
+        if "gem" in prize_text.lower():
+            gem_count = int(re.search(r"\d+", prize_text).group()) if re.search(r"\d+", prize_text) else 0
             embed.add_field(name="💎 Gems",
                 value=f"**+{gem_count} Gems** added to {winner.display_name}'s record (SG: `{sg_name}`)",
                 inline=False)
@@ -3003,6 +3125,7 @@ async def team_winner(ctx):
             try:
                 mbr = ctx.guild.get_member(int(uid))
                 if mbr:
+                    await assign_winner_role(ctx.guild, mbr)
                     prof = get_profile(mbr.id, mbr.display_name)
                     prof["tornei_v"] += 1
                     prof["punti"]    += 100
@@ -4162,7 +4285,8 @@ COMPLETE COMMAND DATABASE:
             )
             embed.set_image(url=STUMBLE_IMG)
             try:
-                await message.channel.send(embed=embed)
+                level_channel = bot.get_channel(db.get("level_channel_id")) or message.channel
+                await level_channel.send(embed=embed)
             except Exception as e:
                 print(f"[Level-up] {e}")
 
