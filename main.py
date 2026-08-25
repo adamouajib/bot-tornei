@@ -1,9 +1,6 @@
 import os
 import threading
 from flask import Flask
-import nest_asyncio
-
-nest_asyncio.apply()
 
 app = Flask('')
 
@@ -16,9 +13,7 @@ def run():
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = threading.Thread(target=run)
-    t.daemon = True
-    t.start()
+    threading.Thread(target=run, daemon=True).start()
 
 keep_alive()
 
@@ -489,7 +484,11 @@ dm_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
 # Keep initialization safe when the optional AI secret is not configured.
 # This is only a marker, never a real credential.
-api_key = os.getenv("OPENROUTER_API_KEY") or "MISSING_OPENROUTER_API_KEY"
+api_key = (
+    os.getenv("OPENROUTER_API_KEY")
+    or os.getenv("OPENAI_API_KEY")
+    or "MISSING_OPENROUTER_API_KEY"
+)
 OPENROUTER_API_KEY = api_key
 OPENROUTER_CONFIGURED = api_key != "MISSING_OPENROUTER_API_KEY"
 # Keep the DM assistant on one predictable free OpenRouter model.
