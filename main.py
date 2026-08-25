@@ -3644,7 +3644,7 @@ async def on_message(message: discord.Message):
                     bot_commands_list.append(f"- :{cmd.name} -> {desc}")
                 commands_string = "\n".join(bot_commands_list)
 
-                system_instruction = f"""
+                sys_prompt = f"""
 1. Sei PCF™ system, l'assistente IA del server Discord PCF™.
 2. REGOLA ANTI-INVENZIONI: Se l'utente chiede informazioni su un comando non
    presente nel database o privo di descrizione dettagliata nel codice, rispondi
@@ -3669,22 +3669,9 @@ DATABASE COMPLETO DEI COMANDI:
 {commands_string}
 """
                 try:
-                    model_name = None
-                    try:
-                        for available_model in genai.list_models():
-                            if "generateContent" in available_model.supported_generation_methods:
-                                model_name = available_model.name
-                                if "flash" in model_name or "pro" in model_name:
-                                    break
-                    except Exception as model_lookup_error:
-                        print(f"Error fetching models: {model_lookup_error}")
-
-                    if not model_name:
-                        model_name = "models/gemini-1.5-flash"
-
                     model = genai.GenerativeModel(
-                        model_name,
-                        system_instruction=system_instruction,
+                        "gemini-3.6-flash",
+                        system_instruction=sys_prompt,
                     )
                     response = model.generate_content(message.content)
                     reply_text = clean_gemini_response(response)
