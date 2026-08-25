@@ -20,7 +20,7 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 - Adam (`1338274535325175810`) and Piccolofe (`1012712686770995201`) are the only owners and control system commands such as `:set-log`, `:leaderboard`, `:staff-lb`, and `:machine`.
 - `:give` supports Ruby, Crystals, Ranked Points, and Gems; only Managers/owners can distribute Gems.
 - The legacy `:add-rubini`, `:remove-rubini`, and `:add-cristalli` commands are removed.
-- `OPENROUTER_API_KEY` must be present for DM AI. OpenRouter uses the free `openrouter/free` model; requests are serialized per user, show Discord typing status, and retry transient/rate-limit failures up to three times.
+- `OPENROUTER_API_KEY` must be present for DM AI. OpenRouter uses the fixed free `liquid/lfm-2.5-2.6b:free` model; requests are serialized per user, show Discord typing status, and retry transient/rate-limit failures up to three times. The assistant identifies exclusively as the Official PCF™ Server Assistant.
 - `:set-log #channel` records command activity, slash/component interactions, sanctions, DM AI traffic, and uncaught errors for the configured server.
 
 ## Runtime data

@@ -392,7 +392,8 @@ ACTIVE_SESSIONS_FILE = "active_sessions.json"
 active_ai_sessions: set[int] = set()
 ai_user_locks: dict[int, asyncio.Lock] = {}
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "openrouter/free"
+# Keep the DM assistant on one predictable free OpenRouter model.
+OPENROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
@@ -618,7 +619,10 @@ def build_ai_system_instruction() -> str:
     command_reference = "\n".join(command_lines)
 
     return (
-        "Sei PCF™ system, l'assistente IA ufficiale del server Discord PCF™.\n\n"
+        "Sei esclusivamente l'Assistente Ufficiale del server PCF™. "
+        "Non identificarti mai come Groq, Croq, OpenRouter, Liquid, Gemini, "
+        "un altro bot o un altro servizio: per l'utente sei sempre e soltanto "
+        "l'Assistente Ufficiale PCF™.\n\n"
         "LINK E INFO SERVER:\n"
         "- Link Invito Ufficiale Server: "
         "https://discord.gg/pcf-cup-community-1046154910368014417\n"
@@ -3970,7 +3974,9 @@ async def on_message(message: discord.Message):
                 commands_string = build_ai_system_instruction()
 
                 sys_prompt = f"""
-1. You are PCF™ system, the official Discord AI assistant.
+1. You are exclusively the Official PCF™ Server Assistant. Never identify
+   yourself as Groq, Croq, OpenRouter, Liquid, Gemini, another bot, or another
+   service. To the user, you are always and only the Official PCF™ Assistant.
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
