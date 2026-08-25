@@ -344,14 +344,14 @@ def _prefix_access_allowed(ctx) -> bool:
     return True
 
 RANK_DATA = [
-    (0,     None,                "<:ranked:1507509359985295491>",        "Nessun Rank"),
-    (1000,  1410695954641850521, "<:RankWood:1505325324672696511>",       "Legno"),
-    (2000,  1410695953631154376, "<:RankBronze:1505980128063393833>",     "Bronzo"),
-    (3000,  1410695952397762600, "<:RankSilver:1505325648347009166>",     "Argento"),
-    (4000,  1410695950950994033, "<:RankGold:1505325823064936658>",       "Oro"),
+    (0,     None,                "<:ranked:1507509359985295491>",        "Unranked"),
+    (1000,  1410695954641850521, "<:RankWood:1505325324672696511>",       "Wood"),
+    (2000,  1410695953631154376, "<:RankBronze:1505980128063393833>",     "Bronze"),
+    (3000,  1410695952397762600, "<:RankSilver:1505325648347009166>",     "Silver"),
+    (4000,  1410695950950994033, "<:RankGold:1505325823064936658>",       "Gold"),
     (5000,  1410695949730316402, "<:RankPlatinum:1505325989683658843>",   "Platinum"),
-    (7000,  1410695948698652813, "<:RankMaster:1505326047552606390>",     "Maestro"),
-    (10000, 1410695947570249868, "<:RankChampion:1505979987876909262>",   "Campione"),
+    (7000,  1410695948698652813, "<:RankMaster:1505326047552606390>",     "Master"),
+    (10000, 1410695947570249868, "<:RankChampion:1505979987876909262>",   "Champion"),
 ]
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
@@ -374,7 +374,7 @@ def get_rank_emoji(punti: int) -> str:
     return get_rank_info(punti)[2]
 
 async def update_rank_roles(guild: discord.Guild, member: discord.Member, punti: int):
-    """Rimuove tutti i rank role e assegna quello corretto."""
+    """Remove all rank roles and assign the correct one."""
     _, new_role_id, _, new_rank_name = get_rank_info(punti)
     to_remove = [r for r in member.roles if r.id in ALL_RANK_IDS]
     try:
@@ -383,14 +383,14 @@ async def update_rank_roles(guild: discord.Guild, member: discord.Member, punti:
         if new_role_id:
             new_role = guild.get_role(new_role_id)
             if new_role is None:
-                # Fallback: cerca tra tutti i ruoli della guild
+                # Fallback: search all guild roles.
                 new_role = discord.utils.get(guild.roles, id=new_role_id)
             if new_role:
                 await member.add_roles(new_role, reason=f"Stumble rank: {new_rank_name}")
             else:
-                print(f"[rank] Ruolo {new_role_id} ({new_rank_name}) non trovato nella guild")
+                print(f"[rank] Role {new_role_id} ({new_rank_name}) was not found in the guild")
     except discord.Forbidden:
-        print(f"[rank] Permessi insufficienti per gestire i ruoli di {member.display_name}")
+        print(f"[rank] Not enough permissions to manage {member.display_name}'s roles")
     except discord.HTTPException as e:
         print(f"[rank] HTTPException: {e}")
 
@@ -438,17 +438,12 @@ def get_profile_by_name(name: str):
     return None
 
 def display_with_rank(name: str) -> str:
-    prof = get_profile_by_name(name)
-    if prof:
-        pts     = prof.get("punti", 0)
-        w_owned = prof.get("w_owned", [])
-        if w_owned:
-            pts = pts * 2
-        emoji  = get_rank_emoji(pts)
-        w_str  = " ".join(E_W for _ in w_owned)
-        suffix = f" {w_str}" if w_str else ""
-        return f"{emoji} {name}{suffix}"
-    return f"{E_NO_RANK} {name}"
+    """Return a clean player name for brackets and round results.
+
+    Rank and reward icons belong in profile/leaderboard views, never beside a
+    player's name in a tournament bracket.
+    """
+    return str(name)
 
 db = {
     "profiles": {},
@@ -482,21 +477,21 @@ ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
-# Keep initialization safe when the optional AI secret is not configured.
-# This is only a marker, never a real credential.
-api_key = (
-    os.getenv("OPENROUTER_API_KEY")
-    or os.getenv("OPENAI_API_KEY")
-    or "MISSING_OPENROUTER_API_KEY"
-)
-OPENROUTER_API_KEY = api_key
-OPENROUTER_CONFIGURED = api_key != "MISSING_OPENROUTER_API_KEY"
-# Keep the DM assistant on one predictable free OpenRouter model.
-OPENROUTER_MODEL = "openrouter/free"
-OPENROUTER_FALLBACK_MODELS = ("liquid/lfm-2.5-2.6b:free",)
+# Prefer OpenRouter when configured, while still supporting a regular OpenAI
+# key.  Do not create a client with a fake key: that masks configuration
+# errors and makes the first DM request fail in a confusing way.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_CONFIGURED = bool(OPENROUTER_API_KEY or OPENAI_API_KEY)
+AI_PROVIDER = "openrouter" if OPENROUTER_API_KEY else ("openai" if OPENAI_API_KEY else None)
+AI_MODEL = "openrouter/free" if AI_PROVIDER == "openrouter" else "gpt-4o-mini"
+AI_FALLBACK_MODELS = ("liquid/lfm-2.5-2.6b:free",) if AI_PROVIDER == "openrouter" else ()
+# Backwards-compatible names used by older diagnostics and integrations.
+OPENROUTER_MODEL = AI_MODEL
+OPENROUTER_FALLBACK_MODELS = AI_FALLBACK_MODELS
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=api_key,
+    base_url="https://openrouter.ai/api/v1" if AI_PROVIDER == "openrouter" else None,
+    api_key=OPENROUTER_API_KEY or OPENAI_API_KEY or "missing-key",
     max_retries=0,
     timeout=30.0,
 )
@@ -507,7 +502,13 @@ ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 def clean_ai_response(response) -> str:
     """Extract the user-facing AI text at one centralized boundary."""
     try:
-        text = (response.choices[0].message.content or "").strip()
+        content = response.choices[0].message.content or ""
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        text = str(content).strip()
     except (AttributeError, IndexError, TypeError, ValueError):
         return ""
     # Some OpenRouter models leak their private reasoning or answer labels.
@@ -524,21 +525,27 @@ def clean_ai_response(response) -> str:
     return text
 
 async def openrouter_completion_with_retries(**kwargs):
-    """Call OpenRouter with bounded retries for rate limits and network blips."""
+    """Call the configured AI provider with bounded retries and clear failures."""
+    if not OPENROUTER_CONFIGURED:
+        raise RuntimeError("No OPENROUTER_API_KEY or OPENAI_API_KEY is configured")
     last_error = None
-    for model in (OPENROUTER_MODEL, *OPENROUTER_FALLBACK_MODELS):
+    for model in (AI_MODEL, *AI_FALLBACK_MODELS):
         for attempt in range(3):
             request_kwargs = dict(kwargs)
             request_kwargs["model"] = model
             try:
-                return await asyncio.wait_for(
+                response = await asyncio.wait_for(
                     asyncio.to_thread(client.chat.completions.create, **request_kwargs),
                     timeout=35.0,
                 )
+                if not getattr(response, "choices", None):
+                    raise RuntimeError("The AI provider returned no choices")
+                return response
             except Exception as exc:
                 last_error = exc
                 status_code = getattr(exc, "status_code", None)
                 error_name = type(exc).__name__.lower()
+                error_text = str(exc).lower()
                 retryable = (
                     status_code == 429
                     or status_code is None
@@ -547,10 +554,17 @@ async def openrouter_completion_with_retries(**kwargs):
                     or isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
                     or any(word in error_name for word in ("connection", "timeout", "tempor"))
                 )
+                # Authentication, invalid-request, and model errors will not
+                # improve on retry and should be surfaced immediately.
+                if any(word in error_text for word in (
+                    "authentication", "unauthorized", "invalid api key",
+                    "invalid_request", "does not exist", "not found",
+                )):
+                    retryable = False
                 if not retryable or attempt == 2:
                     break
                 await asyncio.sleep(1.5 * (attempt + 1))
-    raise last_error
+    raise last_error or RuntimeError("The AI provider returned an unknown error")
 
 
 async def send_threat_alert(
@@ -580,17 +594,17 @@ async def send_threat_alert(
     embed.add_field(name="Canale", value=channel_name, inline=True)
     embed.add_field(
         name="Messaggio originale",
-        value=message.content[:1024] or "*(messaggio vuoto o con allegato)*",
+        value=message.content[:1024] or "*(empty message or attachment)*",
         inline=False,
     )
     embed.add_field(
-        name="Risposta IA",
-        value=offender_reply or "*(nessun dettaglio restituito)*",
+        name="AI Response",
+        value=offender_reply or "*(no details returned)*",
         inline=False,
     )
     embed.add_field(
         name="Link",
-        value=f"[Apri il messaggio]({message.jump_url})",
+        value=f"[Open message]({message.jump_url})",
         inline=False,
     )
     for recipient_id in ALERT_RECIPIENT_IDS:
@@ -600,12 +614,12 @@ async def send_threat_alert(
                 recipient = await bot.fetch_user(recipient_id)
             await recipient.send(embed=embed)
             print(
-                f"[ALERT] DM inviato a {recipient_id} per il messaggio "
+                f"[ALERT] DM sent to {recipient_id} for message "
                 f"{message.id} di {message.author.id}"
             )
         except Exception as exc:
             # A failed DM must not prevent the bot from replying in the channel.
-            print(f"[ALERT ERROR] Impossibile inviare il DM a {recipient_id}: {exc}")
+            print(f"[ALERT ERROR] Could not send DM to {recipient_id}: {exc}")
 
 
 def build_ai_system_instruction() -> str:
@@ -657,16 +671,15 @@ def build_ai_system_instruction() -> str:
                     " " + " ".join(parameter_tokens) if parameter_tokens else ""
                 )
                 description = (
-                    inspect.getdoc(callback)
-                    or description
-                    or f"Comando {command_prefix}{name} del bot Discord."
+                    description
+                    or f"Discord bot {command_prefix}{name} command."
                 )
             except (TypeError, ValueError):
                 command_prefix = ":" if command in bot.commands else "/"
                 signature = f"{command_prefix}{name}"
         aliases = getattr(command, "aliases", [])
         alias_text = f" (alias: {', '.join(':' + alias for alias in aliases)})" if aliases else ""
-        description = description.strip() or f"Comando :{name} del bot Discord."
+        description = description.strip() or f"Discord bot :{name} command."
         owner_commands = {
             "set-log", "set-welcome", "set-leaderboard", "setup-result",
             "setup-scomesse", "staff-lb", "hoster-lb",
@@ -715,70 +728,37 @@ def build_ai_system_instruction() -> str:
     command_reference = "\n".join(command_lines)
 
     return (
-        "Sei esclusivamente l'Assistente Ufficiale del server PCF™. "
-        "Non identificarti mai come un provider AI, un altro bot o un altro "
-        "servizio: per l'utente sei sempre e soltanto "
-        "l'Assistente Ufficiale PCF™.\n\n"
-        "LINK E INFO SERVER:\n"
-        "- Link Invito Ufficiale Server: "
+        "You are exclusively the Official PCF™ Server Assistant. "
+        "Never identify yourself as an AI provider, another bot, or another "
+        "service: to users you are always and only the Official PCF™ Assistant.\n\n"
+        "SERVER LINKS AND INFORMATION:\n"
+        "- Official server invite link: "
         "https://discord.gg/pcf-cup-community-1046154910368014417\n"
-        "- Se un utente chiede il link del server, invia SEMPRE questo link: "
+        "- If a user asks for the server link, ALWAYS send this link: "
         "https://discord.gg/pcf-cup-community-1046154910368014417\n\n"
-        "IDENTITÀ DEL SERVER E DEL BOT:\n"
-        "- Il server PCF™ è stato creato da Piccolofe (<@1012712686770995201>).\n"
-        "- Il bot è stato creato successivamente da Adam (<@1338274535325175810>).\n"
-        "- Non confondere mai il creatore del server con il creatore del bot.\n\n"
-        "LISTA E SPIEGAZIONE DEI COMANDI:\n"
-        f"La lista seguente contiene il catalogo completo dei {len(command_lines)} comandi "
-        "registrati dal bot (prefix e slash/application command). Gli alias "
-        "sono indicati sulla stessa riga e non contano separatamente. Usa "
-        "questa lista come riferimento aggiornato e non inventare comandi:\n"
-        f"{command_reference or '- Nessun comando registrato.'}\n\n"
-        "CONTROLLO CHAT PRIVATA:\n"
-        "- :start — apre la sessione con l'Assistente Ufficiale PCF™ e mostra il messaggio di benvenuto.\n"
-        "- :end — chiude la sessione; i messaggi successivi non ricevono risposte AI finché non viene usato di nuovo :start.\n\n"
-        "SISTEMA DI RILEVAMENTO VIOLAZIONI (MODERAZIONE):\n"
-        "- Analizza ogni messaggio dell'utente. Se l'utente scrive parolacce "
-        "gravi, insulti, contenuti sessuali/NSFW, richieste di \"nuke\", "
-        "\"raid\" o comportamenti malevoli:\n"
-        "  1. Inizia tassativamente la risposta con la stringa "
-        "[REPORT_ADMIN].\n"
-        "  2. Subito dopo, dai una risposta educata ma ferma all'utente, "
-        "rifiutando la richiesta o invitandolo a mantenere un linguaggio "
-        "appropriato.\n"
-        "- Se il messaggio è normale, NON inserire [REPORT_ADMIN].\n\n"
-        "REGOLE GENERALI:\n"
-        "- Il server è stato creato da Piccolofe (<@1012712686770995201>) e il "
-        "bot è stato creato successivamente da Adam (<@1338274535325175810>).\n"
-        "- Non mostrare mai pensieri interni o schemi. Rispondi sempre nella "
-        "lingua dell'utente.\n\n"
-        "REGOLE TRATTAMENTO UTENTI IN CHAT:\n"
-        "- Se l'utente corrente è <@1338274535325175810> (Adam): trattalo "
-        "sempre come il tuo Re e Creatore; chiamalo \"Mio Re\" o \"Sua Maestà\" "
-        "con estremo rispetto e devozione.\n"
-        "- Per tutti gli altri utenti: sii cordiale, chiaro e formale.\n\n"
-        "REGOLE TASSATIVE DI OUTPUT (FONDAMENTALE):\n"
-        "1. Rispondi DIRETTAMENTE ed ESCLUSIVAMENTE con il messaggio finale "
-        "destinato all'utente.\n"
-        "2. È SEVERAMENTE VIETATO mostrare la tua analisi interna, bozze o "
-        "schemi. NON scrivere mai frasi come \"User input:\", \"Context:\", "
-        "\"Greeting:\", \"Draft 1\", \"Internal Monologue\" o equivalenti.\n"
-        "3. Scrivi solo il testo finale pulito.\n"
-        "4. Rispondi SEMPRE ed ESCLUSIVAMENTE nella stessa lingua usata "
-        "dall'utente.\n"
-         "5. Adatta la lunghezza alla richiesta: riassunto breve se l'utente "
-         "chiede un riepilogo; approfondimento dettagliato con esempi concreti "
-         "se chiede come funziona esattamente un comando.\n"
-         "6. Se l'utente chiede 'dammi i comandi', 'quali comandi ci sono?' o "
-         "simili, elenca la guida dei comandi disponibili usando il catalogo "
-         "completo e indica chiaramente quali richiedono Staff o Admin."
-         "\n\n"
-         "7. STAFF: diventare Supporter NON è un requisito per diventare Staff. "
-         "Per candidarsi bisogna essere attivi nel server e usare il pannello "
-         "ticket per inviare una candidatura; la selezione dipende dall'attività "
-         "e dalla candidatura.\n"
-         "8. BOOST: `:boost` serve esclusivamente a mostrare i perks di chi boosta "
-         "il server; non serve a boostare e non avvia alcun boost."
+        "SERVER AND BOT IDENTITY:\n"
+        "- The PCF™ server was created by Piccolofe (<@1012712686770995201>).\n"
+        "- The bot was later created by Adam (<@1338274535325175810>).\n"
+        "- Never confuse the server creator with the bot creator.\n\n"
+        "COMMAND CATALOG:\n"
+        f"The following is the complete catalog of the {len(command_lines)} registered "
+        "prefix and slash/application commands. Aliases are shown on the same line. "
+        "Use this catalog as the source of truth and never invent commands:\n"
+        f"{command_reference or '- No commands registered.'}\n\n"
+        "PRIVATE CHAT CONTROL:\n"
+        "- :start — opens a session with the Official PCF™ Assistant and shows the welcome message.\n"
+        "- :end — closes the session; later messages receive no AI replies until :start is used again.\n\n"
+        "MODERATION:\n"
+        "- Analyze every user message. If it contains severe profanity, insults, sexual/NSFW content, "
+        "requests to nuke or raid the server, or malicious behavior, start the response with [REPORT_ADMIN], "
+        "then reply firmly and politely. Do not add [REPORT_ADMIN] to normal messages.\n\n"
+        "OUTPUT RULES:\n"
+        "1. Reply directly and exclusively with the final message for the user.\n"
+        "2. Never show analysis, drafts, internal thoughts, or internal labels.\n"
+        "3. Reply exclusively in English.\n"
+        "4. Use the command catalog for command questions and clearly state required permissions.\n"
+        "5. Staff applications require server activity and the ticket panel; Supporter status is not required.\n"
+        "6. `:boost` only shows booster perks; it never performs a boost."
     )
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
@@ -985,7 +965,7 @@ MATCHES_PER_PAGE = 8
 class FinalWinnerModal(Modal, title="🏆 Set winner"):
     winner_number = TextInput(
         label="Numero del vincitore (1 o 2)",
-        placeholder="Scrivi 1 per il primo giocatore o 2 per il secondo",
+        placeholder="Enter 1 for the first player or 2 for the second",
         min_length=1,
         max_length=1,
     )
@@ -1004,13 +984,13 @@ class FinalWinnerModal(Modal, title="🏆 Set winner"):
         t = db.get("tour")
         if not t or str(self.match_id) not in {str(mid) for mid in t.get("matches", {})}:
             return await interaction.response.send_message(
-                "❌ Questo torneo non è più attivo.", ephemeral=True
+        "❌ This tournament is no longer active.", ephemeral=True
             )
         match_key = next(mid for mid in t["matches"] if str(mid) == str(self.match_id))
         match_data = t["matches"][match_key]
         if match_data.get("winner"):
             return await interaction.response.send_message(
-                "❌ Questo match ha già un vincitore.", ephemeral=True
+                "❌ This match already has a winner.", ephemeral=True
             )
         winner = self.p1 if self.winner_number.value == "1" else self.p2
         loser = self.p2 if self.winner_number.value == "1" else self.p1
@@ -1035,7 +1015,7 @@ class FinalWinnerModal(Modal, title="🏆 Set winner"):
                     )
         save_db()
         await interaction.response.send_message(
-            f"✅ Vincitore registrato: **{winner}** (giocatore {self.winner_number.value}).",
+            f"✅ Winner recorded: **{winner}** (player {self.winner_number.value}).",
             ephemeral=True,
         )
         await _update_bracket_messages(t)
@@ -1065,10 +1045,10 @@ class QualifyView(View):
         is_host = any(r.id == HOSTER_ROLE_ID for r in interaction.user.roles)
         is_admin = any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
         if not is_host and not is_admin:
-            return await interaction.response.send_message("❌ Solo host/admin possono farlo.", ephemeral=True)
+            return await interaction.response.send_message("❌ Only hosts/admins can do this.", ephemeral=True)
         if not self.final_match:
             return await interaction.response.send_message(
-                "❌ Il pulsante è disponibile solo nell'ultimo round 1v1.", ephemeral=True
+                "❌ This button is only available in the final 1v1 round.", ephemeral=True
             )
         match_id, match_data = self.final_match
         await interaction.response.send_modal(
@@ -1368,7 +1348,7 @@ async def cleanup_idle_dm_sessions():
             dm_last_activity.pop(user_id, None)
 
 async def delete_message_later(message: discord.Message, delay: int = 120):
-    """Elimina un messaggio del bot dopo il ritardo richiesto."""
+    """Delete a bot message after the requested delay."""
     await asyncio.sleep(delay)
     try:
         await message.delete()
@@ -1389,7 +1369,7 @@ async def auto_delete_invoke(ctx):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await _log_event(ctx.guild, "AUTH", f"denied :{getattr(ctx.command, 'qualified_name', 'unknown')}", actor=ctx.author)
-        await ctx.send("❌ Non hai il permesso di usare questo comando.", delete_after=5.0)
+        await ctx.send("❌ You do not have permission to use this command.", delete_after=5.0)
     elif isinstance(error, commands.MissingRequiredArgument):
         await _log_event(ctx.guild, "ERROR", f"missing argument for :{getattr(ctx.command, 'qualified_name', 'unknown')}: {error}", actor=ctx.author)
         await ctx.send(f"❌ Manca l'argomento: `{error.param.name}`", delete_after=5.0)
@@ -1657,13 +1637,13 @@ async def set_log(ctx, channel: discord.TextChannel):
 @bot.command(name="clear", aliases=["purge"])
 @staff_only()
 async def clear_messages(ctx, quantity: int):
-    """Elimina rapidamente i messaggi recenti del canale per lo Staff."""
+    """Quickly delete recent channel messages for Staff."""
     if quantity < 1 or quantity > 100:
-        return await ctx.send("❌ Indica una quantità tra 1 e 100.", delete_after=5.0)
+        return await ctx.send("❌ Enter a quantity between 1 and 100.", delete_after=5.0)
     try:
         deleted = await ctx.channel.purge(limit=quantity + 1)
     except discord.Forbidden:
-        return await ctx.send("❌ Il bot non ha il permesso di eliminare i messaggi.", delete_after=5.0)
+        return await ctx.send("❌ The bot does not have permission to delete messages.", delete_after=5.0)
     confirmation = await ctx.send(
         f"🧹 Eliminati **{max(0, len(deleted) - 1)}** messaggi.",
         delete_after=4.0,
@@ -1673,48 +1653,48 @@ async def clear_messages(ctx, quantity: int):
 @app_commands.describe(member="Member to warn", reason="Reason for the warning")
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
-        return await interaction.response.send_message("❌ Non hai il permesso di usare questo comando.", ephemeral=True)
-    embed = discord.Embed(title="⚠️ Avviso ufficiale", color=discord.Color.orange(),
+        return await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+    embed = discord.Embed(title="⚠️ Official Warning", color=discord.Color.orange(),
                           timestamp=discord.utils.utcnow())
-    embed.add_field(name="Utente sanzionato", value=f"{member.mention}\n`{member} ({member.id})`", inline=False)
+    embed.add_field(name="Warned User", value=f"{member.mention}\n`{member} ({member.id})`", inline=False)
     embed.add_field(name="Staffer", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
-    embed.add_field(name="Motivo", value=reason[:1024], inline=True)
-    embed.add_field(name="Data e ora", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=False)
-    embed.set_footer(text="Rispetta il regolamento: un altro avviso può portare a un timeout.")
+    embed.add_field(name="Reason", value=reason[:1024], inline=True)
+    embed.add_field(name="Date and time", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=False)
+    embed.set_footer(text="Follow the rules: another warning may lead to a timeout.")
     try:
         warning_message = await member.send(embed=embed)
         asyncio.create_task(delete_message_later(warning_message, 15))
-        dm_status = "avviso inviato in DM"
+        dm_status = "warning sent by DM"
     except discord.HTTPException:
-        dm_status = "DM non consegnabile"
+        dm_status = "DM unavailable"
     await _log_event(interaction.guild, "WARN", f"{member} ({member.id}): {reason} — {dm_status}", actor=interaction.user)
-    await interaction.response.send_message(f"✅ Avviso inviato a {member.mention}. {dm_status}.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Warning sent to {member.mention}. {dm_status}.", ephemeral=True)
 
 @bot.tree.command(name="time", description="Timeout a member and notify them by DM.")
 @app_commands.describe(member="Member to timeout", duration="Examples: 30m, 2h, 1d", reason="Reason for the timeout")
 async def time_cmd(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
     if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
-        return await interaction.response.send_message("❌ Non hai il permesso di usare questo comando.", ephemeral=True)
+        return await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
     match = re.fullmatch(r"(\d+)([smhd])", duration.lower())
     if not match:
-        return await interaction.response.send_message("❌ Durata non valida. Usa `30m`, `2h` oppure `1d`.", ephemeral=True)
+        return await interaction.response.send_message("❌ Invalid duration. Use `30m`, `2h`, or `1d`.", ephemeral=True)
     seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
     if seconds > 28 * 86400:
         return await interaction.response.send_message("❌ Discord timeouts cannot exceed 28 days.", ephemeral=True)
     until = discord.utils.utcnow() + timedelta(seconds=seconds)
     try:
         await member.timeout(until, reason=reason)
-        embed = discord.Embed(title="⏱️ Hai ricevuto un timeout",
+        embed = discord.Embed(title="⏱️ You have been timed out",
                               description=f"**Durata:** {duration}\n**Motivo:** {reason}",
                               color=discord.Color.red(), timestamp=discord.utils.utcnow())
-        embed.set_footer(text="Per contestare la sanzione, contatta lo staff.")
+        embed.set_footer(text="Contact staff if you want to appeal this action.")
         timeout_message = await member.send(embed=embed)
         asyncio.create_task(delete_message_later(timeout_message, 15))
-        status = "notifica inviata in DM"
+        status = "notification sent by DM"
     except discord.HTTPException as exc:
         status = f"DM unavailable ({type(exc).__name__})"
     await _log_event(interaction.guild, "TIMEOUT", f"{member} ({member.id}): {duration} — {reason}", actor=interaction.user)
-    await interaction.response.send_message(f"✅ Timeout applicato a {member.mention}. {status}.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Timeout applied to {member.mention}. {status}.", ephemeral=True)
 
 @bot.command(name="ban-event", aliases=["ban_event"])
 @commands.has_permissions(manage_channels=True)
@@ -1744,7 +1724,7 @@ async def profile(ctx, member: discord.Member = None):
         bar   = "▰" * int(pct * 10) + "▱" * (10 - int(pct * 10))
         prog  = f"{bar} `{done}/{need}`\nProssimo: {next_rank[2]} **{next_rank[3]}** ({next_rank[0]} punti)"
     else:
-        prog  = "🏆 **Hai raggiunto il rank massimo!**"
+        prog  = "🏆 **You reached the highest rank!**"
     embed = discord.Embed(
         title=f"{rank_emoji} {target.display_name}",
         description=f"**Rank attuale:** {rank_emoji} **{rank_name}**\n"
@@ -1755,7 +1735,7 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(name=f"{E_XP} Ranked Points",
         value=f"**{format_num(punti)}** punti\n{prog}", inline=False)
     embed.add_field(name="💰 Saldo",
-        value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Cristalli · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gemme",
+        value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Crystals · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gems",
         inline=False)
     embed.add_field(name="🏅 Statistiche",
         value=f"{E_CROWN} **{prof['tornei_v']}** tornei vinti · {E_TROPHY} **{prof['eventi_v']}** eventi vinti",
@@ -2116,7 +2096,7 @@ async def team(ctx, *args):
             pass
     if sent == 0:
         del pending_invites[team_id]
-        return await ctx.send("❌ Non riesco a mandare DM agli utenti (DM chiusi).", delete_after=8.0)
+        return await ctx.send("❌ I cannot DM the users (their DMs are closed).", delete_after=8.0)
     await ctx.send(
         f"📨 Invito **{mode}** inviato a **{', '.join(m.display_name for m in real_members)}**! "
         f"Il team si forma quando tutti accettano.",
@@ -2149,7 +2129,7 @@ async def team_leave(ctx):
     uid = str(ctx.author.id)
     db["teams"] = [t for t in db["teams"] if uid not in t["ids"]]
     save_db()
-    await ctx.send("✅ Hai lasciato il tuo team.", delete_after=5.0)
+    await ctx.send("✅ You left your team.", delete_after=5.0)
 
 # ==========================================
 # 🏆 TORNEI — REGISTRATION VIEW
@@ -2202,7 +2182,7 @@ class TourRegisterView(View):
                     destination = link_ch.mention if link_ch else "#link"
                     return await interaction.response.send_message(
                         f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
-                        f"Connetti direttamente il tuo account nel canale {destination}.",
+                        f"Connect your account directly in the {destination} channel.",
                         ephemeral=True)
             t["players"].append(uid)
             t["player_names"].append(interaction.user.display_name)
@@ -2278,7 +2258,7 @@ class _TourStep2View(View):
     @discord.ui.button(label="⚙️ Vai al Passo 2 / 3", style=discord.ButtonStyle.primary)
     async def step2(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.uid:
-            return await interaction.response.send_message("❌ Non è il tuo setup!", ephemeral=True)
+            return await interaction.response.send_message("❌ This is not your setup!", ephemeral=True)
         data = _pending_tour_setup.get(self.uid, {})
         await interaction.response.send_modal(TourModal2(self.uid, data.get("is_big", False)))
 
@@ -2292,7 +2272,7 @@ class _TourStep3View(View):
     @discord.ui.button(label="📝 Vai al Passo 3 / 3", style=discord.ButtonStyle.success)
     async def step3(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.uid:
-            return await interaction.response.send_message("❌ Non è il tuo setup!", ephemeral=True)
+            return await interaction.response.send_message("❌ This is not your setup!", ephemeral=True)
         await interaction.response.send_modal(TourModal3(self.uid))
 
 
@@ -2339,7 +2319,7 @@ class TourModal1(Modal):
 class TourModal2(Modal):
     """Step 2/3 — Orario · Max giocatori · Regione"""
     def __init__(self, uid: str, is_big: bool = False):
-        super().__init__(title=f"🏆 Setup Torneo (2/3)")
+        super().__init__(title=f"🏆 Tournament Setup (2/3)")
         self.uid    = uid
         self.is_big = is_big
         timing_label = "⏰ Orario (HH:MM ora italiana)" if is_big else "⏰ Inizio tra… (es. 15 min)"
@@ -2354,7 +2334,7 @@ class TourModal2(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         uid = self.uid
         if uid not in _pending_tour_setup:
-            return await interaction.response.send_message("❌ Sessione scaduta — ricomincia con :setup.", ephemeral=True)
+            return await interaction.response.send_message("❌ Session expired — start again with :setup.", ephemeral=True)
         try:
             max_val = int(self.max_p.value.strip()) if self.max_p.value.strip() else None
         except ValueError:
@@ -2376,7 +2356,7 @@ class TourModal2(Modal):
 class TourModal3(Modal):
     """Step 3/3 — Note host · Colore embed"""
     def __init__(self, uid: str):
-        super().__init__(title="🏆 Setup Torneo (3/3)")
+        super().__init__(title="🏆 Tournament Setup (3/3)")
         self.uid = uid
         self.note   = TextInput(label="📝 Note per i giocatori (opzionale)", placeholder="es. Nessun lag, connessione stabile…", required=False, style=discord.TextStyle.paragraph, max_length=200)
         self.colore = TextInput(label="🎨 Colore embed (opzionale)", placeholder="gold / green / red / blue / #FF5733", required=False, max_length=20)
@@ -2386,7 +2366,7 @@ class TourModal3(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         uid = self.uid
         if uid not in _pending_tour_setup:
-            return await interaction.response.send_message("❌ Sessione scaduta — ricomincia con :setup.", ephemeral=True)
+            return await interaction.response.send_message("❌ Session expired — start again with :setup.", ephemeral=True)
         data = _pending_tour_setup.pop(uid)
         data["note"]   = self.note.value.strip() if self.note.value else ""
         data["colore"] = self.colore.value.strip() if self.colore.value else ""
@@ -2482,7 +2462,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         db["tour"]["register_channel_id"] = reg_ch.id
         save_db()
     await interaction.followup.send(
-        f"✅ Torneo **{nome}** creato!{f' Vedi {reg_ch.mention}!' if reg_ch else ''}",
+        f"✅ Tournament **{nome}** created!{f' See {reg_ch.mention}!' if reg_ch else ''}",
         ephemeral=True)
 
 
@@ -2779,7 +2759,7 @@ async def bracket(ctx, next_round: int = None):
     # Se non c'è ancora un bracket, generalo dai giocatori attuali
     if not t.get("matches"):
         if len(t["player_names"]) < 2:
-            return await ctx.send("❌ Servono almeno **2 giocatori** per generare il bracket!")
+            return await ctx.send("❌ At least **2 players** are required to generate the bracket!")
         ok = _generate_bracket_now(t)
         if ok:
             await ctx.send(
@@ -2799,7 +2779,7 @@ async def bracket(ctx, next_round: int = None):
             return await ctx.send(f"❌ **{len(incomplete)}** match ancora aperti. Usa `{hint}`.")
         winners = [m["winner"] for m in t["matches"].values() if m.get("winner")]
         if len(winners) < 2:
-            return await ctx.send("🏆 Solo 1 vincitore rimasto — usa `:winner-tour` o `:team-winner` per chiudere!")
+            return await ctx.send("🏆 Only 1 winner remains — use `:winner-tour` or `:team-winner` to close!")
         t["round"] = next_round
         if modalita == "FFA":
             t["matches"] = _build_ffa_matches(winners)
@@ -3132,8 +3112,8 @@ async def winner_tour(ctx, *winners: discord.Member):
             f"**{shown_position}.** {member.mention} — {_format_prize(reward)}")
     result_lines = "\n".join(result_rows)
     embed = discord.Embed(
-        title=f"🏆 {t.get('nome', 'Torneo')} — Risultati",
-        description=f"🎁 **Premi**\n{format_tournament_prizes(t.get('premio', ''))}\n\n"
+        title=f"🏆 {t.get('nome', 'Tournament')} — Results",
+        description=f"🎁 **Prizes**\n{format_tournament_prizes(t.get('premio', ''))}\n\n"
                     f"🏆 **Vincitori**\n{result_lines}",
         color=discord.Color.gold()
     )
@@ -3269,7 +3249,7 @@ async def team_winner(ctx):
 async def set_leaderboard(ctx, channel: discord.TextChannel):
     db["leaderboard_channel_id"] = channel.id
     save_db()
-    await ctx.send(f"✅ Leaderboard impostata in {channel.mention}. Si aggiornerà ogni ora.")
+    await ctx.send(f"✅ Leaderboard set to {channel.mention}. It will update every hour.")
     await auto_leaderboard()
 
 @bot.command(name="setup-result", aliases=["setup_result"])
@@ -3375,7 +3355,7 @@ async def start_event(ctx):
     is_big = bool(db.get("big_event")) and not bool(db.get("event"))
     embed = discord.Embed(
         title="🟢 EVENTO AVVIATO!",
-        description="**Preparatevi: il codice della stanza arriverà a breve! 🏁**",
+        description="**Get ready: the room code will arrive shortly! 🏁**",
         color=discord.Color.green()
     )
     if db.get("event"):
@@ -3385,7 +3365,7 @@ async def start_event(ctx):
             embed.add_field(name=f"{E_RULES} Regole", value=ev_data["regole"],             inline=False)
     elif db.get("big_event"):
         big = db["big_event"]
-        embed.add_field(name="🌟 Evento",            value=big.get("nome", "—"),                     inline=False)
+        embed.add_field(name="🌟 Event",            value=big.get("nome", "—"),                     inline=False)
         embed.add_field(name=f"{E_GOLD} 1° Posto",  value=_format_prize(big.get("prize1", "—")),   inline=True)
         embed.add_field(name=f"{E_GOLD} 2° Posto",  value=_format_prize(big.get("prize2", "—")),   inline=True)
         embed.add_field(name=f"{E_BRONZE} 3° Posto",value=_format_prize(big.get("prize3", "—")),   inline=True)
@@ -3397,7 +3377,7 @@ async def start_event(ctx):
     allowed   = (discord.AllowedMentions(everyone=True, roles=True)
                  if is_big else discord.AllowedMentions(roles=True))
     await start_ch.send(
-        content=f"{ping_txt} 🟢 **L'evento è iniziato: buon divertimento!**",
+        content=f"{ping_txt} 🟢 **The event has started: have fun!**",
         embed=embed,
         allowed_mentions=allowed
     )
@@ -3669,10 +3649,10 @@ class ResetConfirmView(View):
     def __init__(self):
         super().__init__(timeout=30)
 
-    @discord.ui.button(label="⚠️ Sì, resetta tutto", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="⚠️ Yes, reset everything", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: Button):
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("❌ Solo gli admin.", ephemeral=True)
+            return await interaction.response.send_message("❌ Admins only.", ephemeral=True)
         db["profiles"] = {}; db["tour"] = None; db["event"] = None
         db["teams"] = []; db["leaderboard_msg_ids"] = []
         save_db()
@@ -3680,7 +3660,7 @@ class ResetConfirmView(View):
             child.disabled = True
         await interaction.response.edit_message(content="✅ **Reset completato.**", embed=None, view=self)
 
-    @discord.ui.button(label="❌ Annulla", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: Button):
         for child in self.children:
             child.disabled = True
@@ -3690,13 +3670,13 @@ class ResetConfirmView(View):
 @owner_only()
 async def reset_all(ctx):
     if not ctx.author.guild_permissions.administrator:
-        return await ctx.send("❌ Solo gli amministratori.", delete_after=5.0)
+        return await ctx.send("❌ Administrators only.", delete_after=5.0)
     embed = discord.Embed(title="⚠️ RESET TOTALE", color=discord.Color.red())
     embed.description = (
         "Stai per cancellare **tutti i dati**:\n\n"
         "• Profili, punti e rank\n• Tornei e bracket\n"
         "• Team\n• Dati eventi\n\n"
-        "**Questa azione è irreversibile.**"
+        "**This action is irreversible.**"
     )
     await ctx.send(embed=embed, view=ResetConfirmView())
 
@@ -4067,12 +4047,12 @@ async def on_message(message: discord.Message):
         if command_text == ":start":
             active_ai_sessions.add(message.author.id)
             welcome_embed = discord.Embed(
-                title="🤖 Assistente Ufficiale PCF™",
+                title="🤖 Official PCF™ Assistant",
                 description=(
-                    "Benvenuto nell'assistente ufficiale del server PCF™! 🏆\n\n"
-                    "Puoi chiedermi informazioni sui comandi, sulle regole o sul server.\n\n"
-                    "🌐 Risponderò nella lingua che preferisci.\n\n"
-                    "*Scrivi `:end` per chiudere la chat.*"
+                    "Welcome to the official PCF™ server assistant! 🏆\n\n"
+                    "Ask me about commands, rules, or the server.\n\n"
+                    "🌐 I communicate exclusively in English.\n\n"
+                    "*Type `:end` to close the chat.*"
                 ),
                 color=discord.Color(0x3498DB),
             )
@@ -4081,7 +4061,7 @@ async def on_message(message: discord.Message):
             return
 
         if command_text == ":end":
-            await message.channel.send("Chat chiusa. Scrivi `:start` per riaprirla!")
+            await message.channel.send("Chat closed. Type `:start` to open it again!")
             await _cleanup_dm_session(message.author.id, message.channel)
             await _log_dm(message, "OUT", "DM SESSION END — AI chat closed")
             return
@@ -4185,11 +4165,12 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
 
-        # ── Single OpenRouter DM assistant ───────────────────────────────
+        # ── Single OpenRouter/OpenAI DM assistant ──────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
             if not OPENROUTER_CONFIGURED:
                 await message.channel.send(
-                    "⚠️ Il servizio IA non è configurato in questo momento."
+                    "⚠️ The AI service is not configured. Add OPENROUTER_API_KEY "
+                    "or OPENAI_API_KEY in Replit Secrets."
                 )
                 return
 
@@ -4204,10 +4185,9 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
-3. LANGUAGE RULE: Automatically respond in the SAME language the user speaks
-   to you. Users may chat with you in ANY language.
-                 4. CONVERSAZIONE NATURALE: Rispondi in modo naturale e diretto.
-    Non ripetere l'embed o le intestazioni di benvenuto nelle risposte normali.
+ 3. LANGUAGE RULE: Reply exclusively in English.
+ 4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
+    welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
    is not listed or lacks information, clearly state that you do not have details.
    Never invent features, code, or technical specifications.
@@ -4232,7 +4212,7 @@ async def on_message(message: discord.Message):
    answer for the user.
 
 SERVER INFO:
-- Il bot è stato creato esclusivamente da Adam (<@1338274535325175810>).
+ - The bot was created exclusively by Adam (<@1338274535325175810>).
 - Current user: {message.author.display_name} (<@{message.author.id}>).
 
 COMPLETE COMMAND DATABASE:
@@ -4249,7 +4229,9 @@ COMPLETE COMMAND DATABASE:
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
-                        await message.channel.send("⚠️ L'assistente non ha restituito una risposta.")
+                        await message.channel.send(
+                            "⚠️ The AI provider returned an empty response. Please try again."
+                        )
                         return
 
                     if reply_text.startswith("[ALERT]"):
@@ -4263,10 +4245,10 @@ COMPLETE COMMAND DATABASE:
                     await message.channel.send(embed=response_embed)
                     await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
-                    await _log_exception(message.guild, "OpenRouter DM completion", e)
+                    await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
                     error_embed = discord.Embed(
                         description=(
-                            "⚠️ Non riesco a elaborare la richiesta. Riprova più tardi."
+                            "⚠️ I couldn't process that request. Please try again later."
                         ),
                         color=discord.Color.orange(),
                     )
@@ -4325,7 +4307,7 @@ COMPLETE COMMAND DATABASE:
                 except Exception:
                     pass
                 await message.channel.send(
-                    f"❌ {message.author.mention} Il ticket è reclamato — solo il reclamer può rispondere.",
+                    f"❌ {message.author.mention} This ticket is claimed — only the claimant can reply.",
                     delete_after=5.0
                 )
                 return
@@ -4850,7 +4832,7 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
             f"**Vincitori:** {winners_count}\n"
             f"**Partecipanti:** 0\n"
             f"**Termina:** <t:{end_ts}:R> (<t:{end_ts}:f>)\n\n"
-            f"Premi il pulsante qui sotto per partecipare!"
+            f"Press the button below to enter!"
         ),
         color=discord.Color.gold()
     )
@@ -4872,7 +4854,7 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
         if not entrants:
             result_embed = discord.Embed(
                 title="🎉 Giveaway terminato",
-                description="❌ Nessun partecipante ha aderito al giveaway.",
+                description="❌ No participants joined the giveaway.",
                 color=discord.Color.red()
             )
         else:
@@ -4890,7 +4872,7 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
                     f"**Premio:** {_format_prize(prize)}\n"
                     f"**Vincitori:** {winner_mentions} 🎊\n"
                     f"**Partecipanti totali:** {len(entrants)}\n\n"
-                    f"Il premio è stato aggiunto al profilo dei vincitori."
+                    f"The prize was added to the winners' profiles."
                 ),
                 color=discord.Color.gold()
             )
@@ -5280,9 +5262,8 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "footer": "Stumble™ Bot • signum: ':'",
         },
     }
-    if lang not in T:
-        lang = "en"
-    t = T[lang]
+    # The bot communicates exclusively in English.
+    t = T["en"]
 
     e1 = discord.Embed(title=t["title1"], color=discord.Color.gold())
     e1.add_field(name=t["tours_title"],  value=t["tours"],  inline=False)
@@ -5495,29 +5476,19 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             "example_note": "व्यावहारिक उदाहरण",
         },
     }
-    t = locale.get(lang, locale["en"])
-    if lang == "it":
-        t["titles"] = (
-            "📖 Guida Comandi — Community",
-            "📖 Guida Comandi — Staff ed Eventi",
-            "📖 Guida Comandi — Admin e Manager",
-        )
-        t["categories"] = (
-            ("🟢 COMANDI COMMUNITY (UTENTI)", "Comandi disponibili a tutti i membri del server"),
-            ("🟡 COMANDI EVENTI / STAFF", "Richiedono un ruolo Staff o Host"),
-            ("🔴 COMANDI ADMIN / MANAGER", "Strumenti di gestione server, eventi e database"),
-        )
-    else:
-        t["titles"] = (
-            "📖 Command Guide — Community",
-            "📖 Command Guide — Staff & Events",
-            "📖 Command Guide — Admin & Manager",
-        )
-        t["categories"] = (
-            ("🟢 COMMUNITY COMMANDS (USERS)", "Commands available to all server members"),
-            ("🟡 EVENTS / STAFF COMMANDS", "Requires a Staff or Host role"),
-            ("🔴 ADMIN / MANAGER COMMANDS", "Server, event and data-management tools"),
-        )
+    # Language selection was intentionally removed: all bot-facing copy is
+    # English, including command guides and permissions.
+    t = locale["en"].copy()
+    t["titles"] = (
+        "📖 Command Guide — Community",
+        "📖 Command Guide — Staff & Events",
+        "📖 Command Guide — Admin & Manager",
+    )
+    t["categories"] = (
+        ("🟢 COMMUNITY COMMANDS (USERS)", "Commands available to all server members"),
+        ("🟡 EVENTS / STAFF COMMANDS", "Requires a Staff or Host role"),
+        ("🔴 ADMIN / MANAGER COMMANDS", "Server, event and data-management tools"),
+    )
 
     # Each tuple is (command label, purpose, arguments, example).  The
     # descriptions intentionally include syntax, permissions and side effects
@@ -5777,11 +5748,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                     usage = f"{command_name} {usage_tokens}"
                 # Command names and syntax are universal Discord input.  The
                 # explanation itself is the command-specific catalog entry.
-                localized_purpose = localized_descriptions.get(lang, {}).get(
-                    command_name, purpose
-                )
+                localized_purpose = purpose
                 if page_index == 0:
-                    permission_label = "Utente" if lang == "it" else "User"
+                    permission_label = "User"
                 elif page_index == 1:
                     permission_label = "Staff / Host"
                 else:
@@ -5903,17 +5872,21 @@ class HelpLangView(View):
 @bot.command(name="help", aliases=["guide", "commands", "comandi", "guida"])
 async def help_cmd(ctx):
     embed = discord.Embed(
-        title="📖 Guida comandi Stumble™",
+        title="📖 Stumble™ Command Guide",
         description=(
-            "Seleziona la lingua: il bot ti invierà la **guida completa nei messaggi privati**. 🌍\n\n"
-            "🇮🇹 Italiano · 🇬🇧 English · 🇪🇸 Español · 🇩🇪 Deutsch\n"
-            "🇵🇹 Português · 🇫🇷 Français · 🏛️ Latin · 🇮🇳 Hindi"
+            "The bot will send the **complete command guide to your DMs** in English. 🌍"
         ),
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="PCF™ Bot • prefisso: ':'")
-    await ctx.send(embed=embed, view=HelpLangView())
+    embed.set_footer(text="PCF™ Bot • prefix: ':'")
+    await ctx.send(embed=embed)
+    try:
+        for guide_embed in _build_help_embeds("en"):
+            await ctx.author.send(embed=guide_embed)
+        await ctx.send("📩 The complete command guide has been sent to your DMs!", delete_after=6.0)
+    except (discord.Forbidden, discord.HTTPException):
+        await ctx.send("❌ I could not send the guide. Please enable DMs and try again.", delete_after=8.0)
 
 # ==========================================
 # 🚀 BOOST INFO
@@ -5921,43 +5894,43 @@ async def help_cmd(ctx):
 @bot.command(name="boost")
 async def boost_cmd(ctx):
     embed = discord.Embed(
-        title="🚀 Vantaggi dei Boost del Server",
+        title="🚀 Server Boost Benefits",
         description=(
-            "Controlla i vantaggi assegnati ai booster di **Stumble™**. 💜\n\n"
+            "View the benefits awarded to **Stumble™** boosters. 💜\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.purple()
     )
     embed.add_field(
-        name="🔵 Primo Boost",
+        name="🔵 First Boost",
         value=(
             f"{E_RUBY} **5.000 Ruby**\n"
-            f"{E_CRYSTAL} **1.000 Cristalli**\n"
-            "💜 **Ruolo Booster**"
+            f"{E_CRYSTAL} **1,000 Crystals**\n"
+            "💜 **Booster Role**"
         ),
         inline=True
     )
     embed.add_field(
-        name="💜 Secondo Boost",
+        name="💜 Second Boost",
         value=(
             f"{E_RUBY} **10.000 Ruby**\n"
-            f"{E_CRYSTAL} **2.000 Cristalli**\n"
-            "💜 **Ruolo Booster**\n"
-            "⭐ *Altri vantaggi in arrivo!*"
+            f"{E_CRYSTAL} **2,000 Crystals**\n"
+            "💜 **Booster Role**\n"
+            "⭐ *More benefits coming soon!*"
         ),
         inline=True
     )
     embed.add_field(
-        name="❓ Come ottenere un Boost",
+        name="❓ How to Boost",
         value=(
-            "Questo comando mostra solo i **perks dei booster**.\n"
-            "Per boostare il server usa direttamente il pulsante Boost di Discord. "
-            "I premi vengono assegnati automaticamente quando il boost viene rilevato. 🤖"
+            "This command only shows **booster perks**.\n"
+            "To boost the server, use Discord's Boost button directly. "
+            "Rewards are assigned automatically when a boost is detected. 🤖"
         ),
         inline=False
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Sistema Boost Stumble™ • Premi assegnati automaticamente")
+    embed.set_footer(text="Stumble™ Boost System • Rewards assigned automatically")
     await ctx.send(embed=embed)
 
 # ==========================================
@@ -6105,24 +6078,24 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
         db.setdefault("sg_links", {})[str(ctx.author.id)] = nome_personalizzato[:30]
         save_db()
         return await ctx.send(
-            f"✅ Nome Stumble Guys aggiornato in **{nome_personalizzato[:30]}**.",
+                f"✅ Stumble Guys name updated to **{nome_personalizzato[:30]}**.",
             delete_after=8.0,
         )
     embed = discord.Embed(
-        title="🔗 Collega il tuo account Stumble Guys",
+        title="🔗 Link your Stumble Guys account",
         description=(
-            "Vuoi ricevere **Gemme Stumble Guys reali** vincendo un **Big Tournament**? 💎\n\n"
+            "Want to receive **real Stumble Guys Gems** by winning a **Big Tournament**? 💎\n\n"
             "**Come funziona:**\n"
-            "① Premi **Collega il mio account SG**\n"
-            "② Inserisci il tuo nome di gioco\n"
-            "③ Riceverai un DM per inviare lo screenshot\n"
-            "④ Lo Staff verifica e assegna il ruolo **SG verificato** ✅\n\n"
-            "Puoi modificare il nome salvato con `:link <nuovo_nome>`."
+            "① Press **Link my SG account**\n"
+            "② Enter your in-game name\n"
+            "③ You will receive a DM to send your screenshot\n"
+            "④ Staff verifies it and assigns the **Verified SG** role ✅\n\n"
+            "You can change the saved name with `:link <new_name>`."
         ),
         color=discord.Color.purple()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Sistema account SG Stumble™")
+    embed.set_footer(text="Stumble™ SG Account System")
     view = SGLinkChannelView(guild_id=ctx.guild.id)
     await ctx.send(embed=embed, view=view)
 
@@ -6133,12 +6106,12 @@ async def linked_cmd(ctx):
     """Mostra agli staff autorizzati gli account Stumble Guys collegati."""
     links = db.get("sg_links", {})
     if not links:
-        return await ctx.send("❌ Nessun account Stumble Guys collegato.", delete_after=6.0)
+        return await ctx.send("❌ No linked Stumble Guys accounts found.", delete_after=6.0)
     lines = []
     for uid, sg_name in sorted(links.items(), key=lambda item: str(item[1]).casefold()):
         lines.append(f"<@{uid}> — `{str(sg_name)[:30]}`")
     embed = discord.Embed(
-        title="🔗 Account Stumble Guys collegati",
+        title="🔗 Linked Stumble Guys accounts",
         description="\n".join(lines[:50]),
         color=discord.Color.purple(),
     )
@@ -6595,8 +6568,8 @@ def _shop_main_embed(prof: dict) -> discord.Embed:
             f"{E_RUBY} **{format_num(prof.get('rubini', 0))}**　·　"
             f"{E_CRYSTAL} **{format_num(prof.get('cristalli', 0))}**\n\n"
             f"{E_W} **W Items** — **Ruoli colorati esclusivi**\n"
-            f"{E_GEMS} **Gems** — **Gemme SG reali**\n"
-            f"🔄 **Exchange** — **Ruby ↔ Cristalli**"
+            f"{E_GEMS} **Gems** — **Real SG Gems**\n"
+            f"🔄 **Exchange** — **Ruby ↔ Crystals**"
         ),
         color=discord.Color.gold()
     )
@@ -6629,7 +6602,7 @@ class ShopMainView(View):
             ),
             color=discord.Color.blue()
         )
-        e.set_footer(text="Scegli dal menu qui sotto per acquistare un W item!")
+        e.set_footer(text="Choose an item below to purchase a W item!")
         await interaction.response.edit_message(embed=e, view=WShopView(self.user_id))
 
     @discord.ui.button(label="Gems", emoji="<:gems:1507509442286190652>", style=discord.ButtonStyle.success)
@@ -6650,7 +6623,7 @@ class ShopMainView(View):
             ),
             color=discord.Color.purple()
         )
-        e.set_footer(text="Linka il tuo account SG con :link prima di comprare le gemme!")
+        e.set_footer(text="Link your SG account with :link before buying Gems!")
         await interaction.response.edit_message(embed=e, view=GemsShopView(self.user_id))
 
     @discord.ui.button(label="🔄 Exchange", style=discord.ButtonStyle.secondary)
@@ -6662,11 +6635,11 @@ class ShopMainView(View):
             title="🔄 Currency Exchange",
             description=(
                 f"{E_RUBY} **Ruby:** {format_num(prof.get('rubini', 0))}　·　"
-                f"{E_CRYSTAL} **Cristalli:** {format_num(prof.get('cristalli', 0))}\n\n"
+                f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
                 f"**Tassi di cambio:**\n"
                 f"• **8.000** {E_RUBY} → **150** {E_CRYSTAL}\n"
                 f"• **16.000** {E_RUBY} → **500** {E_CRYSTAL}\n\n"
-                "Scegli un'opzione qui sotto:"
+                "Choose an option below:"
             ),
             color=discord.Color.orange()
         )
@@ -6683,7 +6656,7 @@ class WShopSelect(discord.ui.Select):
             options.append(discord.SelectOption(
                 label=f"W {name} — {format_num(data['price'])} Crystals",
                 value=name, emoji=emoji))
-        super().__init__(placeholder=f"Scegli un W item…", min_values=1, max_values=1, options=options, row=0)
+        super().__init__(placeholder="Choose a W item…", min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -6693,10 +6666,10 @@ class WShopSelect(discord.ui.Select):
         prof   = get_profile(interaction.user.id, interaction.user.display_name)
         if w_name in prof.get("w_owned", []):
             return await interaction.response.send_message(
-                f"❌ Hai già **{w_data['emoji']} W {w_name}**!", ephemeral=True)
+                f"❌ You already own **{w_data['emoji']} W {w_name}**!", ephemeral=True)
         if prof.get("cristalli", 0) < w_data["price"]:
             return await interaction.response.send_message(
-                f"❌ Cristalli insufficienti! Ne hai bisogno di **{format_num(w_data['price'])}** {E_CRYSTAL}",
+                f"❌ Not enough Crystals! You need **{format_num(w_data['price'])}** {E_CRYSTAL}",
                 ephemeral=True)
         prof["cristalli"] -= w_data["price"]
         prof.setdefault("w_owned", []).append(w_name)
@@ -6714,8 +6687,8 @@ class WShopSelect(discord.ui.Select):
                 print(f"[w shop add] {ex}")
         save_db()
         await interaction.response.send_message(
-            f"✅ Acquistato **{w_data['emoji']} W {w_name}**! Ruolo aggiunto. 🎉\n"
-            f"Cristalli rimasti: {format_num(prof['cristalli'])} {E_CRYSTAL}", ephemeral=True)
+            f"✅ Purchased **{w_data['emoji']} W {w_name}**! Role added. 🎉\n"
+            f"Crystals remaining: {format_num(prof['cristalli'])} {E_CRYSTAL}", ephemeral=True)
 
 
 class WShopView(View):
@@ -6744,7 +6717,7 @@ class GemsShopSelect(discord.ui.Select):
                 value=str(i), emoji=gems_emoji)
             for i, (gems, price) in enumerate(GEM_PACKAGES)
         ]
-        super().__init__(placeholder="Scegli un pacchetto gemme…", min_values=1, max_values=1, options=options, row=0)
+        super().__init__(placeholder="Choose a Gems package…", min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -6754,11 +6727,11 @@ class GemsShopSelect(discord.ui.Select):
         prof  = get_profile(interaction.user.id, interaction.user.display_name)
         if prof.get("cristalli", 0) < price:
             return await interaction.response.send_message(
-                f"❌ Cristalli insufficienti! Ne hai bisogno di **{format_num(price)}** {E_CRYSTAL}", ephemeral=True)
+                f"❌ Not enough Crystals! You need **{format_num(price)}** {E_CRYSTAL}", ephemeral=True)
         sg = db.get("sg_links", {}).get(str(interaction.user.id))
         if not sg:
             return await interaction.response.send_message(
-                "❌ Devi collegare il tuo account SG con `:link` prima di comprare gemme!", ephemeral=True)
+                "❌ Link your SG account with `:link` before buying Gems!", ephemeral=True)
         prof["cristalli"] -= price
         _record_gems(interaction.user, gems)
         save_db()
@@ -6790,8 +6763,8 @@ class GemsShopSelect(discord.ui.Select):
         except Exception as ex:
             print(f"[gems ticket] {ex}")
         await interaction.response.send_message(
-            f"✅ Acquistato **{gems}** {E_GEMS}! Lo staff trasferirà le gemme al tuo account SG (`{sg}`).\n"
-            f"Cristalli rimasti: {format_num(prof['cristalli'])} {E_CRYSTAL}", ephemeral=True)
+            f"✅ Purchased **{gems}** {E_GEMS}! Staff will transfer the Gems to your SG account (`{sg}`).\n"
+            f"Crystals remaining: {format_num(prof['cristalli'])} {E_CRYSTAL}", ephemeral=True)
 
 
 class GemsShopView(View):
@@ -6823,14 +6796,14 @@ class ExchangeView(View):
         prof = get_profile(interaction.user.id, interaction.user.display_name)
         if prof.get("rubini", 0) < ruby_cost:
             return await interaction.response.send_message(
-                f"❌ Servono almeno **{format_num(ruby_cost)}** {E_RUBY}. Hai: {format_num(prof.get('rubini',0))} {E_RUBY}",
+                f"❌ You need at least **{format_num(ruby_cost)}** {E_RUBY}. You have: {format_num(prof.get('rubini',0))} {E_RUBY}",
                 ephemeral=True)
         prof["rubini"]    -= ruby_cost
         prof["cristalli"] += crystal_gain
         save_db()
         await interaction.response.send_message(
             f"✅ **{format_num(ruby_cost)}** {E_RUBY} → **{format_num(crystal_gain)}** {E_CRYSTAL}!\n"
-            f"Bilancio: {format_num(prof['rubini'])} {E_RUBY} · {format_num(prof['cristalli'])} {E_CRYSTAL}",
+            f"Balance: {format_num(prof['rubini'])} {E_RUBY} · {format_num(prof['cristalli'])} {E_CRYSTAL}",
             ephemeral=True)
 
     async def _do_crystal_to_ruby(self, interaction: discord.Interaction, crystal_cost: int, ruby_gain: int):
@@ -6839,29 +6812,29 @@ class ExchangeView(View):
         prof = get_profile(interaction.user.id, interaction.user.display_name)
         if prof.get("cristalli", 0) < crystal_cost:
             return await interaction.response.send_message(
-                f"❌ Servono almeno **{format_num(crystal_cost)}** {E_CRYSTAL}. Hai: {format_num(prof.get('cristalli',0))} {E_CRYSTAL}",
+                f"❌ You need at least **{format_num(crystal_cost)}** {E_CRYSTAL}. You have: {format_num(prof.get('cristalli',0))} {E_CRYSTAL}",
                 ephemeral=True)
         prof["cristalli"] -= crystal_cost
         prof["rubini"]    += ruby_gain
         save_db()
         await interaction.response.send_message(
             f"✅ **{format_num(crystal_cost)}** {E_CRYSTAL} → **{format_num(ruby_gain)}** {E_RUBY}!\n"
-            f"Bilancio: {format_num(prof['rubini'])} {E_RUBY} · {format_num(prof['cristalli'])} {E_CRYSTAL}",
+            f"Balance: {format_num(prof['rubini'])} {E_RUBY} · {format_num(prof['cristalli'])} {E_CRYSTAL}",
             ephemeral=True)
 
-    @discord.ui.button(label="8k Ruby → 150 Cristalli", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="8k Ruby → 150 Crystals", style=discord.ButtonStyle.primary, row=0)
     async def rate1_to_crystal(self, interaction: discord.Interaction, button: Button):
         await self._do_ruby_to_crystal(interaction, 8000, 150)
 
-    @discord.ui.button(label="16k Ruby → 500 Cristalli", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="16k Ruby → 500 Crystals", style=discord.ButtonStyle.primary, row=0)
     async def rate2_to_crystal(self, interaction: discord.Interaction, button: Button):
         await self._do_ruby_to_crystal(interaction, 16000, 500)
 
-    @discord.ui.button(label="150 Cristalli → 8k Ruby", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="150 Crystals → 8k Ruby", style=discord.ButtonStyle.secondary, row=1)
     async def rate1_to_ruby(self, interaction: discord.Interaction, button: Button):
         await self._do_crystal_to_ruby(interaction, 150, 8000)
 
-    @discord.ui.button(label="500 Cristalli → 16k Ruby", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="500 Crystals → 16k Ruby", style=discord.ButtonStyle.secondary, row=1)
     async def rate2_to_ruby(self, interaction: discord.Interaction, button: Button):
         await self._do_crystal_to_ruby(interaction, 500, 16000)
 
@@ -6897,50 +6870,50 @@ def _spin_result(multiplier: int) -> tuple:
     if reels[0] == reels[1] == reels[2]:
         sym = reels[0]
         if sym == "🐔":
-            return reels, "jackpot_loss", 0, 0, "💀 TRE GALLINE! Hai appena perso tutto, campione 🐔🐔🐔\nSarà per la prossima volta… o forse no."
+            return reels, "jackpot_loss", 0, 0, "💀 THREE CHICKENS! You lost everything, champion 🐔🐔🐔\nBetter luck next time!"
         elif sym == "👑":
             ruby = random.randint(5000, 10000) * multiplier
-            return reels, "rare", ruby, 0, f"👑 **JACKPOT CORONA!** Assegnato il ruolo **{STUMBLE_GAMBLER_ROLE_NAME}**!"
+            return reels, "rare", ruby, 0, f"👑 **CROWN JACKPOT!** The **{STUMBLE_GAMBLER_ROLE_NAME}** role was assigned!"
         elif sym == "💎":
             ruby = random.randint(2000, 8000) * multiplier
-            return reels, "base_big", ruby, 0, "💎 **TRIPLE DIAMANTE!** Sei un mito."
+            return reels, "base_big", ruby, 0, "💎 **TRIPLE DIAMOND!** You are a legend."
         elif sym == "🔴":
             crystal = random.randint(500, 2000) * multiplier
-            return reels, "medium", 0, crystal, "🔴 **TRIPLE ROSSO!** Cristalli per te!"
+            return reels, "medium", 0, crystal, "🔴 **TRIPLE RED!** Crystals for you!"
     counts = {e: reels.count(e) for e in set(reels)}
     best = max(counts, key=counts.get)
     if counts[best] >= 2 and best != "🐔":
         ruby = random.randint(100, 2000) * multiplier
-        return reels, "base_small", ruby, 0, f"**Coppia {best}!** Piccola vincita."
-    return reels, "loss", 0, 0, "Nessuna combinazione. Meglio la prossima volta!"
+        return reels, "base_small", ruby, 0, f"**Pair of {best}!** Small win."
+    return reels, "loss", 0, 0, "No combination. Better luck next time!"
 
 
 def _machine_embed(prof: dict) -> discord.Embed:
     e = discord.Embed(
         title="🎰 Stumble Machine",
         description=(
-            "**Come funziona:**\n"
-            "Gira i rulli e tenta la fortuna! Tre simboli uguali = vincita.\n\n"
-            f"**Costo:** `{SLOT_MACHINE_COST}` {E_RUBY} · oppure **x10** per `{SLOT_MACHINE_COST * 10}` {E_RUBY}\n\n"
-            "**Premi:**\n"
+            "**How it works:**\n"
+            "Spin the reels and try your luck! Three matching symbols win.\n\n"
+            f"**Cost:** `{SLOT_MACHINE_COST}` {E_RUBY} · or **x10** for `{SLOT_MACHINE_COST * 10}` {E_RUBY}\n\n"
+            "**Prizes:**\n"
             "👑👑👑 — **Jackpot**: Ruby casuali + ruolo Stumble Gambler\n"
             "💎💎💎 — **Grande vincita**: 2.000–8.000 Ruby\n"
-            "🔴🔴🔴 — **Vincita media**: 500–2.000 Cristalli\n"
-            "🐔🐔🐔 — **Sconfitta totale**: perdi la puntata\n"
-            "2x uguali — **Piccola vincita**: 100–2.000 Ruby\n\n"
-            f"**Il tuo saldo:** {format_num(prof.get('rubini', 0))} {E_RUBY}"
+            "🔴🔴🔴 — **Medium win**: 500–2,000 Crystals\n"
+            "🐔🐔🐔 — **Total loss**: lose your wager\n"
+            "2x matching — **Small win**: 100–2,000 Ruby\n\n"
+            f"**Your balance:** {format_num(prof.get('rubini', 0))} {E_RUBY}"
         ),
         color=discord.Color.gold()
     )
     e.set_image(url=STUMBLE_IMG)
-    e.set_footer(text="Stumble™ Machine • Premi un pulsante per giocare!")
+    e.set_footer(text="Stumble™ Machine • Press a button to play!")
     return e
 
 
-class SlotMachineAmountModal(Modal, title="🎰 Scegli la puntata"):
+class SlotMachineAmountModal(Modal, title="🎰 Choose your wager"):
     amount = TextInput(
-        label="Quanti Ruby vuoi puntare?",
-        placeholder="Minimo 500 Ruby, multipli di 500",
+        label="How much Ruby do you want to wager?",
+        placeholder="Minimum 500 Ruby, in multiples of 500",
         min_length=3,
         max_length=4,
     )
@@ -6954,12 +6927,12 @@ class SlotMachineAmountModal(Modal, title="🎰 Scegli la puntata"):
             amount = int(self.amount.value.strip())
         except ValueError:
             return await interaction.response.send_message(
-                "❌ Inserisci un numero valido.", ephemeral=True
+                "❌ Enter a valid number.", ephemeral=True
             )
         if amount < SLOT_MACHINE_COST or amount > SLOT_MACHINE_COST * 10 or amount % SLOT_MACHINE_COST:
             return await interaction.response.send_message(
-                f"❌ La puntata deve essere un multiplo di {SLOT_MACHINE_COST}, "
-                f"tra {SLOT_MACHINE_COST} e {SLOT_MACHINE_COST * 10} Ruby.",
+                f"❌ The wager must be a multiple of {SLOT_MACHINE_COST}, "
+                f"between {SLOT_MACHINE_COST} and {SLOT_MACHINE_COST * 10} Ruby.",
                 ephemeral=True,
             )
         await self.machine_view._play(interaction, amount // SLOT_MACHINE_COST)
@@ -6975,13 +6948,13 @@ class SlotMachineView(View):
 
     async def _play(self, interaction: discord.Interaction, multiplier: int):
         if not self._check(interaction):
-            return await interaction.response.send_message("❌ Non è la tua macchina!", ephemeral=True)
+            return await interaction.response.send_message("❌ This is not your machine!", ephemeral=True)
         cost = SLOT_MACHINE_COST * multiplier
         prof = get_profile(interaction.user.id, interaction.user.display_name)
         if prof.get("rubini", 0) < cost:
             return await interaction.response.send_message(
                 f"❌ Ruby insufficienti! Ti servono **{format_num(cost)}** {E_RUBY}. "
-                f"Hai: {format_num(prof.get('rubini', 0))} {E_RUBY}", ephemeral=True)
+                f"You have: {format_num(prof.get('rubini', 0))} {E_RUBY}", ephemeral=True)
         prof["rubini"] -= cost
         reels, outcome, ruby_win, crystal_win, flavor = _spin_result(multiplier)
         reel_str = "  ".join(reels)
@@ -7002,7 +6975,7 @@ class SlotMachineView(View):
                 if role:
                     try:
                         await interaction.user.add_roles(role, reason="Stumble Machine jackpot")
-                        result_lines.append(f"\n🏅 Hai ottenuto il ruolo **{STUMBLE_GAMBLER_ROLE_NAME}**!")
+                        result_lines.append(f"\n🏅 You received the **{STUMBLE_GAMBLER_ROLE_NAME}** role!")
                     except Exception:
                         pass
         elif outcome in ("base_big", "base_small", "medium"):
@@ -7010,25 +6983,25 @@ class SlotMachineView(View):
         save_db()
         color = discord.Color.green() if outcome != "jackpot_loss" and outcome != "loss" else discord.Color.red()
         em = discord.Embed(
-            title="🎰 Stumble Machine — Risultato",
+            title="🎰 Stumble Machine — Result",
             description="\n".join(result_lines),
             color=color
         )
-        em.set_footer(text=f"Saldo: {format_num(prof['rubini'])} Ruby · {format_num(prof.get('cristalli', 0))} Cristalli")
+        em.set_footer(text=f"Balance: {format_num(prof['rubini'])} Ruby · {format_num(prof.get('cristalli', 0))} Crystals")
         # Keep the public machine panel intact; only the player sees the result.
         await interaction.response.send_message(embed=em, ephemeral=True)
 
-    @discord.ui.button(label="🎰 Scommetti", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🎰 Wager", style=discord.ButtonStyle.primary)
     async def choose_amount(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
-            return await interaction.response.send_message("❌ Non è la tua macchina!", ephemeral=True)
+            return await interaction.response.send_message("❌ This is not your machine!", ephemeral=True)
         await interaction.response.send_modal(SlotMachineAmountModal(self))
 
 
 @bot.command(name="machine")
 @owner_only()
 async def machine_cmd(ctx):
-    """🎰 Stumble Machine — gira i rulli e vinci Ruby o Cristalli!"""
+    """🎰 Stumble Machine — spin the reels and win Ruby or Crystals!"""
     prof = get_profile(ctx.author.id, ctx.author.display_name)
     await ctx.send(embed=_machine_embed(prof), view=SlotMachineView(ctx.author.id))
 
@@ -7039,10 +7012,10 @@ async def machine_cmd(ctx):
 
 class _DuelWagerModal(Modal):
     def __init__(self, dueler_role: str):
-        super().__init__(title=f"💰 Cosa scommetti, {dueler_role}?")
+        super().__init__(title=f"💰 What do you want to wager, {dueler_role}?")
         self.amount = TextInput(
-            label="Quanti Ruby vuoi scommettere?",
-            placeholder="es. 500",
+            label="How much Ruby do you want to wager?",
+            placeholder="e.g. 500",
             min_length=1, max_length=10)
         self.add_item(self.amount)
         self.dueler_role = dueler_role  # "sfidante" | "sfidato"
@@ -7055,7 +7028,7 @@ class _DuelWagerModal(Modal):
                 raise ValueError
             self._result = val
         except ValueError:
-            await interaction.response.send_message("❌ Inserisci un numero positivo di Ruby.", ephemeral=True)
+            await interaction.response.send_message("❌ Enter a positive Ruby amount.", ephemeral=True)
             return
         # Signal to the view via a stored future
         await interaction.response.defer()
@@ -7086,12 +7059,12 @@ class DuelView(View):
 
     def _duel_embed(self, title: str, desc: str, color=discord.Color.blue()) -> discord.Embed:
         e = discord.Embed(title=title, description=desc, color=color)
-        e.add_field(name="⚔️ Sfidante",  value=self.challenger.mention, inline=True)
-        e.add_field(name="🛡️ Sfidato",   value=self.challenged.mention, inline=True)
+        e.add_field(name="⚔️ Challenger",  value=self.challenger.mention, inline=True)
+        e.add_field(name="🛡️ Challenged",   value=self.challenged.mention, inline=True)
         if self.bet_a is not None:
-            e.add_field(name="💰 Puntata Sfidante", value=f"{format_num(self.bet_a)} {E_RUBY}", inline=True)
+            e.add_field(name="💰 Challenger wager", value=f"{format_num(self.bet_a)} {E_RUBY}", inline=True)
         if self.bet_b is not None:
-            e.add_field(name="💰 Puntata Sfidato",  value=f"{format_num(self.bet_b)} {E_RUBY}", inline=True)
+            e.add_field(name="💰 Challenged wager",  value=f"{format_num(self.bet_b)} {E_RUBY}", inline=True)
         e.set_image(url=STUMBLE_IMG)
         return e
 
@@ -7102,34 +7075,34 @@ class DuelView(View):
 
     # ── Phase 1: Accept / Refuse ────────────────────────────────────────────
 
-    @discord.ui.button(label="✅ Accetta", style=discord.ButtonStyle.success, custom_id="duel_accept")
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="duel_accept")
     async def accept(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.challenged.id:
-            return await interaction.response.send_message("❌ Solo lo sfidato può accettare!", ephemeral=True)
+            return await interaction.response.send_message("❌ Only the challenged player can accept!", ephemeral=True)
         self.state = "wagering"
         self.clear_items()
         # Add wager buttons
-        bet_a_btn = Button(label=f"💰 Scommessa {self.challenger.display_name}", style=discord.ButtonStyle.primary, custom_id="duel_bet_a")
-        bet_b_btn = Button(label=f"💰 Scommessa {self.challenged.display_name}",  style=discord.ButtonStyle.primary, custom_id="duel_bet_b")
+        bet_a_btn = Button(label=f"💰 Wager {self.challenger.display_name}", style=discord.ButtonStyle.primary, custom_id="duel_bet_a")
+        bet_b_btn = Button(label=f"💰 Wager {self.challenged.display_name}",  style=discord.ButtonStyle.primary, custom_id="duel_bet_b")
         bet_a_btn.callback = self._bet_a_callback
         bet_b_btn.callback = self._bet_b_callback
         self.add_item(bet_a_btn)
         self.add_item(bet_b_btn)
         em = self._duel_embed(
-            "⚔️ Sfida Accettata!",
-            f"{self.challenged.mention} ha accettato la sfida!\n\n"
-            f"**Fase 2:** Ognuno inserisce la propria scommessa premendo il proprio pulsante.",
+            "⚔️ Challenge Accepted!",
+            f"{self.challenged.mention} accepted the challenge!\n\n"
+            f"**Phase 2:** Each player enters their wager using their button.",
             discord.Color.orange()
         )
         await interaction.response.edit_message(embed=em, view=self)
 
-    @discord.ui.button(label="❌ Rifiuta", style=discord.ButtonStyle.danger, custom_id="duel_refuse")
+    @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id="duel_refuse")
     async def refuse(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id not in (self.challenged.id, self.challenger.id):
-            return await interaction.response.send_message("❌ Non puoi rifiutare questa sfida.", ephemeral=True)
+            return await interaction.response.send_message("❌ You cannot decline this challenge.", ephemeral=True)
         for child in self.children:
             child.disabled = True
-        em = self._duel_embed("❌ Sfida Rifiutata", f"{interaction.user.mention} ha rifiutato la sfida.", discord.Color.red())
+        em = self._duel_embed("❌ Challenge Declined", f"{interaction.user.mention} declined the challenge.", discord.Color.red())
         await interaction.response.edit_message(embed=em, view=self)
         self.stop()
 
@@ -7137,12 +7110,12 @@ class DuelView(View):
 
     async def _bet_a_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.challenger.id:
-            return await interaction.response.send_message("❌ Questo pulsante è per lo sfidante!", ephemeral=True)
-        modal = _DuelWagerModal("Sfidante")
+            return await interaction.response.send_message("❌ This button is for the challenger!", ephemeral=True)
+        modal = _DuelWagerModal("Challenger")
         async def _cb(inter, val):
             prof = get_profile(self.challenger.id, self.challenger.display_name)
             if prof.get("rubini", 0) < val:
-                await inter.followup.send(f"❌ Non hai abbastanza Ruby! Hai {format_num(prof.get('rubini',0))} {E_RUBY}", ephemeral=True)
+                await inter.followup.send(f"❌ Not enough Ruby! You have {format_num(prof.get('rubini',0))} {E_RUBY}", ephemeral=True)
                 return
             self.bet_a = val
             await self._check_both_wagered(inter)
@@ -7151,12 +7124,12 @@ class DuelView(View):
 
     async def _bet_b_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.challenged.id:
-            return await interaction.response.send_message("❌ Questo pulsante è per lo sfidato!", ephemeral=True)
-        modal = _DuelWagerModal("Sfidato")
+            return await interaction.response.send_message("❌ This button is for the challenged player!", ephemeral=True)
+        modal = _DuelWagerModal("Challenged")
         async def _cb(inter, val):
             prof = get_profile(self.challenged.id, self.challenged.display_name)
             if prof.get("rubini", 0) < val:
-                await inter.followup.send(f"❌ Non hai abbastanza Ruby! Hai {format_num(prof.get('rubini',0))} {E_RUBY}", ephemeral=True)
+                await inter.followup.send(f"❌ Not enough Ruby! You have {format_num(prof.get('rubini',0))} {E_RUBY}", ephemeral=True)
                 return
             self.bet_b = val
             await self._check_both_wagered(inter)
@@ -7170,20 +7143,20 @@ class DuelView(View):
         if self.bet_a is not None and self.bet_b is not None:
             self.state = "confirming"
             self.clear_items()
-            confirm_btn = Button(label="🤝 Conferma Sfida", style=discord.ButtonStyle.success, custom_id="duel_confirm")
+            confirm_btn = Button(label="🤝 Confirm Challenge", style=discord.ButtonStyle.success, custom_id="duel_confirm")
             confirm_btn.callback = self._confirm_callback
             self.add_item(confirm_btn)
             em = self._duel_embed(
-                "⚔️ Scommesse Inserite!",
-                f"Entrambi hanno inserito le puntate.\n"
-                f"**Entrambi** devono premere **Conferma Sfida** per avviare il duello!",
+                "⚔️ Wagers Entered!",
+                f"Both players have entered their wagers.\n"
+                f"**Both players** must press **Confirm Challenge** to start the duel!",
                 discord.Color.blurple()
             )
         else:
             waiting_for = self.challenger.display_name if self.bet_a is None else self.challenged.display_name
             em = self._duel_embed(
-                "⚔️ Sfida in corso...",
-                f"In attesa della scommessa di **{waiting_for}**...",
+                "⚔️ Challenge in progress...",
+                f"Waiting for **{waiting_for}** to enter a wager...",
                 discord.Color.orange()
             )
         try:
@@ -7195,9 +7168,9 @@ class DuelView(View):
 
     async def _confirm_callback(self, interaction: discord.Interaction):
         if interaction.user.id not in (self.challenger.id, self.challenged.id):
-            return await interaction.response.send_message("❌ Solo i duellanti possono confermare!", ephemeral=True)
+            return await interaction.response.send_message("❌ Only the duelists can confirm!", ephemeral=True)
         self.confirmed.add(interaction.user.id)
-        wait_txt = "Attendo l'altro..." if len(self.confirmed) < 2 else "Tutti confermati!"
+        wait_txt = "Waiting for the other player..." if len(self.confirmed) < 2 else "Everyone confirmed!"
         await interaction.response.send_message(
             f"✅ {interaction.user.display_name} ha confermato! ({wait_txt})",
             ephemeral=True)
@@ -7217,18 +7190,18 @@ class DuelView(View):
         prof_b["rubini"] = max(0, prof_b.get("rubini", 0) - bet_b)
         save_db()
         self.clear_items()
-        win_a = Button(label=f"🏆 Vince {self.challenger.display_name}", style=discord.ButtonStyle.success, custom_id="duel_win_a")
-        win_b = Button(label=f"🏆 Vince {self.challenged.display_name}",  style=discord.ButtonStyle.danger,  custom_id="duel_win_b")
+        win_a = Button(label=f"🏆 {self.challenger.display_name} wins", style=discord.ButtonStyle.success, custom_id="duel_win_a")
+        win_b = Button(label=f"🏆 {self.challenged.display_name} wins",  style=discord.ButtonStyle.danger,  custom_id="duel_win_b")
         win_a.callback = lambda i: self._declare_winner(i, self.challenger, self.challenged)
         win_b.callback = lambda i: self._declare_winner(i, self.challenged, self.challenger)
         self.add_item(win_a)
         self.add_item(win_b)
         total = bet_a + bet_b
         em = self._duel_embed(
-            "⚔️ Duello in corso!",
-            f"Il duello è iniziato!\n\n"
-            f"**Puntata totale in palio:** {format_num(total)} {E_RUBY}\n\n"
-            f"⚠️ Solo lo **Staff** può dichiarare il vincitore.",
+            "⚔️ Duel in progress!",
+            f"The duel has started!\n\n"
+            f"**Total wager:** {format_num(total)} {E_RUBY}\n\n"
+            f"⚠️ Only **Staff** can declare the winner.",
             discord.Color.red()
         )
         try:
@@ -7240,7 +7213,7 @@ class DuelView(View):
 
     async def _declare_winner(self, interaction: discord.Interaction, winner: discord.Member, loser: discord.Member):
         if not self._is_staff(interaction.user):
-            return await interaction.response.send_message("❌ Solo lo **Staff** può arbitrare!", ephemeral=True)
+            return await interaction.response.send_message("❌ Only **Staff** can arbitrate!", ephemeral=True)
         total = (self.bet_a or 0) + (self.bet_b or 0)
         prof_w = get_profile(winner.id, winner.display_name)
         prof_w["rubini"]    = prof_w.get("rubini", 0) + total
@@ -7253,22 +7226,22 @@ class DuelView(View):
         if legend_role:
             try:
                 await winner.add_roles(legend_role, reason="1v1 winner")
-                role_txt = f"\n🏅 Assegnato il ruolo **{BLOCK_DASH_LEGEND_ROLE_NAME}**!"
+                role_txt = f"\n🏅 The **{BLOCK_DASH_LEGEND_ROLE_NAME}** role was assigned!"
             except Exception:
                 pass
         for child in self.children:
             child.disabled = True
         em = discord.Embed(
-            title="🏆 Duello Terminato!",
+            title="🏆 Duel Finished!",
             description=(
-                f"**Vincitore:** {winner.mention}{role_txt}\n"
-                f"**+{format_num(total)}** {E_RUBY} assegnati!{role_txt}\n\n"
-                f"Arbitro: {interaction.user.mention}"
+                f"**Winner:** {winner.mention}{role_txt}\n"
+                f"**+{format_num(total)}** {E_RUBY} awarded!\n\n"
+                f"Arbiter: {interaction.user.mention}"
             ),
             color=discord.Color.gold()
         )
-        em.add_field(name="⚔️ Sfidante", value=self.challenger.mention, inline=True)
-        em.add_field(name="🛡️ Sfidato",  value=self.challenged.mention,  inline=True)
+        em.add_field(name="⚔️ Challenger", value=self.challenger.mention, inline=True)
+        em.add_field(name="🛡️ Challenged",  value=self.challenged.mention,  inline=True)
         em.set_image(url=STUMBLE_IMG)
         await interaction.response.edit_message(embed=em, view=self)
         self.stop()
@@ -7276,13 +7249,13 @@ class DuelView(View):
 
 @bot.command(name="1v1")
 async def duel_cmd(ctx, opponent: discord.Member = None):
-    """⚔️ Sfida un utente a un duello con scommesse in Ruby!"""
+    """⚔️ Challenge a member to a Ruby wager duel!"""
     if opponent is None:
         return await ctx.send("❌ Usa: `:1v1 @utente`", delete_after=5.0)
     if opponent.id == ctx.author.id:
-        return await ctx.send("❌ Non puoi sfidare te stesso!", delete_after=5.0)
+        return await ctx.send("❌ You cannot challenge yourself!", delete_after=5.0)
     if opponent.bot:
-        return await ctx.send("❌ Non puoi sfidare un bot!", delete_after=5.0)
+        return await ctx.send("❌ You cannot challenge a bot!", delete_after=5.0)
     view = DuelView(ctx.author, opponent, ctx.channel.id, ctx.guild.id)
     em = discord.Embed(
         title="⚔️ Sfida 1v1!",
@@ -7293,8 +7266,8 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
         ),
         color=discord.Color.blue()
     )
-    em.add_field(name="⚔️ Sfidante", value=ctx.author.mention,  inline=True)
-    em.add_field(name="🛡️ Sfidato",  value=opponent.mention, inline=True)
+    em.add_field(name="⚔️ Challenger", value=ctx.author.mention,  inline=True)
+    em.add_field(name="🛡️ Challenged",  value=opponent.mention, inline=True)
     em.set_image(url=STUMBLE_IMG)
     msg = await ctx.send(embed=em, view=view)
     view._msg = msg
@@ -7310,8 +7283,8 @@ class _BetAmountModal(Modal):
         self.match_id = match_id
         self.choice   = choice
         self.amount   = TextInput(
-            label="Quanti Cristalli vuoi scommettere?",
-            placeholder="es. 200",
+            label="How many Crystals do you want to wager?",
+            placeholder="e.g. 200",
             min_length=1, max_length=8)
         self.add_item(self.amount)
 
@@ -7321,23 +7294,23 @@ class _BetAmountModal(Modal):
             if val <= 0:
                 raise ValueError
         except ValueError:
-            return await interaction.response.send_message("❌ Inserisci un numero positivo.", ephemeral=True)
+            return await interaction.response.send_message("❌ Enter a positive number.", ephemeral=True)
         bet_data = active_bets.get(self.match_id)
         if not bet_data:
-            return await interaction.response.send_message("❌ La scommessa per questo match non è più attiva.", ephemeral=True)
+            return await interaction.response.send_message("❌ Betting for this match is no longer active.", ephemeral=True)
         prof = get_profile(interaction.user.id, interaction.user.display_name)
         if prof.get("cristalli", 0) < val:
             return await interaction.response.send_message(
-                f"❌ Cristalli insufficienti! Hai: {format_num(prof.get('cristalli',0))} {E_CRYSTAL}", ephemeral=True)
+                f"❌ Not enough Crystals! You have: {format_num(prof.get('cristalli',0))} {E_CRYSTAL}", ephemeral=True)
         uid = str(interaction.user.id)
         if uid in bet_data["bets"]:
-            return await interaction.response.send_message("❌ Hai già scommesso su questo match!", ephemeral=True)
+            return await interaction.response.send_message("❌ You already placed a bet on this match!", ephemeral=True)
         prof["cristalli"] = prof.get("cristalli", 0) - val
         save_db()
         bet_data["bets"][uid] = {"choice": self.choice, "amount": val}
         await interaction.response.send_message(
-            f"✅ Scommessa registrata! **{format_num(val)}** {E_CRYSTAL} su **{self.choice}**.\n"
-            f"Se vince, ricevi il doppio: **{format_num(val * 2)}** {E_CRYSTAL}!",
+            f"✅ Bet recorded! **{format_num(val)}** {E_CRYSTAL} on **{self.choice}**.\n"
+            f"If it wins, you receive double: **{format_num(val * 2)}** {E_CRYSTAL}!",
             ephemeral=True)
 
 
@@ -7377,7 +7350,7 @@ class MatchBettingView(View):
 
 
 async def _post_match_bets(channel: discord.TextChannel, t: dict):
-    """Posta un embed scommessa per ogni match del round corrente."""
+    """Post a betting embed for every match in the current round."""
     matches = t.get("matches", {})
     if not matches:
         return
@@ -7396,9 +7369,9 @@ async def _post_match_bets(channel: discord.TextChannel, t: dict):
             title=f"💎 Scommesse — Match #{mid} (Round {cur_round})",
             description=(
                 f"**{p1}** ⚔️ **{p2}**\n\n"
-                f"Scommetti i tuoi {E_CRYSTAL} **Cristalli** sul vincitore!\n"
-                f"Se indovini → **raddoppi** la puntata!\n\n"
-                f"*(I giocatori del match non possono scommettere)*"
+                f"Bet your {E_CRYSTAL} **Crystals** on the winner!\n"
+                f"If correct → **double** your wager!\n\n"
+                f"*(Match players cannot bet)*"
             ),
             color=discord.Color.purple()
         )
@@ -7410,7 +7383,7 @@ async def _post_match_bets(channel: discord.TextChannel, t: dict):
 
 
 async def _resolve_bets_for_match(match_id: str, winner_name: str):
-    """Risolve le scommesse per un match: paga i vincitori, trattiene le perdite."""
+    """Resolve bets for a match: pay winners and keep losing wagers."""
     bet_data = active_bets.pop(str(match_id), None)
     if not bet_data:
         return
@@ -7428,10 +7401,10 @@ async def _resolve_bets_for_match(match_id: str, winner_name: str):
 @bot.command(name="stumble-top", aliases=["stumbletop"])
 @manager_or_admin_only()
 async def stumble_top(ctx):
-    """🏆 Top 10 per vittorie 1v1 e Ruby vinti alla Stumble Machine."""
+    """🏆 Top 10 for 1v1 wins and Ruby won at the Stumble Machine."""
     profiles = db.get("profiles", {})
     if not profiles:
-        return await ctx.send("❌ Nessun profilo trovato.", delete_after=5.0)
+        return await ctx.send("❌ No profiles found.", delete_after=5.0)
 
     # Sort by duel wins desc, then slot_ruby_won desc
     ranked = sorted(
@@ -7454,8 +7427,8 @@ async def stumble_top(ctx):
         )
 
     em = discord.Embed(
-        title="🏆 Stumble Top — Classifica Speciale",
-        description="\n\n".join(lines) or "Nessun dato disponibile ancora.",
+        title="🏆 Stumble Top — Special Leaderboard",
+        description="\n\n".join(lines) or "No data available yet.",
         color=discord.Color.gold()
     )
     em.set_footer(text=f"Top per vittorie 1v1 + Stumble Machine · Stumble™")
