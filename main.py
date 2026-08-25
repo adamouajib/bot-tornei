@@ -477,6 +477,8 @@ active_ai_sessions: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
 dm_conversations: dict[int, list[dict[str, str]]] = {}
 dm_language_preferences: dict[int, str] = {}
+ai_private_channels: dict[int, int] = {}
+ai_channel_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
 DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
@@ -491,6 +493,193 @@ if GEMINI_CONFIGURED:
     genai.configure(api_key=GEMINI_API_KEY)
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
+AI_CATEGORY_NAME = "💬 AI CHATS"
+AI_LOG_CHANNEL_NAMES = {"ai-staff-logs", "moderation-logs"}
+AI_BANNED_WORDS = {
+    "cazzo", "cazzо", "cazzata", "merda", "stronzo", "stronza", "bastardo",
+    "bastarda", "vaffanculo", "puttana", "troia", "coglione", "cogliona",
+    "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "motherfucker",
+    "puta", "mierda", "joder", "imbecil", "idiota", "stupido", "stupida",
+}
+
+def _contains_inappropriate_content(content: str) -> bool:
+    normalized = re.sub(r"[\W_]+", " ", content.casefold(), flags=re.UNICODE)
+    words = set(normalized.split())
+    return bool(words & AI_BANNED_WORDS) or any(
+        phrase in normalized for phrase in ("kill the server", "nuke the server", "ammazza il server")
+    )
+
+async def _get_ai_main_guild() -> discord.Guild | None:
+    """Return the primary guild the bot is connected to."""
+    return bot.guilds[0] if bot.guilds else None
+
+async def _get_ai_category(guild: discord.Guild) -> discord.CategoryChannel:
+    category = discord.utils.get(guild.categories, name=AI_CATEGORY_NAME)
+    if category:
+        return category
+    return await guild.create_category(AI_CATEGORY_NAME, reason="Create private AI chat category")
+
+async def _get_ai_log_channel(guild: discord.Guild) -> discord.TextChannel:
+    channel = next(
+        (c for c in guild.text_channels if c.name in AI_LOG_CHANNEL_NAMES),
+        None,
+    )
+    if channel:
+        return channel
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+    }
+    for role in guild.roles:
+        if role.is_default():
+            continue
+        if role.id in TICKET_MOD_ROLE_IDS | ADMIN_ROLE_IDS | {OWNER_ROLE_ID}:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            )
+    if guild.me:
+        overwrites[guild.me] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True
+        )
+    return await guild.create_text_channel(
+        "ai-staff-logs",
+        overwrites=overwrites,
+        reason="Create AI moderation log channel",
+    )
+
+async def _find_private_ai_channel(guild: discord.Guild, user_id: int):
+    channel_id = ai_private_channels.get(user_id)
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if channel:
+        return channel
+    marker = f"AI_SESSION_USER_ID:{user_id}"
+    return next((c for c in guild.text_channels if (c.topic or "").startswith(marker)), None)
+
+def _ai_welcome_embed(guild: discord.Guild, channel: discord.TextChannel) -> discord.Embed:
+    embed = discord.Embed(
+        title="✨ **IL TUO SPAZIO RISERVATO CON L'IA**",
+        description=(
+            f"> 🔒 **Private & Secure Space**\n"
+            f"> I created this private channel exclusively for you on **{guild.name}**. "
+            "> No other user or Staff member has access to this chat."
+        ),
+        color=discord.Color(0x00F0FF),
+        timestamp=datetime.now(),
+    )
+    embed.add_field(name="📌 **Access here:**", value=channel.mention, inline=False)
+    embed.add_field(
+        name="🌍 **Automatic Language:**",
+        value=(
+            "You can write to me in any language in the world (Italian, English, "
+            "Español, Chinese 🇨🇳, Japanese 🇯🇵, Arabic 🇸🇦, etc.) and with any alphabet. "
+            "I will understand you and automatically reply in your language!"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 **What can you ask me?**",
+        value="Questions about Tournaments, Shop, Events, becoming Staff, or any other topic.",
+        inline=False,
+    )
+    embed.set_footer(text="🤖 Powered by Google Gemini AI", icon_url=bot.user.display_avatar.url if bot.user else None)
+    return embed
+
+class PrivateAIChatView(View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+
+    @discord.ui.button(
+        label="🔴 🗑️ Chiudi ed Elimina Chat",
+        style=discord.ButtonStyle.danger,
+        custom_id="private_ai_close",
+    )
+    async def close_chat(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                "❌ This private chat belongs to another user.", ephemeral=True
+            )
+        channel = interaction.channel
+        await interaction.response.send_message("🗑️ Chat closed. Deleting this private channel…")
+        ai_private_channels.pop(self.user_id, None)
+        ai_channel_last_activity.pop(self.user_id, None)
+        active_ai_sessions.discard(self.user_id)
+        dm_conversations.pop(self.user_id, None)
+        ai_user_locks.pop(self.user_id, None)
+        if channel:
+            await channel.delete(reason="Private AI chat closed by user")
+
+async def _handle_private_ai_message(message: discord.Message, channel: discord.TextChannel):
+    user_id = message.author.id
+    ai_channel_last_activity[user_id] = datetime.utcnow()
+    try:
+        await channel.edit(
+            topic=f"AI_SESSION_USER_ID:{user_id}|LAST_ACTIVITY:{datetime.utcnow().isoformat()}"
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    if _contains_inappropriate_content(message.content):
+        log_channel = await _get_ai_log_channel(message.guild)
+        log_embed = discord.Embed(
+            title="🚨 AI Chat Moderation Alert",
+            description="A private AI chat message was flagged for offensive or inappropriate content.",
+            color=discord.Color.red(),
+            timestamp=message.created_at,
+        )
+        log_embed.add_field(
+            name="User",
+            value=f"{message.author.mention}\n`{message.author} (ID: {user_id})`",
+            inline=False,
+        )
+        log_embed.add_field(name="Private channel", value=channel.mention, inline=True)
+        log_embed.add_field(
+            name="Date / time",
+            value=f"<t:{int(message.created_at.timestamp())}:F>",
+            inline=True,
+        )
+        log_embed.add_field(
+            name="Flagged content",
+            value=message.content[:1024] or "*(attachment)*",
+            inline=False,
+        )
+        await log_channel.send(embed=log_embed)
+
+    if not GEMINI_CONFIGURED:
+        return await channel.send(
+            "⚠️ The AI service is not configured. Please contact an administrator."
+        )
+    user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
+    async with user_lock, channel.typing():
+        conversation = dm_conversations.setdefault(user_id, [])
+        conversation.append({"role": "user", "content": message.content})
+        conversation[:] = conversation[-12:]
+        system_prompt = (
+            "You are the Official PCF™ Server Assistant. Automatically detect the language "
+            "of the user's latest message and reply exactly in that language, preserving its "
+            "script and tone. Never reveal internal reasoning. Help with the Discord server, "
+            "its commands, tournaments, shop, events, staff applications, and rules. "
+            "The user is writing in a private server channel."
+        )
+        try:
+            response = await gemini_completion_with_retries(
+                [{"role": "system", "content": system_prompt}, *conversation],
+                system_prompt,
+            )
+            reply_text = clean_ai_response(response)
+            if not reply_text:
+                return await channel.send(
+                    "⚠️ I could not generate a reply right now. Please try again."
+                )
+            await channel.send(embed=discord.Embed(
+                description=reply_text[:4096],
+                color=discord.Color(0x00F0FF),
+            ))
+            conversation.append({"role": "assistant", "content": reply_text})
+            conversation[:] = conversation[-12:]
+        except Exception as exc:
+            await _log_exception(message.guild, "Private AI completion", exc)
+            await channel.send(
+                "⚠️ I could not process that request right now. Please try again."
+            )
 
 
 def clean_ai_response(response) -> str:
@@ -1424,6 +1613,38 @@ async def cleanup_idle_dm_sessions():
             active_ai_sessions.discard(user_id)
             dm_last_activity.pop(user_id, None)
 
+@tasks.loop(minutes=1)
+async def cleanup_idle_ai_channels():
+    now = datetime.utcnow()
+    guild = await _get_ai_main_guild()
+    if guild:
+        for channel in guild.text_channels:
+            topic = channel.topic or ""
+            if not topic.startswith("AI_SESSION_USER_ID:") or "|LAST_ACTIVITY:" not in topic:
+                continue
+            try:
+                user_id = int(topic.split("AI_SESSION_USER_ID:", 1)[1].split("|", 1)[0])
+                last_seen = datetime.fromisoformat(topic.split("|LAST_ACTIVITY:", 1)[1])
+            except (TypeError, ValueError):
+                continue
+            ai_private_channels[user_id] = channel.id
+            ai_channel_last_activity.setdefault(user_id, last_seen)
+    for user_id, last_seen in list(ai_channel_last_activity.items()):
+        if (now - last_seen).total_seconds() < DM_IDLE_SECONDS:
+            continue
+        channel_id = ai_private_channels.get(user_id)
+        channel = guild.get_channel(channel_id) if guild and channel_id else None
+        try:
+            if channel:
+                await channel.delete(reason="Private AI chat inactive for 15 minutes")
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+            pass
+        ai_private_channels.pop(user_id, None)
+        ai_channel_last_activity.pop(user_id, None)
+        active_ai_sessions.discard(user_id)
+        dm_conversations.pop(user_id, None)
+        ai_user_locks.pop(user_id, None)
+
 async def delete_message_later(message: discord.Message, delay: int = 120):
     """Delete a bot message after the requested delay."""
     await asyncio.sleep(delay)
@@ -1542,6 +1763,8 @@ async def on_ready():
         check_supporters.start()
     if not cleanup_idle_dm_sessions.is_running():
         cleanup_idle_dm_sessions.start()
+    if not cleanup_idle_ai_channels.is_running():
+        cleanup_idle_ai_channels.start()
     # Auto-create special roles if they don't exist
     for guild in bot.guilds:
         for role_name, color in [
@@ -4159,19 +4382,56 @@ async def on_message(message: discord.Message):
 
         dm_last_activity[message.author.id] = datetime.utcnow()
         if command_text == ":start":
-            active_ai_sessions.add(message.author.id)
-            welcome_embed = discord.Embed(
-                title="🤖 Official PCF™ Assistant",
-                description=(
-                    "Welcome to the official PCF™ Server Assistant! 🏆\n\n"
-                    "Ask me about commands, rules, or the server.\n\n"
-                    "I can communicate in the language you choose.\n\n"
-                    "*Write `:end` to close the chat.*"
+            guild = await _get_ai_main_guild()
+            if guild is None:
+                await message.channel.send("⚠️ I cannot find the main server right now.")
+                return
+            existing = await _find_private_ai_channel(guild, message.author.id)
+            if existing:
+                ai_private_channels[message.author.id] = existing.id
+                ai_channel_last_activity[message.author.id] = datetime.utcnow()
+                await message.channel.send(
+                    f"✅ Your private AI chat is already open: {existing.mention}"
+                )
+                return
+            category = await _get_ai_category(guild)
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            }
+            for role in guild.roles:
+                if not role.is_default():
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=False)
+            member = guild.get_member(message.author.id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(message.author.id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    member = None
+            if member:
+                overwrites[member] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+            if guild.me:
+                overwrites[guild.me] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+            channel = await guild.create_text_channel(
+                name=f"ai-chat-{message.author.display_name[:18]}",
+                category=category,
+                topic=(
+                    f"AI_SESSION_USER_ID:{message.author.id}|"
+                    f"LAST_ACTIVITY:{datetime.utcnow().isoformat()}"
                 ),
-                color=discord.Color(0x3498DB),
+                overwrites=overwrites,
+                reason="Create private AI chat",
             )
+            ai_private_channels[message.author.id] = channel.id
+            ai_channel_last_activity[message.author.id] = datetime.utcnow()
+            active_ai_sessions.add(message.author.id)
+            welcome_embed = _ai_welcome_embed(guild, channel)
+            await channel.send(embed=welcome_embed, view=PrivateAIChatView(message.author.id))
             await message.channel.send(embed=welcome_embed)
-            await _log_dm(message, "OUT", "DM SESSION START — AI chat opened")
+            await _log_dm(message, "OUT", f"PRIVATE AI CHAT START — {channel.mention}")
             return
 
         if command_text == ":end":
@@ -4409,6 +4669,23 @@ COMPLETE COMMAND DATABASE:
             return
         await bot.process_commands(message)
         return
+
+    # ── Private AI server channel ─────────────────────
+    if message.guild:
+        private_channel = await _find_private_ai_channel(message.guild, message.author.id)
+        if private_channel and private_channel.id == message.channel.id:
+            ai_private_channels[message.author.id] = private_channel.id
+            if message.content.strip().casefold() == ":close":
+                await message.channel.send("🗑️ Chat closed. Deleting this private channel…")
+                ai_private_channels.pop(message.author.id, None)
+                ai_channel_last_activity.pop(message.author.id, None)
+                active_ai_sessions.discard(message.author.id)
+                dm_conversations.pop(message.author.id, None)
+                ai_user_locks.pop(message.author.id, None)
+                await message.channel.delete(reason="Private AI chat closed by user")
+                return
+            await _handle_private_ai_message(message, private_channel)
+            return
 
     # ── Channel restrictions ─────────────────────────
     if not message.author.bot and message.guild:
