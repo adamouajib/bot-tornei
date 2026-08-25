@@ -207,9 +207,9 @@ SUPPORTER_VERIFY_CAT = 1410695995951546368   # category for supporter verify tic
 EVENT_PING_ROLE_ID   = 1410695964783673486   # role pinged when event starts
 GIVEAWAY_PING_ROLE_ID = 1410695965748232263  # role pinged in giveaways
 DEFAULT_EVENT_RULES = (
-    "- Non fare teaming con altri giocatori\n"
-    "- Non chiedere il premio (distribuito automaticamente dal bot)\n"
-    "- Non spammare"
+    "🚫 No Team\n"
+    "🚫 No Spam\n"
+    "🚫 No Toxic"
 )
 
 # ── Level roles ──────────────────────────────────────────────────────────────
@@ -295,7 +295,7 @@ ADMIN_COMMANDS = {
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
-    "set-winner", "end-event", "ban-event", "test",
+    "set-winner", "end-event", "ban-event", "test", "clear", "purge",
 }
 
 def _prefix_access_allowed(ctx) -> bool:
@@ -659,15 +659,10 @@ def build_ai_system_instruction() -> str:
         "https://discord.gg/pcf-cup-community-1046154910368014417\n"
         "- Se un utente chiede il link del server, invia SEMPRE questo link: "
         "https://discord.gg/pcf-cup-community-1046154910368014417\n\n"
-        "CREATORI:\n"
-        "- Creatori del server: <@1012712686770995201> e "
-        "<@1338274535325175810>.\n"
-        "- Creatore del bot: <@1338274535325175810> (ha lavorato per 3 mesi "
-        "con duro impegno).\n"
-        "- Quando gli utenti chiedono chi ha creato il server o il bot, spiega "
-        "dettagliatamente queste informazioni usando SEMPRE le menzioni "
-        "cliccabili <@1338274535325175810> e "
-        "<@1012712686770995201>.\n\n"
+        "IDENTITÀ DEL CREATORE:\n"
+        "- Il bot è stato creato esclusivamente da Adam (<@1338274535325175810>).\n"
+        "- Non attribuire mai la creazione del bot ad altre persone e non citare "
+        "altri creatori.\n\n"
         "LISTA E SPIEGAZIONE DEI COMANDI:\n"
         f"La lista seguente contiene il catalogo completo dei {len(command_lines)} comandi "
         "registrati dal bot (prefix e slash/application command). Gli alias "
@@ -688,18 +683,13 @@ def build_ai_system_instruction() -> str:
         "appropriato.\n"
         "- Se il messaggio è normale, NON inserire [REPORT_ADMIN].\n\n"
         "REGOLE GENERALI:\n"
-        "- Creatori del server: <@1012712686770995201> e "
-        "<@1338274535325175810>.\n"
-        "- Creatore del bot: <@1338274535325175810> (ha lavorato per 3 mesi "
-        "con duro impegno).\n"
+        "- Il bot è stato creato esclusivamente da Adam (<@1338274535325175810>).\n"
         "- Non mostrare mai pensieri interni o schemi. Rispondi sempre nella "
         "lingua dell'utente.\n\n"
         "REGOLE TRATTAMENTO UTENTI IN CHAT:\n"
         "- Se l'utente corrente è <@1338274535325175810> (Adam): trattalo "
         "sempre come il tuo Re e Creatore; chiamalo \"Mio Re\" o \"Sua Maestà\" "
         "con estremo rispetto e devozione.\n"
-        "- Se l'utente corrente è <@1012712686770995201> (Piccolofe): sii "
-        "molto amichevole, scherzoso ed entusiasta.\n"
         "- Per tutti gli altri utenti: sii cordiale, chiaro e formale.\n\n"
         "REGOLE TASSATIVE DI OUTPUT (FONDAMENTALE):\n"
         "1. Rispondi DIRETTAMENTE ed ESCLUSIVAMENTE con il messaggio finale "
@@ -1286,6 +1276,9 @@ async def _cleanup_dm_session(user_id: int, channel=None):
 async def cleanup_idle_dm_sessions():
     now = datetime.utcnow()
     for user_id, last_seen in list(dm_last_activity.items()):
+        if user_id not in active_ai_sessions:
+            dm_last_activity.pop(user_id, None)
+            continue
         if (now - last_seen).total_seconds() < DM_IDLE_SECONDS:
             continue
         try:
@@ -1295,6 +1288,14 @@ async def cleanup_idle_dm_sessions():
         except (discord.Forbidden, discord.HTTPException):
             active_ai_sessions.discard(user_id)
             dm_last_activity.pop(user_id, None)
+
+async def delete_message_later(message: discord.Message, delay: int = 120):
+    """Elimina un messaggio del bot dopo il ritardo richiesto."""
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
 
 @bot.before_invoke
 async def auto_delete_invoke(ctx):
@@ -1310,10 +1311,10 @@ async def auto_delete_invoke(ctx):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
         await _log_event(ctx.guild, "AUTH", f"denied :{getattr(ctx.command, 'qualified_name', 'unknown')}", actor=ctx.author)
-        await ctx.send("❌ You don't have permission to use this command.", delete_after=5.0)
+        await ctx.send("❌ Non hai il permesso di usare questo comando.", delete_after=5.0)
     elif isinstance(error, commands.MissingRequiredArgument):
         await _log_event(ctx.guild, "ERROR", f"missing argument for :{getattr(ctx.command, 'qualified_name', 'unknown')}: {error}", actor=ctx.author)
-        await ctx.send(f"❌ Missing argument: `{error.param.name}`", delete_after=5.0)
+        await ctx.send(f"❌ Manca l'argomento: `{error.param.name}`", delete_after=5.0)
     elif isinstance(error, commands.CommandNotFound):
         pass
     else:
@@ -1585,50 +1586,67 @@ async def set_log(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ System logs are now recorded in {channel.mention}.", delete_after=6.0)
     await _log_event(ctx.guild, "CONFIG", f"log channel set to {channel.id}", actor=ctx.author)
 
+@bot.command(name="clear", aliases=["purge"])
+@staff_only()
+async def clear_messages(ctx, quantity: int):
+    """Elimina rapidamente i messaggi recenti del canale per lo Staff."""
+    if quantity < 1 or quantity > 100:
+        return await ctx.send("❌ Indica una quantità tra 1 e 100.", delete_after=5.0)
+    try:
+        deleted = await ctx.channel.purge(limit=quantity + 1)
+    except discord.Forbidden:
+        return await ctx.send("❌ Il bot non ha il permesso di eliminare i messaggi.", delete_after=5.0)
+    confirmation = await ctx.send(
+        f"🧹 Eliminati **{max(0, len(deleted) - 1)}** messaggi.",
+        delete_after=4.0,
+    )
+
 @bot.tree.command(name="warn", description="Issue a formal warning to a member.")
 @app_commands.describe(member="Member to warn", reason="Reason for the warning")
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
     if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
-        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
-    embed = discord.Embed(title="⚠️ WARNING / WARN", color=discord.Color.orange(),
+        return await interaction.response.send_message("❌ Non hai il permesso di usare questo comando.", ephemeral=True)
+    embed = discord.Embed(title="⚠️ Avviso ufficiale", color=discord.Color.orange(),
                           timestamp=discord.utils.utcnow())
-    embed.add_field(name="Sanctioned User", value=f"{member.mention}\n`{member} ({member.id})`", inline=False)
-    embed.add_field(name="Staffer (Issuer)", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
-    embed.add_field(name="Reason", value=reason[:1024], inline=True)
-    embed.add_field(name="Date/Time", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=False)
-    embed.set_footer(text="Please follow the rules! Receiving another warning will result in a timeout.")
+    embed.add_field(name="Utente sanzionato", value=f"{member.mention}\n`{member} ({member.id})`", inline=False)
+    embed.add_field(name="Staffer", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
+    embed.add_field(name="Motivo", value=reason[:1024], inline=True)
+    embed.add_field(name="Data e ora", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=False)
+    embed.set_footer(text="Rispetta il regolamento: un altro avviso può portare a un timeout.")
     try:
-        await member.send(embed=embed)
-        dm_status = "DM sent"
+        warning_message = await member.send(embed=embed)
+        asyncio.create_task(delete_message_later(warning_message, 15))
+        dm_status = "avviso inviato in DM"
     except discord.HTTPException:
-        dm_status = "DM could not be delivered"
+        dm_status = "DM non consegnabile"
     await _log_event(interaction.guild, "WARN", f"{member} ({member.id}): {reason} — {dm_status}", actor=interaction.user)
-    await interaction.response.send_message(f"✅ Warning issued to {member.mention}. {dm_status}.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Avviso inviato a {member.mention}. {dm_status}.", ephemeral=True)
 
 @bot.tree.command(name="time", description="Timeout a member and notify them by DM.")
 @app_commands.describe(member="Member to timeout", duration="Examples: 30m, 2h, 1d", reason="Reason for the timeout")
 async def time_cmd(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
     if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
-        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+        return await interaction.response.send_message("❌ Non hai il permesso di usare questo comando.", ephemeral=True)
     match = re.fullmatch(r"(\d+)([smhd])", duration.lower())
     if not match:
-        return await interaction.response.send_message("❌ Invalid duration. Use `30m`, `2h`, or `1d`.", ephemeral=True)
+        return await interaction.response.send_message("❌ Durata non valida. Usa `30m`, `2h` oppure `1d`.", ephemeral=True)
     seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
     if seconds > 28 * 86400:
         return await interaction.response.send_message("❌ Discord timeouts cannot exceed 28 days.", ephemeral=True)
     until = discord.utils.utcnow() + timedelta(seconds=seconds)
     try:
         await member.timeout(until, reason=reason)
-        embed = discord.Embed(title="⏱️ You have received a timeout",
-                              description=f"**Duration:** {duration}\n**Reason:** {reason}",
+        embed = discord.Embed(title="⏱️ Hai ricevuto un timeout",
+                              description=f"**Durata:** {duration}\n**Motivo:** {reason}",
                               color=discord.Color.red(), timestamp=discord.utils.utcnow())
-        embed.set_footer(text="If you want to apologize or contest this penalty, reply to this message and staff will evaluate your response.")
-        await member.send(embed=embed)
-        status = "DM sent"
+        embed.set_footer(text="Per contestare la sanzione, contatta lo staff.")
+        timeout_message = await member.send(embed=embed)
+        asyncio.create_task(delete_message_later(timeout_message, 15))
+        status = "notifica inviata in DM"
     except discord.HTTPException as exc:
         status = f"DM unavailable ({type(exc).__name__})"
     await _log_event(interaction.guild, "TIMEOUT", f"{member} ({member.id}): {duration} — {reason}", actor=interaction.user)
-    await interaction.response.send_message(f"✅ Timeout applied to {member.mention}. {status}.", ephemeral=True)
+    await interaction.response.send_message(f"✅ Timeout applicato a {member.mention}. {status}.", ephemeral=True)
 
 @bot.command(name="ban-event", aliases=["ban_event"])
 @commands.has_permissions(manage_channels=True)
@@ -1656,26 +1674,28 @@ async def profile(ctx, member: discord.Member = None):
         done  = punti - prev
         pct   = min(done / need, 1.0) if need > 0 else 1.0
         bar   = "▰" * int(pct * 10) + "▱" * (10 - int(pct * 10))
-        prog  = f"{bar} `{done}/{need}`\nNext: {next_rank[2]} **{next_rank[3]}** ({next_rank[0]} pts)"
+        prog  = f"{bar} `{done}/{need}`\nProssimo: {next_rank[2]} **{next_rank[3]}** ({next_rank[0]} punti)"
     else:
-        prog  = "🏆 **Maximum rank reached!**"
+        prog  = "🏆 **Hai raggiunto il rank massimo!**"
     embed = discord.Embed(
         title=f"{rank_emoji} {target.display_name}",
-        description=f"**Rank:** {rank_emoji} {rank_name}",
+        description=f"**Rank attuale:** {rank_emoji} **{rank_name}**\n"
+                    f"Profilo di {target.mention} · progressi e statistiche personali",
         color=discord.Color.blue()
     )
     level_msg = prof.get("level_msg", 0)
-    embed.add_field(name=f"{E_XP} Points",
-        value=f"**{format_num(punti)}** pts\n{prog}", inline=False)
-    embed.add_field(name="💰 Balance",
-        value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Crystals • {E_RUBY} **{format_num(prof['rubini'])}** Ruby",
+    embed.add_field(name=f"{E_XP} Ranked Points",
+        value=f"**{format_num(punti)}** punti\n{prog}", inline=False)
+    embed.add_field(name="💰 Saldo",
+        value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Cristalli · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gemme",
         inline=False)
-    embed.add_field(name="🏅 Stats",
-        value=f"{E_CROWN} **{prof['tornei_v']}** tournaments won • {E_TROPHY} **{prof['eventi_v']}** events won",
+    embed.add_field(name="🏅 Statistiche",
+        value=f"{E_CROWN} **{prof['tornei_v']}** tornei vinti · {E_TROPHY} **{prof['eventi_v']}** eventi vinti",
         inline=False)
-    embed.add_field(name="⬆️ Chat Level",
-        value=f"Level **{level_msg}** · {format_num(prof.get('xp_msg',0))} XP",
+    embed.add_field(name="⬆️ Livello chat",
+        value=f"Livello **{level_msg}** · {format_num(prof.get('xp_msg',0))} XP",
         inline=True)
+    embed.set_footer(text="PCF™ · Profilo giocatore")
     embed.set_thumbnail(url=target.display_avatar.url)
     embed.set_image(url=STUMBLE_IMG)
     await ctx.send(embed=embed)
@@ -2907,6 +2927,7 @@ async def match(ctx, match_num: int, codice: str):
         return e
 
     sent_to = []
+    sent_dm_messages = []
     if modalita in TEAM_MODES:
         for team in db["teams"]:
             td    = " × ".join(team["names"])
@@ -2920,10 +2941,10 @@ async def match(ctx, match_num: int, codice: str):
                         if os.path.exists(STUMBLE_TOUR_IMG_PATH):
                             f = discord.File(STUMBLE_TOUR_IMG_PATH, filename="stumble_tournament.png")
                             embed.set_image(url="attachment://stumble_tournament.png")
-                            await mbr.send(file=f, embed=embed)
+                            sent_dm_messages.append(await mbr.send(file=f, embed=embed))
                         else:
                             embed.set_image(url=STUMBLE_IMG)
-                            await mbr.send(embed=embed)
+                            sent_dm_messages.append(await mbr.send(embed=embed))
                         sent_to.append(name)
                     except Exception as e:
                         print(f"[match DM] {e}")
@@ -2936,10 +2957,10 @@ async def match(ctx, match_num: int, codice: str):
                     if os.path.exists(STUMBLE_TOUR_IMG_PATH):
                         f = discord.File(STUMBLE_TOUR_IMG_PATH, filename="stumble_tournament.png")
                         embed.set_image(url="attachment://stumble_tournament.png")
-                        await mbr.send(file=f, embed=embed)
+                        sent_dm_messages.append(await mbr.send(file=f, embed=embed))
                     else:
                         embed.set_image(url=STUMBLE_IMG)
-                        await mbr.send(embed=embed)
+                        sent_dm_messages.append(await mbr.send(embed=embed))
                     sent_to.append(pname)
                 except Exception as e:
                     print(f"[match DM] {e}")
@@ -2950,7 +2971,10 @@ async def match(ctx, match_num: int, codice: str):
     else:
         embed = _make_match_embed()
         embed.set_image(url=STUMBLE_IMG)
-        await ctx.send(embed=embed)
+        sent_code_message = await ctx.send(embed=embed)
+        asyncio.create_task(delete_message_later(sent_code_message, 120))
+    for dm_message in sent_dm_messages:
+        asyncio.create_task(delete_message_later(dm_message, 120))
 
     async def timer_fine():
         await asyncio.sleep(120)
@@ -3282,21 +3306,21 @@ async def start_event(ctx):
         return await ctx.send("❌ No active event. Use `:event` or `:big-event` first.")
     is_big = bool(db.get("big_event")) and not bool(db.get("event"))
     embed = discord.Embed(
-        title="🟢 EVENT STARTED!",
-        description="**Get ready! The room code is coming soon! 🏁**",
+        title="🟢 EVENTO AVVIATO!",
+        description="**Preparatevi: il codice della stanza arriverà a breve! 🏁**",
         color=discord.Color.green()
     )
     if db.get("event"):
         ev_data = db["event"]
-        embed.add_field(name="🎁 Prize",          value=_format_prize(ev_data["premio"]), inline=True)
+        embed.add_field(name="🎁 Premio",         value=_format_prize(ev_data["premio"]), inline=True)
         if ev_data.get("regole"):
-            embed.add_field(name=f"{E_RULES} Rules", value=ev_data["regole"],             inline=False)
+            embed.add_field(name=f"{E_RULES} Regole", value=ev_data["regole"],             inline=False)
     elif db.get("big_event"):
         big = db["big_event"]
-        embed.add_field(name="🌟 Event",            value=big.get("nome", "—"),                     inline=False)
-        embed.add_field(name=f"{E_GOLD} 1st Place",  value=_format_prize(big.get("prize1", "—")),   inline=True)
-        embed.add_field(name=f"{E_GOLD} 2nd Place",  value=_format_prize(big.get("prize2", "—")),   inline=True)
-        embed.add_field(name=f"{E_BRONZE} 3rd Place",value=_format_prize(big.get("prize3", "—")),   inline=True)
+        embed.add_field(name="🌟 Evento",            value=big.get("nome", "—"),                     inline=False)
+        embed.add_field(name=f"{E_GOLD} 1° Posto",  value=_format_prize(big.get("prize1", "—")),   inline=True)
+        embed.add_field(name=f"{E_GOLD} 2° Posto",  value=_format_prize(big.get("prize2", "—")),   inline=True)
+        embed.add_field(name=f"{E_BRONZE} 3° Posto",value=_format_prize(big.get("prize3", "—")),   inline=True)
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"Started by {ctx.author.display_name}  •  Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
@@ -3305,7 +3329,7 @@ async def start_event(ctx):
     allowed   = (discord.AllowedMentions(everyone=True, roles=True)
                  if is_big else discord.AllowedMentions(roles=True))
     await start_ch.send(
-        content=f"{ping_txt} 🟢 **The event has started — get in there!**",
+        content=f"{ping_txt} 🟢 **L'evento è iniziato: buon divertimento!**",
         embed=embed,
         allowed_mentions=allowed
     )
@@ -3320,16 +3344,17 @@ async def cod_event(ctx, emote: str, mappa: str, codice: str):
     elif db.get("big_event"):
         db["big_event"]["room_counter"] = current["room_counter"]
     room_no = current["room_counter"]
-    embed = discord.Embed(title=f"🎮 FLASH EVENT — Room {room_no}", color=discord.Color.dark_teal())
-    embed.add_field(name="🗺️ Map",   value=mappa,        inline=True)
+    embed = discord.Embed(title=f"🎮 FLASH EVENT — Stanza {room_no}", color=discord.Color.dark_teal())
+    embed.add_field(name="🗺️ Mappa",   value=mappa,        inline=True)
     embed.add_field(name="💥 Emote", value=emote,        inline=True)
-    embed.add_field(name="🔑 Room Code", value=f"```{codice}```", inline=False)
+    embed.add_field(name="🔑 Codice stanza", value=f"```{codice}```", inline=False)
     embed.set_image(url=STUMBLE_IMG)
     prof_staff = get_profile(ctx.author.id, ctx.author.display_name)
     prof_staff["staff_matches"]      += 1
     prof_staff["staff_week_matches"] += 1
     save_db()
-    await ctx.send(embed=embed)
+    code_message = await ctx.send(embed=embed)
+    asyncio.create_task(delete_message_later(code_message, 120))
 
 @bot.command(name="set-winner", aliases=["set_winner", "win-event", "win_event"])
 @hoster_only()
@@ -3966,11 +3991,11 @@ async def on_message(message: discord.Message):
         if command_text == ":start":
             active_ai_sessions.add(message.author.id)
             welcome_embed = discord.Embed(
-                title="🤖 Official PCF™ AI Assistant",
+                title="🤖 Assistente Ufficiale PCF™",
                 description=(
                     "Benvenuto nell'assistente ufficiale del server PCF™! 🏆\n\n"
                     "Puoi chiedermi informazioni sui comandi, sulle regole o sul server.\n\n"
-                    "🌐 Puoi scrivere nella lingua che preferisci.\n\n"
+                    "🌐 Risponderò nella lingua che preferisci.\n\n"
                     "*Scrivi `:end` per chiudere la chat.*"
                 ),
                 color=discord.Color(0x3498DB),
@@ -4088,7 +4113,7 @@ async def on_message(message: discord.Message):
         if message.author.id in active_ai_sessions and message.content.strip():
             if not OPENROUTER_API_KEY:
                 await message.channel.send(
-                    "⚠️ The AI service is not configured right now."
+                    "⚠️ Il servizio IA non è configurato in questo momento."
                 )
                 return
 
@@ -4105,9 +4130,8 @@ async def on_message(message: discord.Message):
    each command. Use it as the source of truth and never invent a command.
 3. LANGUAGE RULE: Automatically respond in the SAME language the user speaks
    to you. Users may chat with you in ANY language.
-4. CONVERSATION RULE: For greetings, personal questions, or informal messages,
-   always answer enthusiastically, politely, and positively, then offer help
-   with the bot or server.
+                 4. CONVERSAZIONE NATURALE: Rispondi in modo naturale e diretto.
+    Non ripetere l'embed o le intestazioni di benvenuto nelle risposte normali.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
    is not listed or lacks information, clearly state that you do not have details.
    Never invent features, code, or technical specifications.
@@ -4147,9 +4171,7 @@ COMPLETE COMMAND DATABASE:
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
-                        await message.channel.send(
-                            "⚠️ The AI did not return a response."
-                        )
+                        await message.channel.send("⚠️ L'assistente non ha restituito una risposta.")
                         return
 
                     if reply_text.startswith("[ALERT]"):
@@ -4166,7 +4188,7 @@ COMPLETE COMMAND DATABASE:
                     await _log_exception(message.guild, "OpenRouter DM completion", e)
                     error_embed = discord.Embed(
                         description=(
-                            "⚠️ I couldn't process that request. Please try again later."
+                            "⚠️ Non riesco a elaborare la richiesta. Riprova più tardi."
                         ),
                         color=discord.Color.orange(),
                     )
@@ -4717,6 +4739,14 @@ class GiveawayJoinView(View):
         else:
             self.entrants.append(uid)
             await interaction.response.send_message("✅ You joined the giveaway!", ephemeral=True)
+        if interaction.message and interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            embed.description = re.sub(
+                r"\*\*Partecipanti:\*\* \d+",
+                f"**Partecipanti:** {len(self.entrants)}",
+                embed.description or "",
+            )
+            await interaction.message.edit(embed=embed, view=self)
 
 @bot.tree.command(name="giveaway", description="Start a timed giveaway.")
 @app_commands.describe(
@@ -4738,10 +4768,11 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
     embed  = discord.Embed(
         title="🎉 GIVEAWAY!",
         description=(
-            f"**Prize:** {_format_prize(prize)}\n"
-            f"**Winners:** {winners_count}\n"
-            f"**Ends:** <t:{end_ts}:R> (<t:{end_ts}:f>)\n\n"
-            f"Press the button below to enter!"
+            f"**Premio:** {_format_prize(prize)}\n"
+            f"**Vincitori:** {winners_count}\n"
+            f"**Partecipanti:** 0\n"
+            f"**Termina:** <t:{end_ts}:R> (<t:{end_ts}:f>)\n\n"
+            f"Premi il pulsante qui sotto per partecipare!"
         ),
         color=discord.Color.gold()
     )
@@ -4762,8 +4793,8 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
             child.disabled = True
         if not entrants:
             result_embed = discord.Embed(
-                title="🎉 Giveaway Ended",
-                description="❌ Nobody entered the giveaway!",
+                title="🎉 Giveaway terminato",
+                description="❌ Nessun partecipante ha aderito al giveaway.",
                 color=discord.Color.red()
             )
         else:
@@ -4776,11 +4807,12 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
                 if mbr:
                     grant_prize(prize, mbr)
             result_embed = discord.Embed(
-                title="🎉 Giveaway Ended!",
+                title="🎉 Giveaway terminato!",
                 description=(
-                    f"**Prize:** {_format_prize(prize)}\n"
-                    f"**Winner{'s' if actual_winners > 1 else ''}:** {winner_mentions} 🎊\n\n"
-                    f"Congratulations! The prize has been added to your profile."
+                    f"**Premio:** {_format_prize(prize)}\n"
+                    f"**Vincitori:** {winner_mentions} 🎊\n"
+                    f"**Partecipanti totali:** {len(entrants)}\n\n"
+                    f"Il premio è stato aggiunto al profilo dei vincitori."
                 ),
                 color=discord.Color.gold()
             )
@@ -5459,7 +5491,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":teamleave", "Removes you from your current team.", "No arguments.", ":teamleave"),
             (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
             (":stumble-top (aliases :stumbletop)", "Shows the top players in the Stumble™ activity rankings.", "No arguments.", ":stumble-top"),
-            (":boost", "Explains the Ruby, Crystals and booster-role rewards granted for server boosts.", "No arguments.", ":boost"),
+            (":boost", "Mostra allo Staff i vantaggi Ruby, Cristalli e ruolo assegnati ai booster.", "Nessun argomento; richiede un ruolo Staff.", ":boost"),
             (":link", "Starts the Stumble Guys account-linking flow so staff can verify the account.", "No arguments; follow the button/modal instructions in the channel.", ":link"),
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
             (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
@@ -5472,6 +5504,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
             (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
             (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
+            (":clear (alias :purge)", "Elimina i messaggi recenti del canale.", "<quantità> da 1 a 100; richiede un ruolo Staff.", ":clear 25"),
         ],
     ]
 
@@ -5479,13 +5512,13 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # together, while privileged commands are grouped by the role they need.
     community_names = {
         "profile", "leaderboard", "gems", "shop", "team", "myteam",
-        "teamleave", "1v1", "stumble-top", "boost", "link", "supporter",
+        "teamleave", "1v1", "stumble-top", "link", "supporter",
         "help",
     }
     staff_names = {
         "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
         "team-winner", "close-tour", "event", "start-event", "cod-event",
-        "set-winner", "end-event", "ban-event", "reset-staff-week", "test",
+        "set-winner", "end-event", "ban-event", "reset-staff-week", "test", "boost", "clear",
     }
     admin_names = {
         "big-tour", "big-event", "big-start", "big-event-winner",
@@ -5796,60 +5829,61 @@ class HelpLangView(View):
 @bot.command(name="help", aliases=["guide", "commands", "comandi", "guida"])
 async def help_cmd(ctx):
     embed = discord.Embed(
-        title="📖 Stumble™ Command Guide",
+        title="📖 Guida comandi Stumble™",
         description=(
-            "Select your language below and the bot will send the **complete guide to your private messages**! 🌍\n\n"
-            "🇬🇧 English · 🇮🇹 Italiano · 🇪🇸 Español · 🇩🇪 Deutsch\n"
-            "🇵🇹 Português · 🇫🇷 Français · 🏛️ Latin"
+            "Seleziona la lingua: il bot ti invierà la **guida completa nei messaggi privati**. 🌍\n\n"
+            "🇮🇹 Italiano · 🇬🇧 English · 🇪🇸 Español · 🇩🇪 Deutsch\n"
+            "🇵🇹 Português · 🇫🇷 Français · 🏛️ Latin · 🇮🇳 Hindi"
         ),
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="PCF™ Bot • prefix: ':'")
+    embed.set_footer(text="PCF™ Bot • prefisso: ':'")
     await ctx.send(embed=embed, view=HelpLangView())
 
 # ==========================================
 # 🚀 BOOST INFO
 # ==========================================
 @bot.command(name="boost")
+@staff_only()
 async def boost_cmd(ctx):
     embed = discord.Embed(
-        title="🚀 Server Boost Benefits",
+        title="🚀 Vantaggi dei Boost del Server",
         description=(
-            "Support **Stumble™** by boosting and earn amazing rewards! 💜\n\n"
+            "Controlla i vantaggi assegnati ai booster di **Stumble™**. 💜\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.purple()
     )
     embed.add_field(
-        name="🔵 1st Boost",
+        name="🔵 Primo Boost",
         value=(
-            f"{E_RUBY} **5,000 Ruby**\n"
-            f"{E_CRYSTAL} **1,000 Crystals**\n"
-            "💜 **Booster Role**"
+            f"{E_RUBY} **5.000 Ruby**\n"
+            f"{E_CRYSTAL} **1.000 Cristalli**\n"
+            "💜 **Ruolo Booster**"
         ),
         inline=True
     )
     embed.add_field(
-        name="💜 2nd Boost",
+        name="💜 Secondo Boost",
         value=(
-            f"{E_RUBY} **10,000 Ruby**\n"
-            f"{E_CRYSTAL} **2,000 Crystals**\n"
-            "💜 **Booster Role**\n"
-            "⭐ *Extra perks coming soon!*"
+            f"{E_RUBY} **10.000 Ruby**\n"
+            f"{E_CRYSTAL} **2.000 Cristalli**\n"
+            "💜 **Ruolo Booster**\n"
+            "⭐ *Altri vantaggi in arrivo!*"
         ),
         inline=True
     )
     embed.add_field(
-        name="❓ How to boost",
+        name="❓ Come ottenere un Boost",
         value=(
-            "Click the **Boost** button in the server menu.\n"
-            "Rewards are given **automatically** by the bot the moment you boost! 🤖"
+            "Usa il pulsante **Boost** nel menu del server.\n"
+            "I premi vengono assegnati automaticamente quando effettui il boost. 🤖"
         ),
         inline=False
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Stumble™ Boost System • Rewards auto-assigned on boost")
+    embed.set_footer(text="Sistema Boost Stumble™ • Premi assegnati automaticamente")
     await ctx.send(embed=embed)
 
 # ==========================================
@@ -5858,9 +5892,11 @@ async def boost_cmd(ctx):
 class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
     sg_name = TextInput(label="🎮 Your SG Username", placeholder="e.g. StumblePro123", max_length=30)
 
-    def __init__(self, guild_id: int):
+    def __init__(self, guild_id: int, default_name: str = ""):
         super().__init__()
         self.guild_id = guild_id
+        if default_name:
+            self.sg_name.default = default_name
 
     async def on_submit(self, interaction: discord.Interaction):
         user = interaction.user
@@ -5988,22 +6024,31 @@ class SGLinkChannelView(View):
 
 
 @bot.command(name="link")
-async def link_cmd(ctx):
+async def link_cmd(ctx, nome_personalizzato: str = None):
+    if nome_personalizzato:
+        prof = get_profile(ctx.author.id, ctx.author.display_name)
+        prof["sg_name"] = nome_personalizzato[:30]
+        db.setdefault("sg_links", {})[str(ctx.author.id)] = nome_personalizzato[:30]
+        save_db()
+        return await ctx.send(
+            f"✅ Nome Stumble Guys aggiornato in **{nome_personalizzato[:30]}**.",
+            delete_after=8.0,
+        )
     embed = discord.Embed(
-        title="🔗 Link your Stumble Guys Account",
+        title="🔗 Collega il tuo account Stumble Guys",
         description=(
-            "Want to receive **real Stumble Guys Gems** when you win a **Big Tournament**? 💎\n\n"
-            "**How it works:**\n"
-            "① Press **Link my SG Account** below\n"
-            "② Enter your **in-game username**\n"
-            "③ The bot will DM you — send a screenshot of your account\n"
-            "④ Staff verifies → you get the **Verified SG** role ✅\n\n"
-            "🏆 After verification, gems from tournament wins are tracked automatically!"
+            "Vuoi ricevere **Gemme Stumble Guys reali** vincendo un **Big Tournament**? 💎\n\n"
+            "**Come funziona:**\n"
+            "① Premi **Collega il mio account SG**\n"
+            "② Inserisci il tuo nome di gioco\n"
+            "③ Riceverai un DM per inviare lo screenshot\n"
+            "④ Lo Staff verifica e assegna il ruolo **SG verificato** ✅\n\n"
+            "Puoi modificare il nome salvato con `:link <nuovo_nome>`."
         ),
         color=discord.Color.purple()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Stumble™ SG Account System")
+    embed.set_footer(text="Sistema account SG Stumble™")
     view = SGLinkChannelView(guild_id=ctx.guild.id)
     await ctx.send(embed=embed, view=view)
 
