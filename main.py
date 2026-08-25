@@ -25,6 +25,7 @@ def save_db():
             "supporter_msg_id": db.get("supporter_msg_id"),
             "result_channel_id": db.get("result_channel_id"),
             "betting_channel_id": db.get("betting_channel_id"),
+            "log_channel_id": db.get("log_channel_id"),
             "supporters": db.get("supporters", {}),
             "gems":     db.get("gems",     {}),
             "sg_links": db.get("sg_links", {}),
@@ -34,6 +35,8 @@ def save_db():
             ],
             "tour": None,
             "event": None,
+            "event_history": db.get("event_history", []),
+            "event_bans": db.get("event_bans", {}),
         }
         if db["tour"]:
             data["tour"] = {k: v for k, v in db["tour"].items() if k != "host"}
@@ -60,10 +63,13 @@ def load_db():
         db["supporter_msg_id"]     = data.get("supporter_msg_id")
         db["result_channel_id"]    = data.get("result_channel_id")
         db["betting_channel_id"]   = data.get("betting_channel_id")
+        db["log_channel_id"]       = data.get("log_channel_id")
         db["supporters"]           = data.get("supporters", {})
         db["gems"]                 = data.get("gems",     {})
         db["sg_links"]             = data.get("sg_links", {})
         db["big_event"]            = data.get("big_event")
+        db["event_history"]        = data.get("event_history", [])
+        db["event_bans"]           = data.get("event_bans", {})
         db["teams"] = [
             {"members": [], "names": t["names"], "ids": t["ids"], "leader_id": t["leader_id"]}
             for t in data.get("teams", [])
@@ -193,17 +199,26 @@ PROFILE_ONLY_CH = 1410696056857170110   # :profile only
 SUPPORTER_VERIFY_CAT = 1410695995951546368   # category for supporter verify tickets
 EVENT_PING_ROLE_ID   = 1410695964783673486   # role pinged when event starts
 GIVEAWAY_PING_ROLE_ID = 1410695965748232263  # role pinged in giveaways
+DEFAULT_EVENT_RULES = (
+    "- Non fare teaming con altri giocatori\n"
+    "- Non chiedere il premio (distribuito automaticamente dal bot)\n"
+    "- Non spammare"
+)
 
 # ── Level roles ──────────────────────────────────────────────────────────────
-LEVEL_ROLES: dict[int, int] = {
-    5:  1508578478226804860,
-    10: 1508578772314755143,
-    15: 1508578988589842494,
-    20: 1508579111289884773,
-    30: 1508579321709723810,
+# Configure the Discord role IDs here.  ``None`` leaves a milestone disabled
+# until the corresponding role is created in the server.
+LEVEL_5_ROLE_ID  = None
+LEVEL_10_ROLE_ID = None
+LEVEL_20_ROLE_ID = None
+LEVEL_35_ROLE_ID = None
+LEVEL_50_ROLE_ID = None
+LEVEL_ROLES: dict[int, int | None] = {
+    5: LEVEL_5_ROLE_ID, 10: LEVEL_10_ROLE_ID, 20: LEVEL_20_ROLE_ID,
+    35: LEVEL_35_ROLE_ID, 50: LEVEL_50_ROLE_ID,
 }
 LEVEL_ROLE_THRESHOLDS = sorted(LEVEL_ROLES.keys())   # [5,10,15,20,30]
-LEVEL_ROLE_IDS        = set(LEVEL_ROLES.values())
+LEVEL_ROLE_IDS        = {rid for rid in LEVEL_ROLES.values() if rid}
 
 def _level_role_for(level: int) -> int | None:
     """Return the role ID that should be active at this level (or None)."""
@@ -285,6 +300,20 @@ async def update_rank_roles(guild: discord.Guild, member: discord.Member, punti:
     except discord.HTTPException as e:
         print(f"[rank] HTTPException: {e}")
 
+async def update_level_role(guild: discord.Guild, member: discord.Member, level: int):
+    """Keep one configurable milestone role active for the member."""
+    role_id = _level_role_for(level)
+    old_roles = [r for r in member.roles if r.id in LEVEL_ROLE_IDS]
+    try:
+        if old_roles:
+            await member.remove_roles(*old_roles, reason="Level milestone update")
+        if role_id:
+            role = guild.get_role(role_id)
+            if role:
+                await member.add_roles(role, reason=f"Reached Level {level}")
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[level role] {exc}")
+
 def get_profile_by_name(name: str):
     name_lower = name.lower()
     for prof in db["profiles"].values():
@@ -321,9 +350,12 @@ db = {
     "supporter_msg_id": None,
     "result_channel_id": None,
     "betting_channel_id": None,
+    "log_channel_id": None,
     "supporters": {},
     "gems": {},       # {user_id_str: {"name": str, "sg_name": str, "total": int}}
     "sg_links": {},   # {user_id_str: sg_name}
+    "event_history": [],
+    "event_bans": {},
 }
 
 # Global state for supporter weekly verification ticket
@@ -566,7 +598,7 @@ def build_ai_system_instruction() -> str:
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
 BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
-SLOT_MACHINE_COST = 300
+SLOT_MACHINE_COST = 500
 SLOT_EMOJIS = ["👑", "💎", "🔴", "🐔"]
 
 # ── In-memory: duels & match bets ──────────────────────────────────────────
@@ -643,10 +675,34 @@ def _format_prize(prize_text: str) -> str:
     """Replace Ruby/Cristalli keywords with their emoji in prize text."""
     if not prize_text:
         return prize_text
-    result = re.sub(r'\b[Rr]ub[yi]\b',    E_RUBY,    prize_text)
+    result = re.sub(r'\b[Rr]ub(?:y|ies|ino|ini)\b', E_RUBY, prize_text)
     result = re.sub(r'\b[Rr]ubini\b',     E_RUBY,    result)
     result = re.sub(r'\b[Cc]ristal[li]i?\b', E_CRYSTAL, result)
     return result
+
+def _normalise_currency(value: str) -> str | None:
+    """Return the canonical prize currency accepted by tournament modals."""
+    value = (value or "").strip().lower()
+    if E_RUBY.lower() in value or any(x in value for x in ("ruby", "rub", "rubi")):
+        return "Ruby"
+    if E_CRYSTAL.lower() in value or any(x in value for x in ("crystal", "cristal", "cristalli")):
+        return "Cristalli"
+    if E_GEMS.lower() in value or "gem" in value:
+        return "Gems"
+    if any(x in value for x in ("punt", "xp")):
+        return "Punti"
+    return None
+
+def _validate_tournament_prize_input(value: str) -> bool:
+    """Require one or more `position. amount currency` entries."""
+    entries = [part.strip() for part in re.split(r"[,;\n]+", value or "") if part.strip()]
+    if not entries:
+        return False
+    for entry in entries:
+        match = re.fullmatch(r"(\d+)\.\s*(\d+)\s*(.*)", entry)
+        if not match or not _normalise_currency(match.group(3)):
+            return False
+    return True
 
 def parse_tournament_prizes(prize_text: str) -> dict[int, str]:
     """Parse `1. 500 Ruby, 2. 250 Ruby, 3. 50 Ruby` into position prizes."""
@@ -659,10 +715,22 @@ def format_tournament_prizes(prize_text: str) -> str:
     prizes = parse_tournament_prizes(prize_text)
     if not prizes:
         return "—"
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     return "\n".join(
-        f"**{position}.** {_format_prize(prize)}"
+        f"{medals.get(position, '🏅')} **{position}° Posto:** {_format_prize(prize)}"
         for position, prize in sorted(prizes.items())
     )
+
+def _record_gems(member: discord.Member, amount: int) -> None:
+    """Keep both the profile balance and the richer gems leaderboard in sync."""
+    prof = get_profile(member.id, member.display_name)
+    prof["gemme"] = prof.get("gemme", 0) + amount
+    uid = str(member.id)
+    gems = db.setdefault("gems", {})
+    row = gems.setdefault(uid, {"name": member.display_name, "sg_name": "", "total": 0})
+    row["name"] = member.display_name
+    row["sg_name"] = db.get("sg_links", {}).get(uid, prof.get("sg_name", "")) or row.get("sg_name", "")
+    row["total"] = row.get("total", 0) + amount
 
 def grant_prize(prize_text: str, member: discord.Member):
     """Parsa '5000 Ruby' / '3000 Cristalli' / '500 Gems' e aggiunge al profilo."""
@@ -679,15 +747,7 @@ def grant_prize(prize_text: str, member: discord.Member):
     elif any(w in lower for w in ("punt", "xp")):
         prof["punti"] += amount
     elif any(w in lower for w in ("gem",)):
-        uid_str = str(member.id)
-        sg_name = db.get("sg_links", {}).get(uid_str, prof.get("sg_name", ""))
-        gems    = db.setdefault("gems", {})
-        if uid_str not in gems:
-            gems[uid_str] = {"name": member.display_name, "sg_name": sg_name, "total": 0}
-        gems[uid_str]["total"]  += amount
-        gems[uid_str]["name"]    = member.display_name
-        if sg_name:
-            gems[uid_str]["sg_name"] = sg_name
+        _record_gems(member, amount)
 
 # ==========================================
 # 📊 LEADERBOARD & BRACKET
@@ -979,6 +1039,27 @@ async def _auto_generate_bracket(guild: discord.Guild, t: dict):
     # Auto-DM hosts their assigned matches
     await _auto_assign_hosts_dm(guild, t)
 
+async def _advance_round_if_complete(ctx, t: dict) -> bool:
+    """Advance and publish the next round as soon as every match is resolved."""
+    matches = t.get("matches", {})
+    if not matches or t.get("round", 1) >= int(t.get("total_rounds", 1) or 1):
+        return False
+    if any(not m.get("winner") for m in matches.values()):
+        return False
+    winners = [m["winner"] for m in matches.values() if m.get("winner")]
+    if len(winners) < 2:
+        return False
+    t["round"] = int(t.get("round", 1)) + 1
+    t["matches"] = _build_ffa_matches(winners) if t.get("modalita") == "FFA" else _build_round_matches(winners)
+    t["bracket_channel_id"] = t.get("bracket_channel_id") or ctx.channel.id
+    save_db()
+    await ctx.send(f"🔄 **Round {t['round']}** avviato automaticamente — {len(winners)} qualificati!", delete_after=6.0)
+    await _update_bracket_messages(t)
+    betting_channel = bot.get_channel(db.get("betting_channel_id")) or ctx.channel
+    await _post_match_bets(betting_channel, t)
+    await _auto_assign_hosts_dm(ctx.guild, t)
+    return True
+
 
 async def _auto_assign_hosts_dm(guild: discord.Guild, t: dict):
     """DM each registered host their assigned matches for the current round."""
@@ -1195,6 +1276,67 @@ async def set_welcome(ctx, channel: discord.TextChannel):
     save_db()
     await ctx.send(f"✅ Welcome channel set to {channel.mention}.", delete_after=6.0)
 
+async def _system_log(guild, text: str):
+    channel_id = db.get("log_channel_id")
+    channel = guild.get_channel(channel_id) if guild and channel_id else None
+    if channel:
+        try:
+            await channel.send(text)
+        except discord.HTTPException:
+            pass
+
+@bot.command(name="set-log", aliases=["set_log"])
+@commands.has_permissions(administrator=True)
+async def set_log(ctx, channel: discord.TextChannel):
+    db["log_channel_id"] = channel.id
+    save_db()
+    await ctx.send(f"✅ Log di sistema impostati in {channel.mention}.", delete_after=6.0)
+
+@bot.command(name="warn")
+@commands.has_permissions(manage_messages=True)
+async def warn(ctx, member: discord.Member, *, reason: str):
+    embed = discord.Embed(title="⚠️ Avviso formale", description=f"Motivo: **{reason}**",
+                          color=discord.Color.orange())
+    try:
+        await member.send(embed=embed)
+        dm_status = "DM inviato"
+    except discord.HTTPException:
+        dm_status = "DM non recapitabile"
+    await _system_log(ctx.guild, f"⚠️ WARN {member} ({member.id}) da {ctx.author}: {reason} — {dm_status}")
+    await ctx.send(f"✅ Avviso registrato per {member.mention}. {dm_status}.", delete_after=8.0)
+
+@bot.command(name="time", aliases=["timeout"])
+@commands.has_permissions(moderate_members=True)
+async def time_cmd(ctx, member: discord.Member, duration: str, *, reason: str):
+    match = re.fullmatch(r"(\d+)([smhd])", duration.lower())
+    if not match:
+        return await ctx.send("❌ Durata non valida. Usa ad esempio `30m`, `2h` o `1d`.", delete_after=6.0)
+    seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    if seconds > 28 * 86400:
+        return await ctx.send("❌ Il timeout Discord non può superare 28 giorni.", delete_after=6.0)
+    until = discord.utils.utcnow() + timedelta(seconds=seconds)
+    try:
+        await member.timeout(until, reason=reason)
+        embed = discord.Embed(title="⏱️ Timeout applicato",
+                              description=f"Durata: **{duration}**\nMotivo: **{reason}**",
+                              color=discord.Color.red())
+        await member.send(embed=embed)
+        status = "DM inviato"
+    except discord.HTTPException as exc:
+        status = f"Errore: {exc}"
+    await _system_log(ctx.guild, f"⏱️ TIMEOUT {member} ({member.id}) da {ctx.author}: {duration} — {reason}")
+    await ctx.send(f"✅ Timeout applicato a {member.mention}. {status}.", delete_after=8.0)
+
+@bot.command(name="ban-event", aliases=["ban_event"])
+@commands.has_permissions(manage_channels=True)
+async def ban_event(ctx, member: discord.Member, channel: discord.TextChannel):
+    await channel.set_permissions(member, view_channel=False, reason=f"Event ban by {ctx.author}")
+    bans = db.setdefault("event_bans", {})
+    bans.setdefault(str(member.id), []).append(channel.id)
+    save_db()
+    await _system_log(ctx.guild, f"🚫 EVENT BAN {member} da {ctx.author} in {channel.mention}")
+    await ctx.send(f"✅ {member.mention} escluso da {channel.mention} fino a `:end-event`.", delete_after=8.0)
+
 # ==========================================
 # 👤 PROFILO ED ECONOMIA
 # ==========================================
@@ -1304,8 +1446,8 @@ async def add_cristalli_cmd(ctx, member: discord.Member, amount: int):
 @bot.command(name="add-gems", aliases=["add_gems"])
 @admin_only()
 async def add_gems_cmd(ctx, member: discord.Member, amount: int):
+    _record_gems(member, amount)
     prof = get_profile(member.id, member.display_name)
-    prof["gemme"] = prof.get("gemme", 0) + amount
     save_db()
     await ctx.send(embed=discord.Embed(
         description=f"{E_GEMS} **+{format_num(amount)} Gems** → {member.mention}\nNew total: **{format_num(prof['gemme'])}** {E_GEMS}",
@@ -1686,8 +1828,13 @@ class TourRegisterView(View):
             if t.get("is_big"):
                 has_sg = any(r.id == SG_VERIFIED_ROLE_ID for r in interaction.user.roles)
                 if not has_sg:
+                    link_ch = discord.utils.find(
+                        lambda c: c.name.lower() == "link", interaction.guild.channels
+                    ) if interaction.guild else None
+                    destination = link_ch.mention if link_ch else "#link"
                     return await interaction.response.send_message(
-                        "❌ You need a **Verified SG account** to join Big Tournaments!\nUse `:link` to connect your account.",
+                        f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
+                        f"Connetti direttamente il tuo account nel canale {destination}.",
                         ephemeral=True)
             t["players"].append(uid)
             t["player_names"].append(interaction.user.display_name)
@@ -1793,7 +1940,7 @@ class TourModal1(Modal):
         self.abilita = TextInput(label="⚡ Abilità / Emote",   placeholder="es. Slap, Punch, Banana…")
         self.premio  = TextInput(
             label="🎁 Premi top 3",
-            placeholder="1. 500 Ruby, 2. 250 Ruby, 3. 50 Ruby",
+            placeholder="1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby",
             max_length=200)
         self.add_item(self.nome)
         self.add_item(self.mappa)
@@ -1801,6 +1948,11 @@ class TourModal1(Modal):
         self.add_item(self.premio)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not _validate_tournament_prize_input(self.premio.value):
+            return await interaction.response.send_message(
+                "❌ Formato premio non valido. Usa `1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby` "
+                "oppure Cristalli.",
+                ephemeral=True)
         uid = str(interaction.user.id)
         _pending_tour_setup[uid] = {
             "nome":     self.nome.value.strip(),
@@ -1952,10 +2104,12 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     view   = TourRegisterView(count=0, max_p=default_max, host_count=0)
     if reg_ch:
         if is_big:
-            content = f"@everyone 🌟 **BIG TOURNAMENT** annunciato! <@&{TOUR_PING_ROLE_ID}>"
+            content = f"<@&{TOUR_PING_ROLE_ID}> @here 🌟 **BIG TOURNAMENT** annunciato!"
         else:
             content = f"<@&{TOUR_PING_ROLE_ID}> 🏆 Nuovo torneo aperto — registrati!"
-        reg_msg = await reg_ch.send(content=content, embed=embed, view=view)
+        reg_msg = await reg_ch.send(
+            content=content, embed=embed, view=view,
+            allowed_mentions=discord.AllowedMentions(roles=True, everyone=is_big))
         db["tour"]["register_msg_id"]     = reg_msg.id
         db["tour"]["register_channel_id"] = reg_ch.id
         save_db()
@@ -2343,6 +2497,7 @@ async def qual(ctx):
         save_db()
         await ctx.send(f"✅ **{m['winner']}** qualified (bot)!", delete_after=5.0)
         await _update_bracket_messages(t)
+        await _advance_round_if_complete(ctx, t)
         return
 
     if is_team:
@@ -2430,6 +2585,7 @@ async def qual(ctx):
 
     save_db()
     await _update_bracket_messages(t)
+    await _advance_round_if_complete(ctx, t)
 
 @bot.command()
 @hoster_only()
@@ -2783,15 +2939,16 @@ class EventModal(Modal, title="⚡ Create Flash Event"):
         db["event"] = {
             "orario":  orario_s,
             "premio":  self.premio.value,
-            "regole":  self.regole.value,
+            "regole":  DEFAULT_EVENT_RULES,
             "winners": [],
+            "room_counter": 0,
         }
         save_db()
         embed = discord.Embed(title="📢 NEW FLASH EVENT!", color=discord.Color.purple())
         embed.description = "Get ready! The host will start the event soon. 🎮"
         embed.add_field(name="⏰ Time",          value=orario_d,                         inline=True)
         embed.add_field(name="🎁 Prize",         value=_format_prize(self.premio.value), inline=True)
-        embed.add_field(name=f"{E_RULES} Rules", value=self.regole.value,                inline=False)
+        embed.add_field(name=f"{E_RULES} Rules", value=DEFAULT_EVENT_RULES,              inline=False)
         embed.set_footer(text=f"Created by {interaction.user.display_name}")
         embed.set_image(url=STUMBLE_IMG)
         try:
@@ -2860,8 +3017,10 @@ async def start_event(ctx):
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"Started by {ctx.author.display_name}  •  Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
-    ping_txt  = "@everyone" if is_big else f"<@&{EVENT_PING_ROLE_ID}>"
-    allowed   = discord.AllowedMentions(everyone=True) if is_big else discord.AllowedMentions(roles=True)
+    ping_txt  = (f"<@&{EVENT_PING_ROLE_ID}> @here" if is_big
+                 else f"<@&{EVENT_PING_ROLE_ID}>")
+    allowed   = (discord.AllowedMentions(everyone=True, roles=True)
+                 if is_big else discord.AllowedMentions(roles=True))
     await start_ch.send(
         content=f"{ping_txt} 🟢 **The event has started — get in there!**",
         embed=embed,
@@ -2871,10 +3030,17 @@ async def start_event(ctx):
 @bot.command(name="cod-event", aliases=["cod_event"])
 @hoster_only()
 async def cod_event(ctx, emote: str, mappa: str, codice: str):
-    embed = discord.Embed(title="🎮 FLASH EVENT ROOM", color=discord.Color.dark_teal())
+    current = db.get("event") or db.get("big_event") or {}
+    current["room_counter"] = current.get("room_counter", 0) + 1
+    if db.get("event"):
+        db["event"]["room_counter"] = current["room_counter"]
+    elif db.get("big_event"):
+        db["big_event"]["room_counter"] = current["room_counter"]
+    room_no = current["room_counter"]
+    embed = discord.Embed(title=f"🎮 FLASH EVENT — Room {room_no}", color=discord.Color.dark_teal())
     embed.add_field(name="🗺️ Map",   value=mappa,        inline=True)
     embed.add_field(name="💥 Emote", value=emote,        inline=True)
-    embed.add_field(name="🔑 Code",  value=f"`{codice}`", inline=False)
+    embed.add_field(name="🔑 Room Code", value=f"```{codice}```", inline=False)
     embed.set_image(url=STUMBLE_IMG)
     prof_staff = get_profile(ctx.author.id, ctx.author.display_name)
     prof_staff["staff_matches"]      += 1
@@ -2882,12 +3048,17 @@ async def cod_event(ctx, emote: str, mappa: str, codice: str):
     save_db()
     await ctx.send(embed=embed)
 
-@bot.command(name="set-winner", aliases=["set_winner"])
+@bot.command(name="set-winner", aliases=["set_winner", "win-event", "win_event"])
 @hoster_only()
 async def set_winner(ctx, winner: discord.Member):
     if db["event"] is None:
         return await ctx.send("❌ No active event.")
     db["event"]["winners"].append(winner)
+    db.setdefault("event_history", []).append({
+        "user_id": str(winner.id), "name": winner.display_name,
+        "event": db["event"].get("nome", "Flash Event"),
+        "at": datetime.utcnow().isoformat(),
+    })
     vittorie = db["event"]["winners"].count(winner)
     embed    = discord.Embed(title="✅ Winner Registered!", color=discord.Color.green())
     embed.description = (
@@ -2917,6 +3088,17 @@ async def end_event(ctx, base_premio: int, valuta: str):
         else:
             prof["rubini"] += tot
         desc += f"• {w.mention}: **x{vittorie}** ➔ +{format_num(tot)} {icon} +{vittorie} {E_TROPHY}\n"
+    for uid, channel_ids in db.get("event_bans", {}).items():
+        member = ctx.guild.get_member(int(uid))
+        if member:
+            for channel_id in channel_ids:
+                channel = ctx.guild.get_channel(channel_id)
+                if channel:
+                    try:
+                        await channel.set_permissions(member, overwrite=None, reason="Event ended")
+                    except discord.HTTPException:
+                        pass
+    db["event_bans"] = {}
     db["event"] = None
     save_db()
     embed = discord.Embed(title="🏁 FLASH EVENT ENDED", description=desc, color=discord.Color.red())
@@ -2952,6 +3134,8 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
             "prize1": self.prize1.value,
             "prize2": self.prize2.value,
             "prize3": self.prize3.value,
+            "regole": DEFAULT_EVENT_RULES,
+            "room_counter": 0,
         }
         save_db()
         embed = discord.Embed(title=f"🌟 {nome.upper()}",
@@ -2960,7 +3144,7 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
         embed.add_field(name=f"{E_GOLD} 1st Place",  value=f"**{_format_prize(self.prize1.value)}**", inline=False)
         embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"**{_format_prize(self.prize2.value)}**", inline=False)
         embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"**{_format_prize(self.prize3.value)}**", inline=False)
-        embed.add_field(name=f"{E_RULES} Rules",     value=self.regole.value,                     inline=False)
+        embed.add_field(name=f"{E_RULES} Rules",     value=DEFAULT_EVENT_RULES,                  inline=False)
         embed.set_footer(text=f"Announced by {interaction.user.display_name} • {datetime.now().strftime('%d/%m/%Y')}")
         embed.set_image(url=STUMBLE_IMG)
         try:
@@ -3082,9 +3266,9 @@ async def big_start(ctx):
     embed.set_footer(text=f"Started by {ctx.author.display_name} • Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     await start_ch.send(
-        content=f"<@&{EVENT_PING_ROLE_ID}> 🌟 **THE BIG EVENT HAS STARTED — GET IN THERE!** 🔥",
+        content=f"<@&{EVENT_PING_ROLE_ID}> @here 🌟 **THE BIG EVENT HAS STARTED — GET IN THERE!** 🔥",
         embed=embed,
-        allowed_mentions=discord.AllowedMentions(roles=True)
+        allowed_mentions=discord.AllowedMentions(roles=True, everyone=True)
     )
 
 
@@ -3843,12 +4027,7 @@ COMPLETE COMMAND DATABASE:
                 member = message.guild.get_member(uid)
                 if member:
                     try:
-                        old_lvl_roles = [r for r in member.roles if r.id in LEVEL_ROLE_IDS]
-                        if old_lvl_roles:
-                            await member.remove_roles(*old_lvl_roles, reason="Level role update")
-                        lvl_role = message.guild.get_role(new_role_id)
-                        if lvl_role:
-                            await member.add_roles(lvl_role, reason=f"Reached Level {new_level}")
+                        await update_level_role(message.guild, member, new_level)
                     except Exception as e:
                         print(f"[Level role] {e}")
             # ── Level-up embed ───────────────────────────────
@@ -6084,7 +6263,7 @@ class GemsShopSelect(discord.ui.Select):
             return await interaction.response.send_message(
                 "❌ Devi collegare il tuo account SG con `:link` prima di comprare gemme!", ephemeral=True)
         prof["cristalli"] -= price
-        prof["gemme"]      = prof.get("gemme", 0) + gems
+        _record_gems(interaction.user, gems)
         save_db()
         guild = interaction.guild
         owner_role = guild.get_role(OWNER_ROLE_ID)
@@ -6264,7 +6443,7 @@ def _machine_embed(prof: dict) -> discord.Embed:
 class SlotMachineAmountModal(Modal, title="🎰 Scegli la puntata"):
     amount = TextInput(
         label="Quanti Ruby vuoi puntare?",
-        placeholder="Da 300 a 3000, multipli di 300",
+        placeholder="Minimo 500 Ruby, multipli di 500",
         min_length=3,
         max_length=4,
     )
@@ -6339,19 +6518,10 @@ class SlotMachineView(View):
             color=color
         )
         em.set_footer(text=f"Saldo: {format_num(prof['rubini'])} Ruby · {format_num(prof.get('cristalli', 0))} Cristalli")
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(embed=em, view=self)
+        # Keep the public machine panel intact; only the player sees the result.
+        await interaction.response.send_message(embed=em, ephemeral=True)
 
-    @discord.ui.button(label="🎰 Gioca  (300 Ruby)", style=discord.ButtonStyle.primary)
-    async def play_normal(self, interaction: discord.Interaction, button: Button):
-        await self._play(interaction, 1)
-
-    @discord.ui.button(label="🎰 x10  (3.000 Ruby)", style=discord.ButtonStyle.danger)
-    async def play_x10(self, interaction: discord.Interaction, button: Button):
-        await self._play(interaction, 10)
-
-    @discord.ui.button(label="🎯 Scegli puntata", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="🎰 Scommetti", style=discord.ButtonStyle.primary)
     async def choose_amount(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ Non è la tua macchina!", ephemeral=True)
@@ -6687,10 +6857,22 @@ class MatchBettingView(View):
         self.add_item(btn2)
 
     async def _bet(self, interaction: discord.Interaction, choice: str):
-        # Check player is not one of the competitors (by display name match)
+        # Only the two (or three) competitors are blocked from betting.
         t = db.get("tour") or {}
-        player_names = [n.lower() for n in t.get("player_names", [])]
-        if interaction.user.display_name.lower() in player_names:
+        match = t.get("matches", {}).get(int(self.match_id), {})
+        competitor_names = {
+            str(match.get("p1", "")).strip().lower(),
+            str(match.get("p2", "")).strip().lower(),
+            str(match.get("p3", "")).strip().lower(),
+        } - {"", "bye"}
+        competitor_ids = {
+            str(pid) for pid, name in zip(t.get("players", []), t.get("player_names", []))
+            if str(name).strip().lower() in competitor_names
+        }
+        for team in db.get("teams", []):
+            if any(str(name).strip().lower() in competitor_names for name in team.get("names", [])):
+                competitor_ids.update(str(uid) for uid in team.get("ids", []))
+        if str(interaction.user.id) in competitor_ids:
             return await interaction.response.send_message(
                 "❌ I giocatori non possono scommettere sui propri match!", ephemeral=True)
         await interaction.response.send_modal(_BetAmountModal(self.match_id, choice))

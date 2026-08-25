@@ -1,2 +1,5 @@
 discord.py
 groq
+discord.py
+groq
+sift-stack-py
