@@ -10,6 +10,11 @@ python main.py
 
 The workflow is configured as a console process and starts automatically. The bot requires the `DISCORD_API_TOKEN` secret in Replit Secrets. Never place the token in source files or commit it.
 
+## Hosting
+
+The bot is hosted externally on Bot-Hosting.net. Do not start `main.py` or the
+Discord bot workflow locally on Replit after making changes or pushing to GitHub.
+
 Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime dependency is `discord.py`.
 
 ## Commands and permissions
