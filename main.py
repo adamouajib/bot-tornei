@@ -388,8 +388,6 @@ _supporter_to_remove: set = set()
 
 # Pending SG link verifications: {user_id: {"sg_name": str, "guild_id": int}}
 pending_sg_links: dict = {}
-ACTIVE_SESSIONS_FILE = "active_sessions.json"
-active_ai_sessions: set[int] = set()
 ai_user_locks: dict[int, asyncio.Lock] = {}
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # Keep the DM assistant on one predictable free OpenRouter model.
@@ -401,32 +399,6 @@ client = OpenAI(
     timeout=30.0,
 )
 ALERT_RECIPIENT_ID = 1338274535325175810
-
-
-def load_sessions() -> None:
-    """Restore active DM AI sessions after a bot restart."""
-    if not os.path.exists(ACTIVE_SESSIONS_FILE):
-        return
-    try:
-        with open(ACTIVE_SESSIONS_FILE, "r", encoding="utf-8") as session_file:
-            session_ids = json.load(session_file)
-        if not isinstance(session_ids, list):
-            raise ValueError("il file delle sessioni deve contenere una lista")
-        active_ai_sessions.update(int(user_id) for user_id in session_ids)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        print(f"[sessions] Impossibile caricare le sessioni: {exc}")
-
-
-def save_sessions() -> None:
-    """Persist active DM AI sessions in a small JSON file."""
-    try:
-        with open(ACTIVE_SESSIONS_FILE, "w", encoding="utf-8") as session_file:
-            json.dump(sorted(active_ai_sessions), session_file, indent=2)
-    except OSError as exc:
-        print(f"[sessions] Impossibile salvare le sessioni: {exc}")
-
-
-load_sessions()
 
 
 def clean_ai_response(response) -> str:
@@ -620,8 +592,8 @@ def build_ai_system_instruction() -> str:
 
     return (
         "Sei esclusivamente l'Assistente Ufficiale del server PCF™. "
-        "Non identificarti mai come Groq, Croq, OpenRouter, Liquid, Gemini, "
-        "un altro bot o un altro servizio: per l'utente sei sempre e soltanto "
+        "Non identificarti mai come un provider AI, un altro bot o un altro "
+        "servizio: per l'utente sei sempre e soltanto "
         "l'Assistente Ufficiale PCF™.\n\n"
         "LINK E INFO SERVER:\n"
         "- Link Invito Ufficiale Server: "
@@ -643,9 +615,6 @@ def build_ai_system_instruction() -> str:
         "sono indicati sulla stessa riga e non contano separatamente. Usa "
         "questa lista come riferimento aggiornato e non inventare comandi:\n"
         f"{command_reference or '- Nessun comando registrato.'}\n\n"
-        "CONTROLLI ASSISTENTE DM:\n"
-        "- :bot — attiva la conversazione con l'assistente IA.\n"
-        "- :stop — chiude la conversazione con l'assistente IA.\n\n"
         "SISTEMA DI RILEVAMENTO VIOLAZIONI (MODERAZIONE):\n"
         "- Analizza ogni messaggio dell'utente. Se l'utente scrive parolacce "
         "gravi, insulti, contenuti sessuali/NSFW, richieste di \"nuke\", "
@@ -1286,7 +1255,7 @@ async def on_ready():
     except Exception as exc:
         await _log_exception(None, "slash command sync", exc)
     await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.listening, name=":bot in DM 📩"))
+        type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
     if not auto_leaderboard.is_running():
         auto_leaderboard.start()
     if not auto_save.is_running():
@@ -3823,44 +3792,6 @@ async def on_message(message: discord.Message):
     if message.guild is None:
         await _log_dm(message, "IN")
         uid = str(message.author.id)
-        command_text = message.content.strip().lower()
-
-        if command_text == ":bot":
-            active_ai_sessions.add(message.author.id)
-            save_sessions()
-            welcome_embed = discord.Embed(
-                title="🤖 Official PCF™ AI Assistant",
-                description=(
-                    "Welcome to the **PCF™** server assistant! 🏆\n\n"
-                    "Feel free to ask me anything about server commands, rules, "
-                    "or general info.\n\n"
-                    "🌐 **Multilingual Support:** You can chat with me in **ANY "
-                    "language** you prefer!\n\n"
-                    "🔗 **Useful Links:**\n"
-                    "[Join PCF™ Server]"
-                    "(https://discord.gg/pcf-cup-community-1046154910368014417)\n\n"
-                    "*Type `:stop` at any time to end this chat.*"
-                ),
-                color=discord.Color(0x3498DB),
-            )
-            await message.channel.send(embed=welcome_embed)
-            await _log_dm(message, "OUT", "AI session started")
-            return
-
-        if command_text == ":stop":
-            active_ai_sessions.discard(message.author.id)
-            save_sessions()
-            closing_embed = discord.Embed(
-                title="👋 Conversazione Conclusa",
-                description=(
-                    "Se hai di nuovo bisogno di me, scrivi di nuovo "
-                    "**`:bot`** in questa chat."
-                ),
-                color=discord.Color.red(),
-            )
-            await message.channel.send(embed=closing_embed)
-            await _log_dm(message, "OUT", "AI session closed")
-            return
 
         # ── SG Link screenshot flow ───────────────────
         if uid in pending_sg_links and message.attachments:
@@ -3961,8 +3892,8 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
 
-        # ── Session-based AI support assistant ─────────────────────────
-        if message.author.id in active_ai_sessions and message.content.strip():
+        # ── Single OpenRouter DM assistant ───────────────────────────────
+        if message.content.strip():
             if not OPENROUTER_API_KEY:
                 await message.channel.send(
                     "⚠️ The AI service is not configured right now."
@@ -3975,8 +3906,8 @@ async def on_message(message: discord.Message):
 
                 sys_prompt = f"""
 1. You are exclusively the Official PCF™ Server Assistant. Never identify
-   yourself as Groq, Croq, OpenRouter, Liquid, Gemini, another bot, or another
-   service. To the user, you are always and only the Official PCF™ Assistant.
+   yourself as an AI provider, another bot, or another service. To the user,
+   you are always and only the Official PCF™ Assistant.
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
@@ -4027,9 +3958,6 @@ COMPLETE COMMAND DATABASE:
                     response_embed = discord.Embed(
                         description=reply_text[:4096],
                         color=discord.Color.blurple(),
-                    )
-                    response_embed.set_footer(
-                        text="Scrivi :stop per chiudere la chat"
                     )
                     await message.channel.send(embed=response_embed)
                     await _log_dm(message, "OUT", reply_text)
