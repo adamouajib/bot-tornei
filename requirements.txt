@@ -3,3 +3,6 @@ groq
 discord.py
 groq
 sift-stack-py
+discord.py
+groq
+sift-stack-py

@@ -5,11 +5,13 @@ import math
 import calendar
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 from discord.ui import Button, View, Modal, TextInput
 import asyncio
 import inspect
 from datetime import datetime, timedelta
 import random
+import traceback
 from groq import Groq
 
 
@@ -188,7 +190,9 @@ ADMIN_ROLE_IDS       = {                     # big-event / economy / tickets
     1410695915689213984, 1410695914758344835,
     1410695913856307332,
 }
-OWNER_ROLE_ID        = 1410695913856307332   # set-welcome / set-ticket / set-supporter
+OWNER_ROLE_ID        = 1410695913856307332   # legacy owner role
+OWNER_USER_IDS       = {1338274535325175810, 1012712686770995201}  # Adam and Piccolofe
+MANAGER_ROLE_IDS     = {1410695915689213984, 1410695914758344835}
 MEMBER_ROLE_ID       = 1410695955308871703
 STUMBLE_STAFF_ROLE_ID = 1410695925927645277  # given to accepted staff applicants (channel access)
 
@@ -235,7 +239,11 @@ def staff_only():
 
 def hoster_only():
     async def predicate(ctx):
-        return any(r.id == HOSTER_ROLE_ID for r in ctx.author.roles)
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or any(r.id == HOSTER_ROLE_ID for r in ctx.author.roles)
+            or any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
+        )
     return commands.check(predicate)
 
 def admin_only():
@@ -245,13 +253,29 @@ def admin_only():
 
 def owner_only():
     async def predicate(ctx):
-        return any(r.id == OWNER_ROLE_ID for r in ctx.author.roles)
+        return ctx.author.id in OWNER_USER_IDS
     return commands.check(predicate)
 
 def big_event_only():
     async def predicate(ctx):
         return any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
     return commands.check(predicate)
+
+
+def manager_or_owner_only():
+    async def predicate(ctx):
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or any(r.id in MANAGER_ROLE_IDS for r in ctx.author.roles)
+        )
+    return commands.check(predicate)
+
+
+def interaction_role_check(interaction: discord.Interaction, roles: set[int]) -> bool:
+    member = interaction.user
+    return isinstance(member, discord.Member) and (
+        member.id in OWNER_USER_IDS or any(role.id in roles for role in member.roles)
+    )
 
 RANK_DATA = [
     (0,     None,                "<:ranked:1507509359985295491>",        "Nessun Rank"),
@@ -1169,20 +1193,61 @@ async def auto_delete_invoke(ctx):
         await ctx.message.delete()
     except Exception:
         pass
+    await _log_event(ctx.guild, "COMMAND", f":{ctx.command.qualified_name} {' '.join(ctx.args[2:])}", actor=ctx.author)
 
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckFailure):
+        await _log_event(ctx.guild, "AUTH", f"denied :{getattr(ctx.command, 'qualified_name', 'unknown')}", actor=ctx.author)
         await ctx.send("❌ You don't have permission to use this command.", delete_after=5.0)
     elif isinstance(error, commands.MissingRequiredArgument):
+        await _log_event(ctx.guild, "ERROR", f"missing argument for :{getattr(ctx.command, 'qualified_name', 'unknown')}: {error}", actor=ctx.author)
         await ctx.send(f"❌ Missing argument: `{error.param.name}`", delete_after=5.0)
     elif isinstance(error, commands.CommandNotFound):
         pass
+    else:
+        await _log_exception(ctx.guild, f"prefix command {getattr(ctx.command, 'qualified_name', 'unknown')}", error)
+        await ctx.send("❌ An internal error occurred while running that command.", delete_after=6.0)
+
+
+@bot.event
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    await _log_exception(interaction.guild, f"slash command {getattr(interaction.command, 'name', 'unknown')}", error)
+    message = "❌ You don't have permission to use this command." if isinstance(error, app_commands.CheckFailure) else "❌ An internal error occurred while running that command."
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    """Audit slash commands and component/modal interactions."""
+    try:
+        if interaction.guild:
+            name = getattr(interaction.command, "name", None) or interaction.data.get("custom_id", "component")
+            await _log_event(interaction.guild, "INTERACTION", str(name), actor=interaction.user)
+    except Exception as exc:
+        await _log_exception(interaction.guild, "interaction audit", exc)
+
+
+@bot.event
+async def on_error(event_method, *args, **kwargs):
+    """Catch uncaught Discord event errors and send them to the audit channel."""
+    exc = traceback.format_exc()
+    print(f"[DISCORD EVENT ERROR] {event_method}\n{exc}")
+    guild = getattr(args[0], "guild", None) if args else None
+    await _log_event(guild, "ERROR", f"event={event_method}: {exc[-1800:]}")
 
 @bot.event
 async def on_ready():
     load_db()
     print(f"🔥 Stumble™ bot ONLINE!")
+    try:
+        await bot.tree.sync()
+        print("[on_ready] Slash commands synced")
+    except Exception as exc:
+        await _log_exception(None, "slash command sync", exc)
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name=":bot in DM 📩"))
     if not auto_leaderboard.is_running():
@@ -1296,7 +1361,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
 
 @bot.command(name="set-welcome", aliases=["set_welcome"])
-@commands.has_permissions(administrator=True)
+@owner_only()
 async def set_welcome(ctx, channel: discord.TextChannel):
     db["welcome_channel_id"] = channel.id
     save_db()
@@ -1311,47 +1376,86 @@ async def _system_log(guild, text: str):
         except discord.HTTPException:
             pass
 
+
+async def _log_event(guild, category: str, details: str, *, actor=None):
+    """Write a structured audit entry without ever exposing secrets."""
+    actor_text = f" | actor={actor} ({actor.id})" if actor else ""
+    await _system_log(
+        guild,
+        f"`{datetime.now().isoformat(timespec='seconds')}` [{category}] "
+        f"{details}{actor_text}",
+    )
+
+
+async def _log_exception(guild, context: str, exc: Exception):
+    print(f"[{context}] {exc}")
+    await _log_event(guild, "ERROR", f"{context}: {type(exc).__name__}: {exc}")
+
+
+async def _log_dm(message: discord.Message, direction: str = "IN", content: str | None = None):
+    """Mirror DM activity to every configured server audit channel."""
+    payload = content[:900] if content else (message.content[:900] if message.content else "(attachment/embed)")
+    if message.attachments:
+        payload += f" | attachments={len(message.attachments)}"
+    for guild in bot.guilds:
+        await _log_event(
+            guild,
+            "DM",
+            f"{direction} user={message.author} ({message.author.id}): {payload}",
+        )
+
 @bot.command(name="set-log", aliases=["set_log"])
-@commands.has_permissions(administrator=True)
+@owner_only()
 async def set_log(ctx, channel: discord.TextChannel):
     db["log_channel_id"] = channel.id
     save_db()
-    await ctx.send(f"✅ Log di sistema impostati in {channel.mention}.", delete_after=6.0)
+    await ctx.send(f"✅ System logs are now recorded in {channel.mention}.", delete_after=6.0)
+    await _log_event(ctx.guild, "CONFIG", f"log channel set to {channel.id}", actor=ctx.author)
 
-@bot.command(name="warn")
-@commands.has_permissions(manage_messages=True)
-async def warn(ctx, member: discord.Member, *, reason: str):
-    embed = discord.Embed(title="⚠️ Avviso formale", description=f"Motivo: **{reason}**",
-                          color=discord.Color.orange())
+@bot.tree.command(name="warn", description="Issue a formal warning to a member.")
+@app_commands.describe(member="Member to warn", reason="Reason for the warning")
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+    if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
+        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+    embed = discord.Embed(title="⚠️ WARNING / WARN", color=discord.Color.orange(),
+                          timestamp=discord.utils.utcnow())
+    embed.add_field(name="Sanctioned User", value=f"{member.mention}\n`{member} ({member.id})`", inline=False)
+    embed.add_field(name="Staffer (Issuer)", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
+    embed.add_field(name="Reason", value=reason[:1024], inline=True)
+    embed.add_field(name="Date/Time", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=False)
+    embed.set_footer(text="Please follow the rules! Receiving another warning will result in a timeout.")
     try:
         await member.send(embed=embed)
-        dm_status = "DM inviato"
+        dm_status = "DM sent"
     except discord.HTTPException:
-        dm_status = "DM non recapitabile"
-    await _system_log(ctx.guild, f"⚠️ WARN {member} ({member.id}) da {ctx.author}: {reason} — {dm_status}")
-    await ctx.send(f"✅ Avviso registrato per {member.mention}. {dm_status}.", delete_after=8.0)
+        dm_status = "DM could not be delivered"
+    await _log_event(interaction.guild, "WARN", f"{member} ({member.id}): {reason} — {dm_status}", actor=interaction.user)
+    await interaction.response.send_message(f"✅ Warning issued to {member.mention}. {dm_status}.", ephemeral=True)
 
-@bot.command(name="time", aliases=["timeout"])
-@commands.has_permissions(moderate_members=True)
-async def time_cmd(ctx, member: discord.Member, duration: str, *, reason: str):
+@bot.tree.command(name="time", description="Timeout a member and notify them by DM.")
+@app_commands.describe(member="Member to timeout", duration="Examples: 30m, 2h, 1d", reason="Reason for the timeout")
+async def time_cmd(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
+    if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
+        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
     match = re.fullmatch(r"(\d+)([smhd])", duration.lower())
     if not match:
-        return await ctx.send("❌ Durata non valida. Usa ad esempio `30m`, `2h` o `1d`.", delete_after=6.0)
+        return await interaction.response.send_message("❌ Invalid duration. Use `30m`, `2h`, or `1d`.", ephemeral=True)
     seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
     if seconds > 28 * 86400:
-        return await ctx.send("❌ Il timeout Discord non può superare 28 giorni.", delete_after=6.0)
+        return await interaction.response.send_message("❌ Discord timeouts cannot exceed 28 days.", ephemeral=True)
     until = discord.utils.utcnow() + timedelta(seconds=seconds)
     try:
         await member.timeout(until, reason=reason)
-        embed = discord.Embed(title="⏱️ Timeout applicato",
-                              description=f"Durata: **{duration}**\nMotivo: **{reason}**",
-                              color=discord.Color.red())
+        embed = discord.Embed(title="⏱️ You have received a timeout",
+                              description=f"**Duration:** {duration}\n**Reason:** {reason}",
+                              color=discord.Color.red(), timestamp=discord.utils.utcnow())
+        embed.set_footer(text="If you want to apologize or contest this penalty, reply to this message and staff will evaluate your response.")
         await member.send(embed=embed)
-        status = "DM inviato"
+        status = "DM sent"
     except discord.HTTPException as exc:
-        status = f"Errore: {exc}"
-    await _system_log(ctx.guild, f"⏱️ TIMEOUT {member} ({member.id}) da {ctx.author}: {duration} — {reason}")
-    await ctx.send(f"✅ Timeout applicato a {member.mention}. {status}.", delete_after=8.0)
+        status = f"DM unavailable ({type(exc).__name__})"
+    await _log_event(interaction.guild, "TIMEOUT", f"{member} ({member.id}): {duration} — {reason}", actor=interaction.user)
+    await interaction.response.send_message(f"✅ Timeout applied to {member.mention}. {status}.", ephemeral=True)
 
 @bot.command(name="ban-event", aliases=["ban_event"])
 @commands.has_permissions(manage_channels=True)
@@ -1360,13 +1464,13 @@ async def ban_event(ctx, member: discord.Member, channel: discord.TextChannel):
     bans = db.setdefault("event_bans", {})
     bans.setdefault(str(member.id), []).append(channel.id)
     save_db()
-    await _system_log(ctx.guild, f"🚫 EVENT BAN {member} da {ctx.author} in {channel.mention}")
-    await ctx.send(f"✅ {member.mention} escluso da {channel.mention} fino a `:end-event`.", delete_after=8.0)
+    await _log_event(ctx.guild, "EVENT BAN", f"{member} ({member.id}) in {channel.mention}", actor=ctx.author)
+    await ctx.send(f"✅ {member.mention} excluded from {channel.mention} until `:end-event`.", delete_after=8.0)
 
 # ==========================================
 # 👤 PROFILO ED ECONOMIA
 # ==========================================
-@bot.command()
+@bot.command(aliases=["profilo"])
 async def profile(ctx, member: discord.Member = None):
     target = member or ctx.author
     prof   = get_profile(target.id, target.display_name)
@@ -1407,6 +1511,7 @@ GIVE_KEYS  = {
     "punti":"punti","xp":"punti",
     "ruby":"rubini","rubini":"rubini",
     "cristalli":"cristalli","crystal":"cristalli",
+    "gemme":"gemme","gems":"gemme","gem":"gemme",
     "tornei":"tornei_v","eventi":"eventi_v",
 }
 GIVE_ICONS = {"punti":E_XP,"rubini":E_RUBY,"cristalli":E_CRYSTAL,"tornei_v":E_CROWN,"eventi_v":E_TROPHY}
@@ -1419,6 +1524,11 @@ async def give(ctx, member: discord.Member, cosa: str, quantita: int):
         return await ctx.send(
             f"❌ Invalid currency. Use: `ruby` · `cristalli` · `punti` · `tornei` · `eventi`",
             delete_after=6.0)
+    if key == "gemme" and not (
+        ctx.author.id in OWNER_USER_IDS
+        or any(r.id in MANAGER_ROLE_IDS for r in ctx.author.roles)
+    ):
+        return await ctx.send("Only Managers can distribute gems!", delete_after=6.0)
     prof = get_profile(member.id, member.display_name)
     prof[key] += quantita
     if key == "punti":
@@ -1439,38 +1549,8 @@ async def give(ctx, member: discord.Member, cosa: str, quantita: int):
     embed.set_footer(text=f"By {ctx.author.display_name}")
     await ctx.send(embed=embed, delete_after=10.0)
 
-@bot.command(name="add-rubini", aliases=["add_rubini"])
-@admin_only()
-async def add_rubini(ctx, member: discord.Member, amount: int):
-    prof = get_profile(member.id, member.display_name)
-    prof["rubini"] += amount
-    save_db()
-    await ctx.send(embed=discord.Embed(
-        description=f"{E_RUBY} **+{format_num(amount)} Ruby** → {member.mention}\nNew total: **{format_num(prof['rubini'])}** {E_RUBY}",
-        color=discord.Color.green()), delete_after=10.0)
-
-@bot.command(name="remove-rubini", aliases=["remove_rubini"])
-@admin_only()
-async def remove_rubini_cmd(ctx, member: discord.Member, amount: int):
-    prof = get_profile(member.id, member.display_name)
-    prof["rubini"] = max(0, prof["rubini"] - amount)
-    save_db()
-    await ctx.send(embed=discord.Embed(
-        description=f"{E_RUBY} **-{format_num(amount)} Ruby** ← {member.mention}\nNew total: **{format_num(prof['rubini'])}** {E_RUBY}",
-        color=discord.Color.red()), delete_after=10.0)
-
-@bot.command(name="add-cristalli", aliases=["add_cristalli"])
-@admin_only()
-async def add_cristalli_cmd(ctx, member: discord.Member, amount: int):
-    prof = get_profile(member.id, member.display_name)
-    prof["cristalli"] += amount
-    save_db()
-    await ctx.send(embed=discord.Embed(
-        description=f"{E_CRYSTAL} **+{format_num(amount)} Crystals** → {member.mention}\nNew total: **{format_num(prof['cristalli'])}** {E_CRYSTAL}",
-        color=discord.Color.green()), delete_after=10.0)
-
 @bot.command(name="add-gems", aliases=["add_gems"])
-@admin_only()
+@manager_or_owner_only()
 async def add_gems_cmd(ctx, member: discord.Member, amount: int):
     _record_gems(member, amount)
     prof = get_profile(member.id, member.display_name)
@@ -1494,7 +1574,7 @@ async def add_punti_cmd(ctx, member: discord.Member, amount: int):
         color=discord.Color.green()), delete_after=10.0)
 
 @bot.command(name="set-rank", aliases=["set_rank"])
-@admin_only()
+@manager_or_owner_only()
 async def set_rank_cmd(ctx, member: discord.Member, *, rank_name: str):
     target = rank_name.strip().lower()
     found  = None
@@ -1524,6 +1604,7 @@ RESET_KEYS = {
 }
 
 @bot.command(name="reset")
+@admin_only()
 async def reset_stat(ctx, member: discord.Member, cosa: str):
     cosa_l = cosa.lower()
     if cosa_l not in RESET_KEYS:
@@ -1802,7 +1883,7 @@ async def myteam(ctx):
         embed.set_footer(text="You are the team leader!")
     await ctx.send(embed=embed)
 
-@bot.command(name="teamleave")
+@bot.command(name="teamleave", aliases=["leaveteam"])
 async def team_leave(ctx):
     uid = str(ctx.author.id)
     db["teams"] = [t for t in db["teams"] if uid not in t["ids"]]
@@ -2287,7 +2368,7 @@ async def assign_hosts(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="setup", aliases=["setup-tour-hub"])
-@owner_only()
+@hoster_only()
 async def setup_tour_hub(ctx):
     channel = bot.get_channel(TOUR_HUB_CHANNEL_ID)
     if not channel:
@@ -2316,7 +2397,7 @@ async def setup_tour_hub(ctx):
 
 
 @bot.command(name="big-tour")
-@owner_only()
+@admin_only()
 async def big_tour(ctx):
     embed = discord.Embed(
         title="🌟 BIG TOURNAMENT",
@@ -2918,6 +2999,7 @@ async def team_winner(ctx):
 # 📊 LEADERBOARD
 # ==========================================
 @bot.command(name="set-leaderboard", aliases=["set_leaderboard"])
+@owner_only()
 async def set_leaderboard(ctx, channel: discord.TextChannel):
     db["leaderboard_channel_id"] = channel.id
     save_db()
@@ -2941,6 +3023,7 @@ async def setup_scomesse(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Scommesse torneo impostate in {channel.mention}.", delete_after=8.0)
 
 @bot.command(name="leaderboard")
+@owner_only()
 async def leaderboard(ctx):
     for embed in build_leaderboard_embeds():
         await ctx.send(embed=embed)
@@ -3337,6 +3420,7 @@ class ResetConfirmView(View):
         await interaction.response.edit_message(content="❌ Reset annullato.", embed=None, view=self)
 
 @bot.command(name="reset-all")
+@owner_only()
 async def reset_all(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.send("❌ Solo gli amministratori.", delete_after=5.0)
@@ -3700,6 +3784,7 @@ async def on_message(message: discord.Message):
     # DMs have no guild; using this check also covers Discord's DM channel
     # implementations consistently.
     if message.guild is None:
+        await _log_dm(message, "IN")
         uid = str(message.author.id)
         command_text = message.content.strip().lower()
 
@@ -3722,6 +3807,7 @@ async def on_message(message: discord.Message):
                 color=discord.Color(0x3498DB),
             )
             await message.channel.send(embed=welcome_embed)
+            await _log_dm(message, "OUT", "AI session started")
             return
 
         if command_text == ":stop":
@@ -3736,6 +3822,7 @@ async def on_message(message: discord.Message):
                 color=discord.Color.red(),
             )
             await message.channel.send(embed=closing_embed)
+            await _log_dm(message, "OUT", "AI session closed")
             return
 
         # ── SG Link screenshot flow ───────────────────
@@ -3841,11 +3928,12 @@ async def on_message(message: discord.Message):
         if message.author.id in active_ai_sessions and message.content.strip():
             if not GROQ_API_KEY:
                 await message.channel.send(
-                    "⚠️ `GROQ_API_KEY` non trovata nei Secrets di Replit!"
+                    "⚠️ The AI service is not configured right now."
                 )
                 return
 
-            async with message.channel.typing():
+            user_lock = ai_user_locks.setdefault(message.author.id, asyncio.Lock())
+            async with user_lock, message.channel.typing():
                 bot_commands_list = []
                 for cmd in bot.commands:
                     desc = (
@@ -3895,19 +3983,15 @@ COMPLETE COMMAND DATABASE:
                         {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": message.content},
                     ]
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            client.chat.completions.create,
+                    response = await groq_completion_with_retries(
                             model="openai/gpt-oss-20b",
                             messages=messages,
                             temperature=0.1,
-                        ),
-                        timeout=35.0,
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
                         await message.channel.send(
-                            "⚠️ Ops! L'IA non ha restituito una risposta."
+                            "⚠️ The AI did not return a response."
                         )
                         return
 
@@ -3923,12 +4007,12 @@ COMPLETE COMMAND DATABASE:
                         text="Scrivi :stop per chiudere la chat"
                     )
                     await message.channel.send(embed=response_embed)
+                    await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
-                    print(f"[GROQ API ERROR] {e}")
+                    await _log_exception(message.guild, "Groq DM completion", e)
                     error_embed = discord.Embed(
                         description=(
-                            "⚠️ Non sono riuscito a elaborare la richiesta. "
-                            "Riprova più tardi."
+                            "⚠️ I couldn't process that request. Please try again later."
                         ),
                         color=discord.Color.orange(),
                     )
@@ -4479,15 +4563,22 @@ class GiveawayJoinView(View):
             self.entrants.append(uid)
             await interaction.response.send_message("✅ You joined the giveaway!", ephemeral=True)
 
-@bot.command(name="giveaway")
-@hoster_only()
-async def giveaway_cmd(ctx, duration: str, winners_count: int, *, prize: str):
-    """`:giveaway <duration> <winners> <prize>` — e.g. `:giveaway 10m 2 5000 Ruby`"""
+@bot.tree.command(name="giveaway", description="Start a timed giveaway.")
+@app_commands.describe(
+    duration="Duration, for example 30m, 2h, or 1d",
+    winners_count="Number of winners (1-20)",
+    prize="Prize description, for example 5000 Ruby",
+)
+async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_count: int, prize: str):
+    """Start a giveaway. Managers and owners only."""
+    if not interaction_role_check(interaction, MANAGER_ROLE_IDS):
+        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+    ctx = interaction
     secs = _parse_duration(duration)
     if not secs:
-        return await ctx.send("❌ Invalid duration. Use e.g. `10m`, `2h`, `1d`.", delete_after=6.0)
+        return await interaction.response.send_message("❌ Invalid duration. Use `10m`, `2h`, or `1d`.", ephemeral=True)
     if winners_count < 1 or winners_count > 20:
-        return await ctx.send("❌ Winners must be between 1 and 20.", delete_after=5.0)
+        return await interaction.response.send_message("❌ Winners must be between 1 and 20.", ephemeral=True)
     end_ts = int(datetime.utcnow().timestamp()) + secs
     embed  = discord.Embed(
         title="🎉 GIVEAWAY!",
@@ -4500,13 +4591,14 @@ async def giveaway_cmd(ctx, duration: str, winners_count: int, *, prize: str):
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text=f"Hosted by {ctx.author.display_name}")
-    view = GiveawayJoinView(prize=prize, winners_count=winners_count, end_ts=end_ts, host_id=ctx.author.id)
-    await ctx.send(
+    embed.set_footer(text=f"Hosted by {interaction.user.display_name}")
+    view = GiveawayJoinView(prize=prize, winners_count=winners_count, end_ts=end_ts, host_id=interaction.user.id)
+    await interaction.response.send_message(
         content=f"<@&{GIVEAWAY_PING_ROLE_ID}> 🎉 A new giveaway has started!",
         allowed_mentions=discord.AllowedMentions(roles=True)
     )
-    msg  = await ctx.send(embed=embed, view=view)
+    msg = await interaction.channel.send(embed=embed, view=view)
+    await _log_event(interaction.guild, "GIVEAWAY", f"{prize}, {winners_count} winners, {duration}", actor=interaction.user)
 
     async def end_giveaway():
         await asyncio.sleep(secs)
@@ -4525,7 +4617,7 @@ async def giveaway_cmd(ctx, duration: str, winners_count: int, *, prize: str):
             winner_ids     = random.sample(entrants, actual_winners)
             winner_mentions = " ".join(f"<@{w}>" for w in winner_ids)
             for wid in winner_ids:
-                mbr = ctx.guild.get_member(wid)
+                mbr = interaction.guild.get_member(wid)
                 if mbr:
                     grant_prize(prize, mbr)
             result_embed = discord.Embed(
@@ -4537,12 +4629,12 @@ async def giveaway_cmd(ctx, duration: str, winners_count: int, *, prize: str):
                 ),
                 color=discord.Color.gold()
             )
-        result_embed.set_footer(text=f"Hosted by {ctx.author.display_name}")
+        result_embed.set_footer(text=f"Hosted by {interaction.user.display_name}")
         result_embed.set_image(url=STUMBLE_IMG)
         try:
             await msg.edit(embed=result_embed, view=view)
         except Exception:
-            await ctx.send(embed=result_embed)
+            await interaction.channel.send(embed=result_embed)
 
     asyncio.create_task(end_giveaway())
 
@@ -5485,7 +5577,6 @@ class HelpLangView(View):
 
 
 @bot.command(name="help", aliases=["guide", "commands", "comandi", "guida"])
-@hoster_only()
 async def help_cmd(ctx):
     embed = discord.Embed(
         title="📖 Stumble™ Command Guide",
@@ -6004,7 +6095,7 @@ class StaffLbView(View):
 
 
 @bot.command(name="hoster-lb", aliases=["hosterlb","hoster_lb","staff-lb","stafflb","staff_lb","classifica-staff"])
-@hoster_only()
+@owner_only()
 async def hoster_lb(ctx):
     embed = _build_staff_lb_embed(weekly=False)
     await ctx.send(embed=embed, view=StaffLbView())
@@ -6555,6 +6646,7 @@ class SlotMachineView(View):
 
 
 @bot.command(name="machine")
+@owner_only()
 async def machine_cmd(ctx):
     """🎰 Stumble Machine — gira i rulli e vinci Ruby o Cristalli!"""
     prof = get_profile(ctx.author.id, ctx.author.display_name)
