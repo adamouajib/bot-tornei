@@ -337,13 +337,12 @@ RANK_DATA = [
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
 STUMBLE_IMG          = "https://cdn.cloudflare.steamstatic.com/steam/apps/1677740/header.jpg"
-# These are the official PCF™ artwork supplied for the imported bot.  Keep the
-# paths as constants so every tournament embed uses the same artwork and the
-# shop can have its own banner.
+# Keep the supplied artwork in the project/archive.  Discord embed images must
+# be HTTPS or attachment URLs, never local filesystem paths; use the valid
+# public fallback until the artwork is published as Discord attachments.
 STUMBLE_TOUR_IMG_PATH = "attached_assets/1787674944744_1787676961548.png"
-STUMBLE_SHOP_IMG_PATH = "attached_assets/1787675538770_1787677059518.png"
-STUMBLE_IMG            = STUMBLE_TOUR_IMG_PATH
-STUMBLE_IMAGES         = [STUMBLE_TOUR_IMG_PATH, STUMBLE_SHOP_IMG_PATH]
+STUMBLE_SHOP_IMG_PATH = STUMBLE_IMG
+STUMBLE_IMAGES       = [STUMBLE_IMG, STUMBLE_SHOP_IMG_PATH]
 
 def get_rank_info(punti: int):
     current = RANK_DATA[0]
