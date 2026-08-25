@@ -373,56 +373,6 @@ def clean_gemini_response(response) -> str:
         return ""
 
 
-def is_gemini_rate_limit_error(error: Exception) -> bool:
-    """Return whether Gemini rejected a request because of quota/rate limits."""
-    error_text = str(error).lower()
-    return (
-        getattr(error, "status_code", None) == 429
-        or error.__class__.__name__ == "ResourceExhausted"
-        or "429" in error_text
-        or "quota exceeded" in error_text
-        or "resource exhausted" in error_text
-    )
-
-
-async def generate_gemini_response(message_content: str, sys_prompt: str):
-    """Generate a response with one retry and model fallbacks for HTTP 429."""
-    model_names = (
-        "gemini-3.6-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-    )
-    last_rate_limit_error = None
-
-    for model_name in model_names:
-        model = genai.GenerativeModel(
-            model_name,
-            system_instruction=sys_prompt,
-        )
-        try:
-            return model.generate_content(message_content)
-        except Exception as first_error:
-            if not is_gemini_rate_limit_error(first_error):
-                raise
-            last_rate_limit_error = first_error
-            print(
-                f"[GEMINI] {model_name} rate limited; retrying in 2 seconds"
-            )
-            await asyncio.sleep(2)
-            try:
-                return model.generate_content(message_content)
-            except Exception as retry_error:
-                if not is_gemini_rate_limit_error(retry_error):
-                    raise
-                last_rate_limit_error = retry_error
-                print(
-                    f"[GEMINI] {model_name} rate limit persisted; "
-                    "trying the next fallback model"
-                )
-
-    raise last_rate_limit_error
-
-
 async def send_threat_alert(
     message: discord.Message, offender_reply: str
 ) -> None:
@@ -3719,10 +3669,35 @@ DATABASE COMPLETO DEI COMANDI:
 {commands_string}
 """
                 try:
-                    response = await generate_gemini_response(
-                        message.content,
-                        sys_prompt,
+                    model = genai.GenerativeModel(
+                        "gemini-1.5-flash",
+                        system_instruction=sys_prompt,
                     )
+                    try:
+                        response = model.generate_content(message.content)
+                    except Exception as first_error:
+                        print(
+                            f"[GEMINI] First generation attempt failed; "
+                            f"retrying in 2 seconds: {first_error}"
+                        )
+                        await asyncio.sleep(2)
+                        try:
+                            response = model.generate_content(message.content)
+                        except Exception as second_error:
+                            print(
+                                f"[GEMINI] Second generation attempt failed: "
+                                f"{second_error}"
+                            )
+                            busy_embed = discord.Embed(
+                                description=(
+                                    "⏳ L'assistente è momentaneamente "
+                                    "occupato. Riprova tra pochissimi secondi!"
+                                ),
+                                color=discord.Color.orange(),
+                            )
+                            await message.channel.send(embed=busy_embed)
+                            return
+
                     reply_text = clean_gemini_response(response)
                     if not reply_text:
                         await message.channel.send(
@@ -3742,21 +3717,16 @@ DATABASE COMPLETO DEI COMANDI:
                         text="Scrivi :stop per chiudere la chat"
                     )
                     await message.channel.send(embed=response_embed)
-                except Exception as e:
-                    if is_gemini_rate_limit_error(e):
-                        rate_limit_embed = discord.Embed(
-                            description=(
-                                "⏳ Sto ricevendo troppe richieste in questo "
-                                "momento. Riprova tra pochissimi secondi!"
-                            ),
-                            color=discord.Color.orange(),
-                        )
-                        await message.channel.send(embed=rate_limit_embed)
-                        return
-                    print(f"[GEMINI ERROR]: {e}")
-                    await message.channel.send(
-                        f"⚠️ Errore Gemini dettagliato: `{str(e)}`"
+                except Exception as error:
+                    print(f"[GEMINI ERROR]: {error}")
+                    busy_embed = discord.Embed(
+                        description=(
+                            "⏳ L'assistente è momentaneamente occupato. "
+                            "Riprova tra pochissimi secondi!"
+                        ),
+                        color=discord.Color.orange(),
                     )
+                    await message.channel.send(embed=busy_embed)
             return
         await bot.process_commands(message)
         return
