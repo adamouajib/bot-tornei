@@ -356,11 +356,10 @@ RANK_DATA = [
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
 STUMBLE_IMG          = "https://cdn.cloudflare.steamstatic.com/steam/apps/1677740/header.jpg"
-# Keep the supplied artwork in the project/archive.  Discord embed images must
-# be HTTPS or attachment URLs, never local filesystem paths; use the valid
-# public fallback until the artwork is published as Discord attachments.
 STUMBLE_TOUR_IMG_PATH = "attached_assets/1787674944744_1787676961548.png"
-STUMBLE_SHOP_IMG_PATH = STUMBLE_IMG
+STUMBLE_SHOP_IMG_PATH = "attached_assets/1787675538770_1787677059518.png"
+TOURNAMENT_IMAGE_FILENAME = "stumble_tournament.png"
+SHOP_IMAGE_FILENAME = "stumble_shop.png"
 STUMBLE_IMAGES       = [STUMBLE_IMG, STUMBLE_SHOP_IMG_PATH]
 
 def get_rank_info(punti: int):
@@ -484,8 +483,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENROUTER_CONFIGURED = bool(OPENROUTER_API_KEY or OPENAI_API_KEY)
 AI_PROVIDER = "openrouter" if OPENROUTER_API_KEY else ("openai" if OPENAI_API_KEY else None)
-AI_MODEL = "openrouter/free" if AI_PROVIDER == "openrouter" else "gpt-4o-mini"
-AI_FALLBACK_MODELS = ("liquid/lfm-2.5-2.6b:free",) if AI_PROVIDER == "openrouter" else ()
+AI_MODEL = "liquid/lfm-2.5-2.6b:free" if AI_PROVIDER == "openrouter" else "gpt-4o-mini"
+AI_FALLBACK_MODELS = ()
 # Backwards-compatible names used by older diagnostics and integrations.
 OPENROUTER_MODEL = AI_MODEL
 OPENROUTER_FALLBACK_MODELS = AI_FALLBACK_MODELS
@@ -755,7 +754,7 @@ def build_ai_system_instruction() -> str:
         "OUTPUT RULES:\n"
         "1. Reply directly and exclusively with the final message for the user.\n"
         "2. Never show analysis, drafts, internal thoughts, or internal labels.\n"
-        "3. Reply exclusively in English.\n"
+        "3. Reply exclusively in Italian. This instruction applies only to private DM conversations.\n"
         "4. Use the command catalog for command questions and clearly state required permissions.\n"
         "5. Staff applications require server activity and the ticket panel; Supporter status is not required.\n"
         "6. `:boost` only shows booster perks; it never performs a boost."
@@ -1866,7 +1865,7 @@ async def reset_stat(ctx, member: discord.Member, cosa: str):
         except discord.Forbidden:
             pass
     save_db()
-    embed = discord.Embed(title="🔄 Reset completato",
+    embed = discord.Embed(title="🔄 Reset completed",
         description=f"{member.mention} — {desc}", color=discord.Color.orange())
     await ctx.send(embed=embed, delete_after=8.0)
 
@@ -1884,9 +1883,15 @@ async def shop(ctx):
         ),
         color=discord.Color.orange()
     )
-    embed.set_image(url=STUMBLE_SHOP_IMG_PATH)
     embed.set_footer(text="Stumble™ Shop — Coming Soon")
-    await ctx.send(embed=embed)
+    if os.path.exists(STUMBLE_SHOP_IMG_PATH):
+        shop_file = discord.File(STUMBLE_SHOP_IMG_PATH, filename=SHOP_IMAGE_FILENAME)
+        embed.set_image(url=f"attachment://{SHOP_IMAGE_FILENAME}")
+        await ctx.send(file=shop_file, embed=embed)
+    else:
+        print(f"[shop] Missing image asset: {STUMBLE_SHOP_IMG_PATH}")
+        embed.set_image(url=STUMBLE_IMG)
+        await ctx.send(embed=embed)
 
 # ==========================================
 # 🤝 TEAM SYSTEM
@@ -2441,8 +2446,6 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     if data.get("note"):
         status_val += f"\n📝 {data['note']}"
     embed.add_field(name="📊 Status", value=status_val, inline=False)
-    embed.set_image(url=STUMBLE_IMG)
-
     prof_host = get_profile(interaction.user.id, interaction.user.display_name)
     prof_host["staff_tours"]      += 1
     prof_host["staff_week_tours"] += 1
@@ -2454,10 +2457,21 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         if is_big:
             content = f"<@&{TOUR_PING_ROLE_ID}> @here 🌟 **BIG TOURNAMENT** annunciato!"
         else:
-            content = f"<@&{TOUR_PING_ROLE_ID}> 🏆 Nuovo torneo aperto — registrati!"
-        reg_msg = await reg_ch.send(
-            content=content, embed=embed, view=view,
-            allowed_mentions=discord.AllowedMentions(roles=True, everyone=is_big))
+            content = f"<@&{TOUR_PING_ROLE_ID}> 🏆 New tournament open — register now!"
+        if os.path.exists(STUMBLE_TOUR_IMG_PATH):
+            tournament_file = discord.File(
+                STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME
+            )
+            embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
+            reg_msg = await reg_ch.send(
+                content=content, file=tournament_file, embed=embed, view=view,
+                allowed_mentions=discord.AllowedMentions(roles=True, everyone=is_big))
+        else:
+            print(f"[tournament] Missing image asset: {STUMBLE_TOUR_IMG_PATH}")
+            embed.set_image(url=STUMBLE_IMG)
+            reg_msg = await reg_ch.send(
+                content=content, embed=embed, view=view,
+                allowed_mentions=discord.AllowedMentions(roles=True, everyone=is_big))
         db["tour"]["register_msg_id"]     = reg_msg.id
         db["tour"]["register_channel_id"] = reg_ch.id
         save_db()
@@ -4049,10 +4063,10 @@ async def on_message(message: discord.Message):
             welcome_embed = discord.Embed(
                 title="🤖 Official PCF™ Assistant",
                 description=(
-                    "Welcome to the official PCF™ server assistant! 🏆\n\n"
-                    "Ask me about commands, rules, or the server.\n\n"
-                    "🌐 I communicate exclusively in English.\n\n"
-                    "*Type `:end` to close the chat.*"
+                    "Benvenuto nell’assistente ufficiale del server PCF™! 🏆\n\n"
+                    "Chiedimi informazioni sui comandi, sulle regole o sul server.\n\n"
+                    "🇮🇹 Comunico esclusivamente in italiano nelle chat private.\n\n"
+                    "*Scrivi `:end` per chiudere la chat.*"
                 ),
                 color=discord.Color(0x3498DB),
             )
@@ -4061,7 +4075,7 @@ async def on_message(message: discord.Message):
             return
 
         if command_text == ":end":
-            await message.channel.send("Chat closed. Type `:start` to open it again!")
+            await message.channel.send("Chat chiusa. Scrivi `:start` per riaprirla!")
             await _cleanup_dm_session(message.author.id, message.channel)
             await _log_dm(message, "OUT", "DM SESSION END — AI chat closed")
             return
@@ -4169,8 +4183,8 @@ async def on_message(message: discord.Message):
         if message.author.id in active_ai_sessions and message.content.strip():
             if not OPENROUTER_CONFIGURED:
                 await message.channel.send(
-                    "⚠️ The AI service is not configured. Add OPENROUTER_API_KEY "
-                    "or OPENAI_API_KEY in Replit Secrets."
+                    "⚠️ Il servizio IA non è configurato. Aggiungi "
+                    "OPENROUTER_API_KEY o OPENAI_API_KEY nei Secrets di Replit."
                 )
                 return
 
@@ -4185,7 +4199,8 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
- 3. LANGUAGE RULE: Reply exclusively in English.
+                3. LANGUAGE RULE: Reply exclusively in Italian. This is a private DM
+                conversation, so never answer in English unless quoting a command name.
  4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
     welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
@@ -4248,7 +4263,8 @@ COMPLETE COMMAND DATABASE:
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
                     error_embed = discord.Embed(
                         description=(
-                            "⚠️ I couldn't process that request. Please try again later."
+                            "⚠️ Non riesco a elaborare questa richiesta in questo momento. "
+                            "Riprova tra poco."
                         ),
                         color=discord.Color.orange(),
                     )
@@ -6557,7 +6573,7 @@ EXCHANGE_RATES = [
     (16000, 500),
 ]
 
-SHOP_IMAGE = "attached_assets/1780354505647_1780354637437.png"
+SHOP_IMAGE = STUMBLE_SHOP_IMG_PATH
 
 
 def _shop_main_embed(prof: dict) -> discord.Embed:
@@ -6619,7 +6635,7 @@ class ShopMainView(View):
             description=(
                 f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
                 + "\n".join(lines) + "\n\n"
-                "⚠️ Le gemme vengono inviate al tuo account SG dal nostro staff."
+                "⚠️ Gems are transferred to your SG account by our staff."
             ),
             color=discord.Color.purple()
         )
@@ -6636,7 +6652,7 @@ class ShopMainView(View):
             description=(
                 f"{E_RUBY} **Ruby:** {format_num(prof.get('rubini', 0))}　·　"
                 f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
-                f"**Tassi di cambio:**\n"
+                 f"**Exchange rates:**\n"
                 f"• **8.000** {E_RUBY} → **150** {E_CRYSTAL}\n"
                 f"• **16.000** {E_RUBY} → **500** {E_CRYSTAL}\n\n"
                 "Choose an option below:"
@@ -6852,8 +6868,8 @@ async def test_shop(ctx):
     prof = get_profile(ctx.author.id, ctx.author.display_name)
     embed = _shop_main_embed(prof)
     if os.path.exists(SHOP_IMAGE):
-        f = discord.File(SHOP_IMAGE, filename="shop.png")
-        embed.set_image(url="attachment://shop.png")
+        f = discord.File(SHOP_IMAGE, filename=SHOP_IMAGE_FILENAME)
+        embed.set_image(url=f"attachment://{SHOP_IMAGE_FILENAME}")
         await ctx.send(file=f, embed=embed, view=ShopMainView(ctx.author.id))
     else:
         embed.set_image(url=STUMBLE_IMG)
