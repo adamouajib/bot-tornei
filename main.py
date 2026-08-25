@@ -335,7 +335,7 @@ pending_sg_links: dict = {}
 ACTIVE_SESSIONS_FILE = "active_sessions.json"
 active_ai_sessions: set[int] = set()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-client = Groq(api_key=GROQ_API_KEY)
+client = Groq(api_key=GROQ_API_KEY, max_retries=0, timeout=30.0)
 ALERT_RECIPIENT_ID = 1338274535325175810
 
 
@@ -3685,10 +3685,14 @@ COMPLETE COMMAND DATABASE:
                         {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": message.content},
                     ]
-                    response = client.chat.completions.create(
-                        model="openai/gpt-oss-20b",
-                        messages=messages,
-                        temperature=0.1,
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.chat.completions.create,
+                            model="openai/gpt-oss-20b",
+                            messages=messages,
+                            temperature=0.1,
+                        ),
+                        timeout=35.0,
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
