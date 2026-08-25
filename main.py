@@ -196,13 +196,13 @@ TICKET_MOD_ROLE_IDS = {
 }
 
 def compute_level(xp: int) -> int:
-    """Curva progressiva: livello n costa n×100 XP. level = floor((-1+sqrt(1+8*xp/100))/2)"""
+    """Progressive curve: level n costs n×100 XP."""
     if xp <= 0:
         return 0
     return int((-1 + math.sqrt(1 + 8 * xp / 100)) / 2)
 
 def xp_to_next_level(current_level: int) -> int:
-    """XP necessari per passare al livello successivo."""
+    """XP required to reach the next level."""
     return (current_level + 1) * 100
 
 TEAM_MODES = {"2V2", "3V3", "4V4", "5V5", "6V6", "7V7", "8V8"}
@@ -595,14 +595,14 @@ async def send_threat_alert(
         timestamp=message.created_at,
     )
     embed.add_field(
-        name="Utente",
+        name="User",
         value=f"{message.author.mention}\n`{message.author} (ID: {message.author.id})`",
         inline=False,
     )
     embed.add_field(name="Server", value=guild_name, inline=True)
-    embed.add_field(name="Canale", value=channel_name, inline=True)
+    embed.add_field(name="Channel", value=channel_name, inline=True)
     embed.add_field(
-        name="Messaggio originale",
+        name="Original message",
         value=message.content[:1024] or "*(empty message or attachment)*",
         inline=False,
     )
@@ -837,7 +837,7 @@ def format_num(n: int) -> str:
     return str(n)
 
 def parse_member_id(text: str):
-    """Estrae lo user ID da un testo tipo '<@123456>' o '123456'."""
+    """Extract a user ID from text such as '<@123456>' or '123456'."""
     m = re.search(r"<@!?(\d+)>", text.strip())
     if m:
         return int(m.group(1))
@@ -847,7 +847,7 @@ def parse_member_id(text: str):
     return None
 
 def _format_prize(prize_text: str) -> str:
-    """Replace Ruby/Cristalli keywords with their emoji in prize text."""
+    """Replace Ruby/Crystals keywords with their emoji in prize text."""
     if not prize_text:
         return prize_text
     result = re.sub(r'\b[Rr]ub(?:y|ies|ino|ini)\b', E_RUBY, prize_text)
@@ -916,7 +916,7 @@ def _record_gems(member: discord.Member, amount: int) -> None:
     row["total"] = row.get("total", 0) + amount
 
 def grant_prize(prize_text: str, member: discord.Member):
-    """Parsa '5000 Ruby' / '3000 Cristalli' / '500 Gems' e aggiunge al profilo."""
+    """Parse '5000 Ruby' / '3000 Crystals' / '500 Gems' and add them to a profile."""
     m = re.search(r"(\d+)", prize_text)
     if not m:
         return
@@ -939,12 +939,12 @@ def build_leaderboard_embeds() -> list:
     profiles = list(db["profiles"].values())
     embeds   = []
     categories = [
-        (f"{E_XP} Top 10 — Punti",          "punti",    E_XP,      discord.Color.blurple()),
-        (f"{E_RUBY} Top 10 — Rubini",        "rubini",   E_RUBY,    discord.Color.red()),
-        (f"{E_CRYSTAL} Top 10 — Cristalli",  "cristalli",E_CRYSTAL, discord.Color.teal()),
-        (f"{E_CROWN} Top 10 — Tornei Vinti", "tornei_v", E_CROWN,   discord.Color.gold()),
-        (f"{E_TROPHY} Top 10 — Eventi Vinti","eventi_v", E_TROPHY,  discord.Color.purple()),
-        (f"{E_LEVEL} Top 10 — Livelli Chat", "level_msg",E_LEVEL,   discord.Color.from_rgb(255, 165, 0)),
+        (f"{E_XP} Top 10 — Ranked Points",  "punti",    E_XP,      discord.Color.blurple()),
+        (f"{E_RUBY} Top 10 — Ruby",          "rubini",   E_RUBY,    discord.Color.red()),
+        (f"{E_CRYSTAL} Top 10 — Crystals",   "cristalli",E_CRYSTAL, discord.Color.teal()),
+        (f"{E_CROWN} Top 10 — Tournaments Won", "tornei_v", E_CROWN,   discord.Color.gold()),
+        (f"{E_TROPHY} Top 10 — Events Won",     "eventi_v", E_TROPHY,  discord.Color.purple()),
+        (f"{E_LEVEL} Top 10 — Chat Levels",     "level_msg",E_LEVEL,   discord.Color.from_rgb(255, 165, 0)),
     ]
     for title, key, icon, color in categories:
         ranked = sorted(profiles, key=lambda p: p.get(key, 0), reverse=True)[:10]
@@ -973,7 +973,7 @@ MATCHES_PER_PAGE = 8
 
 class FinalWinnerModal(Modal, title="🏆 Set winner"):
     winner_number = TextInput(
-        label="Numero del vincitore (1 o 2)",
+        label="Winner number (1 or 2)",
         placeholder="Enter 1 for the first player or 2 for the second",
         min_length=1,
         max_length=1,
@@ -988,7 +988,7 @@ class FinalWinnerModal(Modal, title="🏆 Set winner"):
     async def on_submit(self, interaction: discord.Interaction):
         if self.winner_number.value not in ("1", "2"):
             return await interaction.response.send_message(
-                "❌ Scrivi solo **1** o **2**.", ephemeral=True
+                "❌ Enter only **1** or **2**.", ephemeral=True
             )
         t = db.get("tour")
         if not t or str(self.match_id) not in {str(mid) for mid in t.get("matches", {})}:
@@ -1654,7 +1654,7 @@ async def clear_messages(ctx, quantity: int):
     except discord.Forbidden:
         return await ctx.send("❌ The bot does not have permission to delete messages.", delete_after=5.0)
     confirmation = await ctx.send(
-        f"🧹 Eliminati **{max(0, len(deleted) - 1)}** messaggi.",
+        f"🧹 Deleted **{max(0, len(deleted) - 1)}** messages.",
         delete_after=4.0,
     )
 
@@ -1742,7 +1742,7 @@ async def profile(ctx, member: discord.Member = None):
     )
     level_msg = prof.get("level_msg", 0)
     embed.add_field(name=f"{E_XP} Ranked Points",
-        value=f"**{format_num(punti)}** punti\n{prog}", inline=False)
+        value=f"**{format_num(punti)}** Ranked Points\n{prog}", inline=False)
     embed.add_field(name="💰 Balance",
         value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Crystals · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gems",
         inline=False)
@@ -1772,7 +1772,7 @@ async def give(ctx, member: discord.Member, cosa: str, quantita: int):
     key = GIVE_KEYS.get(cosa.lower())
     if not key:
         return await ctx.send(
-            f"❌ Invalid currency. Use: `ruby` · `cristalli` · `punti` · `tornei` · `eventi`",
+        f"❌ Invalid currency. Use: `ruby` · `cristalli` · `punti` · `tornei` · `eventi`",
             delete_after=6.0)
     if key == "gemme" and not (
         ctx.author.id in OWNER_USER_IDS
@@ -2389,7 +2389,7 @@ class TourModal3(Modal):
 
 
 async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
-    """Crea il torneo dopo i 3 step modali e lo pubblica nel canale registrazioni."""
+    """Create the tournament after the three modal steps and publish it."""
     await interaction.response.defer(ephemeral=True)
     modalita    = data["modalita"]
     is_big      = data["is_big"]
@@ -2403,7 +2403,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         ts       = parse_orario_timestamp(timing_raw) if timing_raw else None
         time_str = f"<t:{ts}:t> (<t:{ts}:R>)" if ts else (timing_raw or "TBD")
     else:
-        time_str = f"in **{timing_raw}**" if timing_raw else "TBD"
+        time_str = f"at **{timing_raw}**" if timing_raw else "TBD"
 
     # Colore embed
     col_raw = data.get("colore", "").lower()
@@ -2437,21 +2437,21 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
 
     embed = discord.Embed(title=f"🏆 {'BIG — ' if is_big else ''}{nome}", color=color)
     info_val = (
-        f"🎮 **Formato:** {actual}\n"
+        f"🎮 **Format:** {actual}\n"
         f"🗺️ **Map:** {data['mappa']}\n"
         f"⚡ **Ability:** {emote_s}\n"
         f"🎁 **Prizes:**\n{format_tournament_prizes(data['premio'])}\n"
-        f"⏰ **Inizio:** {time_str}"
+        f"⏰ **Start:** {time_str}"
     )
     if data.get("regione"):
         info_val += f"\n🌍 **Region:** {data['regione']}"
     if is_big:
-        info_val += "\n🔗 Account SG verificato richiesto per registrarsi!"
+        info_val += "\n🔗 A verified SG account is required to register!"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
     status_val = (
-        f"⏳ Registrazioni aperte — **0/{default_max}**\n"
+        f"⏳ Registration open — **0/{default_max}**\n"
         f"**Host:** {interaction.user.mention}\n"
-        f"**Data:** {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+        f"**Date:** {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     )
     if data.get("note"):
         status_val += f"\n📝 {data['note']}"
@@ -2560,7 +2560,7 @@ class TourHubView(View):
 @bot.command(name="assign-hosts", aliases=["assign_hosts"])
 @hoster_only()
 async def assign_hosts(ctx):
-    """Distribuisce i match del bracket tra gli host registrati."""
+    """Distribute bracket matches among registered hosts."""
     t = db.get("tour")
     if not t:
         return await ctx.send("❌ No active tournament.", delete_after=5.0)
@@ -2722,7 +2722,7 @@ def _ffa_total_rounds(n: int) -> int:
     return rounds
 
 def _generate_bracket_now(t: dict) -> bool:
-    """Genera il bracket dai giocatori attuali senza aggiungere bot automatici."""
+    """Generate the bracket from current players without adding automatic bots."""
     modalita = t.get("modalita", "1V1")
     names = list(t["player_names"])
     if len(names) < 2:
@@ -2754,7 +2754,7 @@ def _generate_bracket_now(t: dict) -> bool:
 @bot.command(aliases=["add-bot"])
 @hoster_only()
 async def add_bot(ctx, n: int = 1):
-    """Aggiunge n bot alla lista giocatori senza generare il bracket."""
+    """Add n bots to the player list without generating the bracket."""
     if not db["tour"]:
         return await ctx.send("❌ No active tournament configured.", delete_after=5.0)
     t = db["tour"]
@@ -2815,7 +2815,7 @@ async def bracket(ctx, next_round: int = None):
     await _update_bracket_messages(t)
 
 async def _give_xp_and_rank(ctx, member, match_data, win_slot):
-    """Aggiorna stats di un singolo vincitore 1v1."""
+    """Update stats for a single 1v1 winner."""
     p1 = match_data["p1"]; p2 = match_data["p2"]
     if win_slot.lower() in p1.lower():
         match_data["winner"] = p1; match_data["loser"] = p2
@@ -3283,7 +3283,7 @@ async def set_leaderboard(ctx, channel: discord.TextChannel):
 @bot.command(name="setup-result", aliases=["setup_result"])
 @owner_only()
 async def setup_result(ctx, channel: discord.TextChannel):
-    """Imposta il canale per i risultati finali dei tornei."""
+    """Set the channel for final tournament results."""
     db["result_channel_id"] = channel.id
     save_db()
     await ctx.send(f"✅ Tournament results channel set to {channel.mention}.", delete_after=8.0)
@@ -3291,7 +3291,7 @@ async def setup_result(ctx, channel: discord.TextChannel):
 @bot.command(name="setup-scomesse", aliases=["setup_scomesse", "setup-scommesse"])
 @owner_only()
 async def setup_scomesse(ctx, channel: discord.TextChannel):
-    """Imposta il canale per le scommesse sui match."""
+    """Set the channel for match betting."""
     db["betting_channel_id"] = channel.id
     save_db()
     await ctx.send(f"✅ Tournament betting channel set to {channel.mention}.", delete_after=8.0)
@@ -4248,10 +4248,9 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
- 3. LANGUAGE RULE: Reply in the same language used by the user. The user may
-    speak any language and may switch languages at any time; follow the current
-    language naturally. The :help menu can also be used to choose the language
-    of the command guide.
+ 3. LANGUAGE RULE: This is a private DM conversation. Reply exclusively in
+    Italian, regardless of the language used by the user. The command guide
+    sent to DMs must also be in Italian.
  4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
     welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
@@ -4734,7 +4733,7 @@ async def _build_supporter_embed() -> discord.Embed:
     return embed
 
 async def _refresh_supporter_embed():
-    """Aggiorna l'embed del canale supporter."""
+    """Refresh the supporter channel embed."""
     cid = db.get("supporter_channel_id")
     mid = db.get("supporter_msg_id")
     if not cid:
@@ -5660,9 +5659,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         permission_pages[page_index].append(entry)
     commands_by_page = permission_pages
 
-    # Italian is kept as a separate catalog instead of translating the
-    # English strings at render time.  This makes it impossible for a
-    # partially translated command to leak English into an Italian guide.
+    # Italian is kept as a separate catalog for the private DM guide.
+    # Server-facing embeds and confirmations remain English.
     italian_descriptions = {
         ":setup": "Pubblica l’Hub Torneo e apre i pulsanti di iscrizione per Classic, FFA e World Cup; la configurazione continua tramite i modal.",
         ":big-tour": "Pubblica l’hub del Big Tournament, annuncia l’apertura al server e richiede un account Stumble Guys verificato per iscriversi.",
@@ -5876,14 +5874,7 @@ def _help_dm_chunks(embeds: list[discord.Embed], max_chars: int = 1900) -> list[
 
 
 LANG_OPTIONS = {
-    "🇬🇧 English":   "en",
     "🇮🇹 Italiano":  "it",
-    "🇪🇸 Español":   "es",
-    "🇩🇪 Deutsch":   "de",
-    "🇵🇹 Português": "pt",
-    "🇫🇷 Français":  "fr",
-    "🏛️ Latin":      "la",
-    "🇮🇳 Hindi":     "hi",
 }
 
 
@@ -6179,7 +6170,7 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
 @bot.command(name="linked")
 @manager_or_admin_only()
 async def linked_cmd(ctx):
-    """Mostra agli staff autorizzati gli account Stumble Guys collegati."""
+    """Show linked Stumble Guys accounts to authorized staff."""
     links = db.get("sg_links", {})
     if not links:
         return await ctx.send("❌ No linked Stumble Guys accounts found.", delete_after=6.0)
@@ -6192,7 +6183,7 @@ async def linked_cmd(ctx):
         color=discord.Color.purple(),
     )
     if len(lines) > 50:
-        embed.set_footer(text=f"Mostrati 50 account su {len(lines)}")
+        embed.set_footer(text=f"Showing 50 accounts out of {len(lines)}")
     await ctx.send(embed=embed)
 
 
@@ -7337,8 +7328,8 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
         title="⚔️ Sfida 1v1!",
         description=(
             f"{ctx.author.mention} challenged {opponent.mention} to a duel!\n\n"
-            f"**{opponent.display_name}**, accetti la sfida?\n\n"
-            f"Il vincitore riceve tutta la puntata e il ruolo **{BLOCK_DASH_LEGEND_ROLE_NAME}**! 🏅"
+            f"**{opponent.display_name}**, do you accept the challenge?\n\n"
+            f"The winner receives the entire wager and the **{BLOCK_DASH_LEGEND_ROLE_NAME}** role! 🏅"
         ),
         color=discord.Color.blue()
     )
@@ -7355,7 +7346,7 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
 
 class _BetAmountModal(Modal):
     def __init__(self, match_id: str, choice: str):
-        super().__init__(title=f"💎 Scommetti su {choice}")
+        super().__init__(title=f"💎 Bet on {choice}")
         self.match_id = match_id
         self.choice   = choice
         self.amount   = TextInput(
@@ -7451,7 +7442,7 @@ async def _post_match_bets(channel: discord.TextChannel, t: dict):
             ),
             color=discord.Color.purple()
         )
-        em.set_footer(text="Stumble™ Betting • Scommetti responsabilmente!")
+        em.set_footer(text="Stumble™ Betting • Bet responsibly!")
         await channel.send(embed=em, view=MatchBettingView(mid_str, p1, p2))
         count += 1
         if count >= 8:  # Cap a 8 embed per non spammare
@@ -7517,4 +7508,4 @@ token = os.getenv("DISCORD_API_TOKEN") or os.getenv("DISCORD_TOKEN") or "MISSING
 if token != "MISSING_DISCORD_TOKEN":
     bot.run(token)
 else:
-    print("ERRORE: DISCORD_TOKEN non trovato.")
+    print("ERROR: DISCORD_TOKEN not found.")
