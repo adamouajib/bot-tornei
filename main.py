@@ -1,4 +1,32 @@
 import os
+import threading
+from flask import Flask
+import nest_asyncio
+
+# 1. Previene blocchi e crash dell'Event Loop con l'IA e Discord
+nest_asyncio.apply()
+
+# 2. Server Flask in background per non far andare in sleep il bot su Bot-Hosting
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot PCF System Online & Active!"
+
+def run():
+    # Usa la porta fornita dall'hosting o la 8080 di default
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.daemon = True
+    t.start()
+
+# Avvia il server web
+keep_alive()
+
+import os
 import re
 import json
 import math
