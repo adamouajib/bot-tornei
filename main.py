@@ -444,6 +444,8 @@ _supporter_to_remove: set = set()
 pending_sg_links: dict = {}
 ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
+dm_last_activity: dict[int, datetime] = {}
+DM_IDLE_SECONDS = 15 * 60
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # Keep the DM assistant on one predictable free OpenRouter model.
 OPENROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
@@ -1266,6 +1268,34 @@ async def auto_leaderboard():
 async def auto_save():
     save_db()
 
+async def _cleanup_dm_session(user_id: int, channel=None):
+    """Close an idle AI session and remove its old DM conversation messages."""
+    active_ai_sessions.discard(user_id)
+    dm_last_activity.pop(user_id, None)
+    ai_user_locks.pop(user_id, None)
+    if channel is None:
+        return
+    try:
+        async for message in channel.history(limit=100):
+            if message.author.id in {user_id, bot.user.id if bot.user else 0}:
+                await message.delete()
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+@tasks.loop(minutes=1)
+async def cleanup_idle_dm_sessions():
+    now = datetime.utcnow()
+    for user_id, last_seen in list(dm_last_activity.items()):
+        if (now - last_seen).total_seconds() < DM_IDLE_SECONDS:
+            continue
+        try:
+            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+            channel = user.dm_channel or await user.create_dm()
+            await _cleanup_dm_session(user_id, channel)
+        except (discord.Forbidden, discord.HTTPException):
+            active_ai_sessions.discard(user_id)
+            dm_last_activity.pop(user_id, None)
+
 @bot.before_invoke
 async def auto_delete_invoke(ctx):
     if not _prefix_access_allowed(ctx):
@@ -1385,6 +1415,8 @@ async def on_ready():
         auto_save.start()
     if not check_supporters.is_running():
         check_supporters.start()
+    if not cleanup_idle_dm_sessions.is_running():
+        cleanup_idle_dm_sessions.start()
     # Auto-create special roles if they don't exist
     for guild in bot.guilds:
         for role_name, color in [
@@ -3930,17 +3962,16 @@ async def on_message(message: discord.Message):
         uid = str(message.author.id)
         command_text = message.content.strip().lower()
 
+        dm_last_activity[message.author.id] = datetime.utcnow()
         if command_text == ":start":
             active_ai_sessions.add(message.author.id)
             welcome_embed = discord.Embed(
                 title="🤖 Official PCF™ AI Assistant",
                 description=(
-                    "Welcome to the **PCF™** server assistant! 🏆\n\n"
-                    "Feel free to ask me anything about server commands, rules, or general info.\n\n"
-                    "🌐 **Multilingual Support:** You can chat with me in **ANY language** you prefer!\n\n"
-                    "🔗 **Useful Links:**\n"
-                    "[Join PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)\n\n"
-                    "*Type `:end` at any time to end this chat.*"
+                    "Benvenuto nell'assistente ufficiale del server PCF™! 🏆\n\n"
+                    "Puoi chiedermi informazioni sui comandi, sulle regole o sul server.\n\n"
+                    "🌐 Puoi scrivere nella lingua che preferisci.\n\n"
+                    "*Scrivi `:end` per chiudere la chat.*"
                 ),
                 color=discord.Color(0x3498DB),
             )
@@ -3949,7 +3980,7 @@ async def on_message(message: discord.Message):
             return
 
         if command_text == ":end":
-            active_ai_sessions.discard(message.author.id)
+            await _cleanup_dm_session(message.author.id, message.channel)
             await message.channel.send("Chat chiusa. Scrivi `:start` per riaprirla!")
             await _log_dm(message, "OUT", "DM SESSION END — AI chat closed")
             return
@@ -4090,16 +4121,15 @@ async def on_message(message: discord.Message):
 8. STAFF GUIDE: To apply for Staff, the user should open a ticket in #supporto
    and describe their previous experience. To become a Supporter, they must put
    the server link in their bio and use `:supporter` to start verification.
-9. FORMATTING: Use **bold** for important keywords and always use the Markdown
-   link [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417).
+ 9. FORMATTING: Use **bold** for important keywords. Include the server link
+ only when the user explicitly asks for it.
 10. SECURITY: If the message contains insults, threats, or mentions nuking or
    destroying the server, ALWAYS start the response with '[ALERT]'.
 11. Never show analysis, drafts, or internal thoughts. Reply only with the final
    answer for the user.
 
 SERVER INFO:
-- Server creators: <@1012712686770995201> and <@1338274535325175810>.
-- Bot creator: <@1338274535325175810>.
+- Il bot è stato creato esclusivamente da Adam (<@1338274535325175810>).
 - Current user: {message.author.display_name} (<@{message.author.id}>).
 
 COMPLETE COMMAND DATABASE:
