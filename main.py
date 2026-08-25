@@ -467,6 +467,7 @@ client = OpenAI(
     timeout=30.0,
 )
 ALERT_RECIPIENT_ID = 1338274535325175810
+ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 
 
 def clean_ai_response(response) -> str:
@@ -521,56 +522,56 @@ async def openrouter_completion_with_retries(**kwargs):
 async def send_threat_alert(
     message: discord.Message, offender_reply: str
 ) -> None:
-    """Send Adam a detailed DM when the AI flags a moderation alert."""
-    try:
-        recipient = bot.get_user(ALERT_RECIPIENT_ID)
-        if recipient is None:
-            recipient = await bot.fetch_user(ALERT_RECIPIENT_ID)
+    """Send the same moderation alert to Adam and Piccolofe."""
+    guild_name = message.guild.name if message.guild else "DM"
+    channel_name = getattr(message.channel, "mention", str(message.channel))
+    if len(offender_reply) > 1024:
+        offender_reply = offender_reply[:1021] + "..."
 
-        guild_name = message.guild.name if message.guild else "DM"
-        channel_name = getattr(message.channel, "mention", str(message.channel))
-        if len(offender_reply) > 1024:
-            offender_reply = offender_reply[:1021] + "..."
-
-        embed = discord.Embed(
-            title="🚨 Alert moderazione IA",
-            description=(
-                "The AI detected a possible **insult, toxic behavior, "
-                "o minaccia al server/bot**."
-            ),
-            color=discord.Color.red(),
-            timestamp=message.created_at,
-        )
-        embed.add_field(
-            name="Utente",
-            value=f"{message.author.mention}\n`{message.author} (ID: {message.author.id})`",
-            inline=False,
-        )
-        embed.add_field(name="Server", value=guild_name, inline=True)
-        embed.add_field(name="Canale", value=channel_name, inline=True)
-        embed.add_field(
-            name="Messaggio originale",
-            value=message.content[:1024] or "*(messaggio vuoto o con allegato)*",
-            inline=False,
-        )
-        embed.add_field(
-            name="Risposta IA",
-            value=offender_reply or "*(nessun dettaglio restituito)*",
-            inline=False,
-        )
-        embed.add_field(
-            name="Link",
-            value=f"[Apri il messaggio]({message.jump_url})",
-            inline=False,
-        )
-        await recipient.send(embed=embed)
-        print(
-            f"[ALERT] DM inviato ad Adam per il messaggio "
-            f"{message.id} di {message.author.id}"
-        )
-    except Exception as exc:
-        # A failed DM must not prevent the bot from replying in the channel.
-        print(f"[ALERT ERROR] Impossibile inviare il DM ad Adam: {exc}")
+    embed = discord.Embed(
+        title="🚨 Alert moderazione IA",
+        description=(
+            "The AI detected a possible **insult, toxic behavior, "
+            "o minaccia al server/bot**."
+        ),
+        color=discord.Color.red(),
+        timestamp=message.created_at,
+    )
+    embed.add_field(
+        name="Utente",
+        value=f"{message.author.mention}\n`{message.author} (ID: {message.author.id})`",
+        inline=False,
+    )
+    embed.add_field(name="Server", value=guild_name, inline=True)
+    embed.add_field(name="Canale", value=channel_name, inline=True)
+    embed.add_field(
+        name="Messaggio originale",
+        value=message.content[:1024] or "*(messaggio vuoto o con allegato)*",
+        inline=False,
+    )
+    embed.add_field(
+        name="Risposta IA",
+        value=offender_reply or "*(nessun dettaglio restituito)*",
+        inline=False,
+    )
+    embed.add_field(
+        name="Link",
+        value=f"[Apri il messaggio]({message.jump_url})",
+        inline=False,
+    )
+    for recipient_id in ALERT_RECIPIENT_IDS:
+        try:
+            recipient = bot.get_user(recipient_id)
+            if recipient is None:
+                recipient = await bot.fetch_user(recipient_id)
+            await recipient.send(embed=embed)
+            print(
+                f"[ALERT] DM inviato a {recipient_id} per il messaggio "
+                f"{message.id} di {message.author.id}"
+            )
+        except Exception as exc:
+            # A failed DM must not prevent the bot from replying in the channel.
+            print(f"[ALERT ERROR] Impossibile inviare il DM a {recipient_id}: {exc}")
 
 
 def build_ai_system_instruction() -> str:
@@ -1289,16 +1290,20 @@ async def auto_save():
     save_db()
 
 async def _cleanup_dm_session(user_id: int, channel=None):
-    """Close an idle AI session and remove its old DM conversation messages."""
+    """Reset an AI session and remove every DM message the bot can delete."""
     active_ai_sessions.discard(user_id)
     dm_last_activity.pop(user_id, None)
     ai_user_locks.pop(user_id, None)
     if channel is None:
         return
     try:
-        async for message in channel.history(limit=100):
+        async for message in channel.history(limit=None):
             if message.author.id in {user_id, bot.user.id if bot.user else 0}:
-                await message.delete()
+                try:
+                    await message.delete()
+                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                    # Discord may reject deletion of an older user-authored DM.
+                    pass
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -1406,7 +1411,9 @@ async def send_setup_notifications():
     embed.add_field(name="⚙️ Comandi setup", value="\n".join(rows), inline=False)
     embed.set_footer(text="PCF™ Bot • Setup")
     failures = []
-    for owner_id in OWNER_USER_IDS:
+    # Setup instructions are private to Adam only. Piccolofe receives
+    # moderation alerts, but not the startup setup catalogue.
+    for owner_id in (ALERT_RECIPIENT_ID,):
         try:
             owner = await bot.fetch_user(owner_id)
             await owner.send(embed=embed)
@@ -4023,8 +4030,8 @@ async def on_message(message: discord.Message):
             return
 
         if command_text == ":end":
-            await _cleanup_dm_session(message.author.id, message.channel)
             await message.channel.send("Chat chiusa. Scrivi `:start` per riaprirla!")
+            await _cleanup_dm_session(message.author.id, message.channel)
             await _log_dm(message, "OUT", "DM SESSION END — AI chat closed")
             return
 
