@@ -392,6 +392,7 @@ ACTIVE_SESSIONS_FILE = "active_sessions.json"
 active_ai_sessions: set[int] = set()
 ai_user_locks: dict[int, asyncio.Lock] = {}
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = "openrouter/free"
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
@@ -456,7 +457,7 @@ async def openrouter_completion_with_retries(**kwargs):
             )
             if not retryable or attempt == 2:
                 raise
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.5 * (attempt + 1))
     raise last_error
 
 
@@ -633,7 +634,7 @@ def build_ai_system_instruction() -> str:
         "cliccabili <@1338274535325175810> e "
         "<@1012712686770995201>.\n\n"
         "LISTA E SPIEGAZIONE DEI COMANDI:\n"
-        f"La lista seguente contiene tutti i {len(command_lines)} comandi "
+        f"La lista seguente contiene il catalogo completo dei {len(command_lines)} comandi "
         "registrati dal bot (prefix e slash/application command). Gli alias "
         "sono indicati sulla stessa riga e non contano separatamente. Usa "
         "questa lista come riferimento aggiornato e non inventare comandi:\n"
@@ -4002,7 +4003,7 @@ COMPLETE COMMAND DATABASE:
                         {"role": "user", "content": message.content},
                     ]
                     response = await openrouter_completion_with_retries(
-                            model="openrouter/free",
+                            model=OPENROUTER_MODEL,
                             messages=messages,
                             temperature=0.1,
                     )
@@ -6154,6 +6155,23 @@ async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
         def __init__(self):
             super().__init__(timeout=120)
 
+        async def on_timeout(self):
+            """Close expired drops visibly instead of leaving an active-looking button."""
+            drop = _active_drops.pop(drop_id, None)
+            if not drop:
+                return
+            self.claim.disabled = True
+            self.claim.label = "✅ Drop ended"
+            try:
+                drop_message = self.message
+                if drop_message:
+                    await drop_message.edit(
+                        content="⏰ **This drop has ended because the claim window expired.**",
+                        view=self,
+                    )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
         @discord.ui.button(label="🎁 CLAIM", style=discord.ButtonStyle.success)
         async def claim(self, interaction: discord.Interaction, button: Button):
             drop = _active_drops.get(drop_id)
@@ -6168,6 +6186,7 @@ async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
             remaining = drop["max_claims"] - len(drop["claimed_ids"])
             if remaining == 0:
                 _active_drops.pop(drop_id, None)
+                self.stop()
                 button.disabled = True
                 button.label = "✅ Drop ended"
             await interaction.response.edit_message(
