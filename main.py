@@ -3717,8 +3717,8 @@ DATABASE COMPLETO DEI COMANDI:
                         text="Scrivi :stop per chiudere la chat"
                     )
                     await message.channel.send(embed=response_embed)
-                except Exception as error:
-                    print(f"[GEMINI ERROR]: {error}")
+                except Exception as e:
+                    print(f"[GEMINI API ERROR] {e}")
                     busy_embed = discord.Embed(
                         description=(
                             "⏳ L'assistente è momentaneamente occupato. "
