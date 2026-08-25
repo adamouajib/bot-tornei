@@ -366,6 +366,7 @@ _supporter_to_remove: set = set()
 pending_sg_links: dict = {}
 ACTIVE_SESSIONS_FILE = "active_sessions.json"
 active_ai_sessions: set[int] = set()
+ai_user_locks: dict[int, asyncio.Lock] = {}
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 client = Groq(api_key=GROQ_API_KEY, max_retries=0, timeout=30.0)
 ALERT_RECIPIENT_ID = 1338274535325175810
@@ -403,6 +404,31 @@ def clean_ai_response(response) -> str:
         return (response.choices[0].message.content or "").strip()
     except (AttributeError, IndexError, TypeError, ValueError):
         return ""
+
+async def groq_completion_with_retries(**kwargs):
+    """Call Groq with bounded retries for rate limits and transient failures."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(client.chat.completions.create, **kwargs),
+                timeout=35.0,
+            )
+        except Exception as exc:
+            last_error = exc
+            status_code = getattr(exc, "status_code", None)
+            error_name = type(exc).__name__.lower()
+            retryable = (
+                status_code == 429
+                or "ratelimit" in error_name
+                or "rate limit" in str(exc).lower()
+                or isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
+                or any(word in error_name for word in ("connection", "timeout", "tempor"))
+            )
+            if not retryable or attempt == 2:
+                raise
+            await asyncio.sleep(1.5)
+    raise last_error
 
 
 async def send_threat_alert(
