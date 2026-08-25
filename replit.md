@@ -21,7 +21,9 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 - `:give` supports Ruby, Crystals, Ranked Points, and Gems; only Managers/owners can distribute Gems.
 - The legacy `:add-rubini`, `:remove-rubini`, and `:add-cristalli` commands are removed.
 - `OPENROUTER_API_KEY` must be present for DM AI. OpenRouter uses the fixed free `liquid/lfm-2.5-2.6b:free` model; requests are serialized per user, show Discord typing status, and retry transient/rate-limit failures up to three times. The assistant identifies exclusively as the Official PCF™ Server Assistant.
+- In DM assistant conversations, requests such as “dammi i comandi” return the complete command guide with required permissions. Staff applications do not require Supporter status; members should be active in the server and apply through the ticket panel. `:boost` displays booster perks only and does not perform a boost.
 - `:set-log #channel` records command activity, slash/component interactions, sanctions, DM AI traffic, and uncaught errors for the configured server.
+- Tournament embeds use the supplied PCF Tournament artwork, while `:shop` uses the supplied PCF Shop artwork.
 
 ## Runtime data
 

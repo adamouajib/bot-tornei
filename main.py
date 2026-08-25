@@ -128,6 +128,9 @@ SUPPORTER_ROLE_ID   = 1410695946588913684
 active_tickets: dict = {}
 # XP cooldown: {user_id: last_xp_timestamp}
 xp_cooldown: dict = {}
+# Discord can redeliver an event while reconnecting.  Keep a short-lived
+# in-process guard so one user message can never execute a command repeatedly.
+processed_message_ids: set[int] = set()
 XP_PER_MSG        = 20
 XP_COOLDOWN_SECS  = 10
 XP_PER_LEVEL      = 100
@@ -334,8 +337,13 @@ RANK_DATA = [
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
 STUMBLE_IMG          = "https://cdn.cloudflare.steamstatic.com/steam/apps/1677740/header.jpg"
-STUMBLE_TOUR_IMG_PATH = "attached_assets/1780177141655_1780177250262.png"
-STUMBLE_IMAGES       = [STUMBLE_IMG, STUMBLE_TOUR_IMG_PATH]
+# These are the official PCF™ artwork supplied for the imported bot.  Keep the
+# paths as constants so every tournament embed uses the same artwork and the
+# shop can have its own banner.
+STUMBLE_TOUR_IMG_PATH = "attached_assets/1787674944744_1787676961548.png"
+STUMBLE_SHOP_IMG_PATH = "attached_assets/1787675538770_1787677059518.png"
+STUMBLE_IMG            = STUMBLE_TOUR_IMG_PATH
+STUMBLE_IMAGES         = [STUMBLE_TOUR_IMG_PATH, STUMBLE_SHOP_IMG_PATH]
 
 def get_rank_info(punti: int):
     current = RANK_DATA[0]
@@ -734,8 +742,16 @@ def build_ai_system_instruction() -> str:
          "5. Adatta la lunghezza alla richiesta: riassunto breve se l'utente "
          "chiede un riepilogo; approfondimento dettagliato con esempi concreti "
          "se chiede come funziona esattamente un comando.\n"
-         "6. Per 'quali comandi posso usare?' elenca solo i comandi Community "
-         "disponibili a tutti e spiega che gli altri richiedono un ruolo Staff."
+         "6. Se l'utente chiede 'dammi i comandi', 'quali comandi ci sono?' o "
+         "simili, elenca la guida dei comandi disponibili usando il catalogo "
+         "completo e indica chiaramente quali richiedono Staff o Admin."
+         "\n\n"
+         "7. STAFF: diventare Supporter NON è un requisito per diventare Staff. "
+         "Per candidarsi bisogna essere attivi nel server e usare il pannello "
+         "ticket per inviare una candidatura; la selezione dipende dall'attività "
+         "e dalla candidatura.\n"
+         "8. BOOST: `:boost` serve esclusivamente a mostrare i perks di chi boosta "
+         "il server; non serve a boostare e non avvia alcun boost."
     )
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
@@ -1861,7 +1877,7 @@ async def shop(ctx):
         ),
         color=discord.Color.orange()
     )
-    embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=STUMBLE_SHOP_IMG_PATH)
     embed.set_footer(text="Stumble™ Shop — Coming Soon")
     await ctx.send(embed=embed)
 
@@ -4003,6 +4019,14 @@ async def add_ticket(ctx):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    if message.id in processed_message_ids:
+        return
+    processed_message_ids.add(message.id)
+    # Bound memory for long-running bot processes while retaining enough
+    # recent IDs to cover Discord reconnect/redelivery windows.
+    if len(processed_message_ids) > 10000:
+        processed_message_ids.clear()
+        processed_message_ids.add(message.id)
 
     # ── Direct Messages: AI sessions and support workflows ────────────────
     # DMs have no guild; using this check also covers Discord's DM channel
@@ -4163,18 +4187,21 @@ async def on_message(message: discord.Message):
 6. ANSWER DEPTH: Give a short answer when the user asks for a summary. When the
    user asks how a command works exactly or requests an example, give a detailed
    explanation with concrete syntax and mechanics, such as `:drop 5 100 Ruby`.
-7. COMMAND VISIBILITY: If the user asks which commands they can use, list only
-   the Community commands available to everyone and explain that the remaining
-   commands require a Staff role. Do not expose privileged commands as available
-   to ordinary users.
-8. STAFF GUIDE: To apply for Staff, the user should open a ticket in #supporto
-   and describe their previous experience. To become a Supporter, they must put
-   the server link in their bio and use `:supporter` to start verification.
- 9. FORMATTING: Use **bold** for important keywords. Include the server link
+ 7. COMMAND VISIBILITY: If the user asks for the commands, provide the command
+    guide from the complete reference and label the permission required for each
+    command. Do not claim privileged commands are available to ordinary users.
+ 8. STAFF GUIDE: Becoming Staff does NOT require becoming a Supporter first.
+ The member must be active in the server and submit a Staff application through
+ the ticket panel. Explain that staff selection is based on server activity and
+ the application. To become a Supporter, they must put the server link in their
+ bio and use `:supporter` to start verification.
+ 9. BOOST GUIDE: `:boost` only shows the perks for members who boost the server;
+ it does not perform or start a boost.
+ 10. FORMATTING: Use **bold** for important keywords. Include the server link
  only when the user explicitly asks for it.
-10. SECURITY: If the message contains insults, threats, or mentions nuking or
+ 11. SECURITY: If the message contains insults, threats, or mentions nuking or
    destroying the server, ALWAYS start the response with '[ALERT]'.
-11. Never show analysis, drafts, or internal thoughts. Reply only with the final
+ 12. Never show analysis, drafts, or internal thoughts. Reply only with the final
    answer for the user.
 
 SERVER INFO:
@@ -5869,7 +5896,6 @@ async def help_cmd(ctx):
 # 🚀 BOOST INFO
 # ==========================================
 @bot.command(name="boost")
-@staff_only()
 async def boost_cmd(ctx):
     embed = discord.Embed(
         title="🚀 Vantaggi dei Boost del Server",
@@ -5901,8 +5927,9 @@ async def boost_cmd(ctx):
     embed.add_field(
         name="❓ Come ottenere un Boost",
         value=(
-            "Usa il pulsante **Boost** nel menu del server.\n"
-            "I premi vengono assegnati automaticamente quando effettui il boost. 🤖"
+            "Questo comando mostra solo i **perks dei booster**.\n"
+            "Per boostare il server usa direttamente il pulsante Boost di Discord. "
+            "I premi vengono assegnati automaticamente quando il boost viene rilevato. 🤖"
         ),
         inline=False
     )
