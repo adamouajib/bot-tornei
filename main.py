@@ -389,6 +389,7 @@ _supporter_to_remove: set = set()
 # Pending SG link verifications: {user_id: {"sg_name": str, "guild_id": int}}
 pending_sg_links: dict = {}
 ai_user_locks: dict[int, asyncio.Lock] = {}
+active_ai_sessions: set[int] = set()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # Keep the DM assistant on one predictable free OpenRouter model.
 OPENROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
@@ -615,6 +616,9 @@ def build_ai_system_instruction() -> str:
         "sono indicati sulla stessa riga e non contano separatamente. Usa "
         "questa lista come riferimento aggiornato e non inventare comandi:\n"
         f"{command_reference or '- Nessun comando registrato.'}\n\n"
+        "CONTROLLO CHAT PRIVATA:\n"
+        "- :start — apre la sessione con l'Assistente Ufficiale PCF™ e mostra il messaggio di benvenuto.\n"
+        "- :end — chiude la sessione; i messaggi successivi non ricevono risposte AI finché non viene usato di nuovo :start.\n\n"
         "SISTEMA DI RILEVAMENTO VIOLAZIONI (MODERAZIONE):\n"
         "- Analizza ogni messaggio dell'utente. Se l'utente scrive parolacce "
         "gravi, insulti, contenuti sessuali/NSFW, richieste di \"nuke\", "
@@ -1384,12 +1388,15 @@ async def _system_log(guild, text: str):
 
 
 async def _log_event(guild, category: str, details: str, *, actor=None):
-    """Write a structured audit entry without ever exposing secrets."""
-    actor_text = f" | actor={actor} ({actor.id})" if actor else ""
+    """Write an easy-to-scan audit entry without exposing secrets."""
+    actor_text = f"{actor} (`{actor.id}`)" if actor else "System"
+    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     await _system_log(
         guild,
-        f"`{datetime.now().isoformat(timespec='seconds')}` [{category}] "
-        f"{details}{actor_text}",
+        f"🧾 **{category}**\n"
+        f"> **Time:** `{timestamp}`\n"
+        f"> **Actor:** {actor_text}\n"
+        f"> **Details:** {details}",
     )
 
 
@@ -3792,6 +3799,31 @@ async def on_message(message: discord.Message):
     if message.guild is None:
         await _log_dm(message, "IN")
         uid = str(message.author.id)
+        command_text = message.content.strip().lower()
+
+        if command_text == ":start":
+            active_ai_sessions.add(message.author.id)
+            welcome_embed = discord.Embed(
+                title="🤖 Official PCF™ AI Assistant",
+                description=(
+                    "Welcome to the **PCF™** server assistant! 🏆\n\n"
+                    "Feel free to ask me anything about server commands, rules, or general info.\n\n"
+                    "🌐 **Multilingual Support:** You can chat with me in **ANY language** you prefer!\n\n"
+                    "🔗 **Useful Links:**\n"
+                    "[Join PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)\n\n"
+                    "*Type `:end` at any time to end this chat.*"
+                ),
+                color=discord.Color(0x3498DB),
+            )
+            await message.channel.send(embed=welcome_embed)
+            await _log_dm(message, "OUT", "DM SESSION START — AI chat opened")
+            return
+
+        if command_text == ":end":
+            active_ai_sessions.discard(message.author.id)
+            await message.channel.send("Chat chiusa. Scrivi `:start` per riaprirla!")
+            await _log_dm(message, "OUT", "DM SESSION END — AI chat closed")
+            return
 
         # ── SG Link screenshot flow ───────────────────
         if uid in pending_sg_links and message.attachments:
@@ -3893,7 +3925,7 @@ async def on_message(message: discord.Message):
             return
 
         # ── Single OpenRouter DM assistant ───────────────────────────────
-        if message.content.strip():
+        if message.author.id in active_ai_sessions and message.content.strip():
             if not OPENROUTER_API_KEY:
                 await message.channel.send(
                     "⚠️ The AI service is not configured right now."
