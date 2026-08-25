@@ -558,6 +558,8 @@ def build_ai_system_instruction() -> str:
         admin_commands = {
             "warn", "time", "give", "reset", "add-punti", "big-event",
             "big-start", "big-event-winner", "drop", "add-ticket",
+            "ban-event", "add-rubini", "remove-rubini", "add-cristalli",
+            "set-supporter",
         }
         host_commands = {
             "match", "set-winner", "qual", "bracket", "end", "cod-event",
@@ -652,7 +654,11 @@ def build_ai_system_instruction() -> str:
         "3. Scrivi solo il testo finale pulito.\n"
         "4. Rispondi SEMPRE ed ESCLUSIVAMENTE nella stessa lingua usata "
         "dall'utente.\n"
-        "5. Fornisci risposte dettagliate, chiare e cordiali."
+         "5. Adatta la lunghezza alla richiesta: riassunto breve se l'utente "
+         "chiede un riepilogo; approfondimento dettagliato con esempi concreti "
+         "se chiede come funziona esattamente un comando.\n"
+         "6. Per 'quali comandi posso usare?' elenca solo i comandi Community "
+         "disponibili a tutti e spiega che gli altri richiedono un ruolo Staff."
     )
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
@@ -3951,11 +3957,21 @@ async def on_message(message: discord.Message):
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
    is not listed or lacks information, clearly state that you do not have details.
    Never invent features, code, or technical specifications.
-6. FORMATTING: Use **bold** for important keywords and always use the Markdown
+6. ANSWER DEPTH: Give a short answer when the user asks for a summary. When the
+   user asks how a command works exactly or requests an example, give a detailed
+   explanation with concrete syntax and mechanics, such as `:drop 5 100 Ruby`.
+7. COMMAND VISIBILITY: If the user asks which commands they can use, list only
+   the Community commands available to everyone and explain that the remaining
+   commands require a Staff role. Do not expose privileged commands as available
+   to ordinary users.
+8. STAFF GUIDE: To apply for Staff, the user should open a ticket in #supporto
+   and describe their previous experience. To become a Supporter, they must put
+   the server link in their bio and use `:supporter` to start verification.
+9. FORMATTING: Use **bold** for important keywords and always use the Markdown
    link [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417).
-7. SECURITY: If the message contains insults, threats, or mentions nuking or
+10. SECURITY: If the message contains insults, threats, or mentions nuking or
    destroying the server, ALWAYS start the response with '[ALERT]'.
-8. Never show analysis, drafts, or internal thoughts. Reply only with the final
+11. Never show analysis, drafts, or internal thoughts. Reply only with the final
    answer for the user.
 
 SERVER INFO:
@@ -5216,6 +5232,28 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         },
     }
     t = locale.get(lang, locale["en"])
+    if lang == "it":
+        t["titles"] = (
+            "📖 Guida Comandi — Community",
+            "📖 Guida Comandi — Staff ed Eventi",
+            "📖 Guida Comandi — Admin e Manager",
+        )
+        t["categories"] = (
+            ("🟢 COMANDI COMMUNITY (UTENTI)", "Comandi disponibili a tutti i membri del server"),
+            ("🟡 COMANDI EVENTI / STAFF", "Richiedono un ruolo Staff o Host"),
+            ("🔴 COMANDI ADMIN / MANAGER", "Strumenti di gestione server, eventi e database"),
+        )
+    else:
+        t["titles"] = (
+            "📖 Command Guide — Community",
+            "📖 Command Guide — Staff & Events",
+            "📖 Command Guide — Admin & Manager",
+        )
+        t["categories"] = (
+            ("🟢 COMMUNITY COMMANDS (USERS)", "Commands available to all server members"),
+            ("🟡 EVENTS / STAFF COMMANDS", "Requires a Staff or Host role"),
+            ("🔴 ADMIN / MANAGER COMMANDS", "Server, event and data-management tools"),
+        )
 
     # Each tuple is (command label, purpose, arguments, example).  The
     # descriptions intentionally include syntax, permissions and side effects
@@ -5237,6 +5275,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":cod-event (alias :cod_event)", "Posts the event room code together with the selected map and emote.", "<emote> <map> <room code>.", ":cod-event 🏃 Skyline ABC123"),
             (":set-winner (alias :set_winner)", "Records the winner of the active Flash Event for prize distribution.", "<@winner> member mention.", ":set-winner @Winner"),
             (":end-event (alias :end_event)", "Closes the active event and awards its configured prize.", "<amount> <currency>; currency is ruby, cristalli or punti.", ":end-event 5000 ruby"),
+            (":ban-event (alias :ban_event)", "Bans a member from an event channel until the event ends.", "<@member> <#channel>; manage-channels permission.", ":ban-event @Player #event"),
             (":big-event", "Creates a Big Event configuration with broad announcement and prize details.", "No command arguments; admin access, then use the event controls.", ":big-event"),
             (":big-start (aliases :bigstart, :big_start)", "Starts the configured Big Event and announces it with an @everyone mention.", "No arguments; admin access and a Big Event must be configured.", ":big-start"),
             (":big-event-winner", "Opens the controls used to set first, second and third place Big Event winners.", "No arguments; admin access.", ":big-event-winner"),
@@ -5256,7 +5295,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
             (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
             (":shop", "Opens the Stumble™ Shop with W Items, Gems packages and currency exchange controls.", "No arguments; use the buttons in the shop message.", ":shop"),
-            (":drop", "Starts the prize drop activity and posts the available prize interaction.", "[prize] optional prize description; defaults to 500 Ruby.", ":drop 1000 Ruby"),
+            (":drop", "Releases a limited prize drop; exactly the requested number of different users can claim it, then it closes automatically.", "<people> <amount> <currency>; currency: Ruby, Crystals, Gems or Ranked Points.", ":drop 5 100 Ruby"),
             (":machine", "Opens the slot-machine activity where a player can spin for a result.", "No arguments; use the controls in the machine message.", ":machine"),
             (":test", "Opens the shop test panel used to check shop interactions.", "No arguments; intended for staff/testing.", ":test"),
         ],
@@ -5271,7 +5310,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
             (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
             (":giveaway", "Starts a timed giveaway and awards the configured prize to randomly selected winners.", "<duration> <number of winners> <prize>; duration examples: 30m, 2h or 1d.", ":giveaway 30m 1 5000 Ruby"),
-            (":help (aliases :guide, :commands, :comandi, :guida)", "Shows the complete multilingual command guide in the selected member's private messages. The public channel only receives a private confirmation.", "No arguments; hoster access.", ":help"),
+            (":help (aliases :guide, :commands, :comandi, :guida)", "Shows the complete multilingual command guide in private messages, organized by permission category.", "No arguments; available to all members.", ":help"),
             (":setup-result", "Sets the channel where final tournament result embeds are published.", "<#channel> text-channel mention; owner access.", ":setup-result #results"),
             (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
@@ -5281,6 +5320,37 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
         ],
     ]
+
+    # The official guide is permission-first: members see community tools
+    # together, while privileged commands are grouped by the role they need.
+    community_names = {
+        "profile", "leaderboard", "gems", "shop", "team", "myteam",
+        "teamleave", "1v1", "stumble-top", "boost", "link", "supporter",
+        "help",
+    }
+    staff_names = {
+        "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
+        "team-winner", "close-tour", "event", "start-event", "cod-event",
+        "set-winner", "end-event", "ban-event", "reset-staff-week", "test",
+    }
+    admin_names = {
+        "big-tour", "big-event", "big-start", "big-event-winner",
+        "set-leaderboard", "hoster-lb", "give", "add-rubini",
+        "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
+        "reset", "drop", "machine", "set-supporter", "giveaway", "setup-result",
+        "setup-scomesse", "set-welcome", "add-ticket", "pex", "reset-all",
+    }
+    permission_pages = [[], [], []]
+    for entry in [item for page in commands_by_page for item in page]:
+        command_name = entry[0].split(" (", 1)[0].lstrip(":")
+        if command_name in community_names:
+            page_index = 0
+        elif command_name in staff_names:
+            page_index = 1
+        else:
+            page_index = 2
+        permission_pages[page_index].append(entry)
+    commands_by_page = permission_pages
 
     # Italian is kept as a separate catalog instead of translating the
     # English strings at render time.  This makes it impossible for a
@@ -5318,7 +5388,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":set-rank": "Imposta manualmente il rank del membro usando il nome del rank specificato.",
         ":reset": "Azzera per il membro indicato la statistica o valuta richiesta, se supportata dal comando.",
         ":shop": "Apre lo shop Stumble™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
-        ":drop": "Avvia l’attività di ricompensa e pubblica il premio da reclamare; se omesso, il premio predefinito è 500 Ruby.",
+         ":drop": "Pubblica un drop con numero esatto di partecipanti, quantità e valuta; il drop si chiude automaticamente quando terminano i posti. Esempio: `:drop 5 100 Ruby`.",
         ":machine": "Apre la slot machine del bot, dove il giocatore può usare i controlli del messaggio per effettuare un giro.",
         ":test": "Pubblica il pannello di prova dello shop per verificare le interazioni e i relativi acquisti.",
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
@@ -5331,7 +5401,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":supporter": "Mostra o avvia la verifica Supporter; quando necessario apre un ticket staff per controllare il link del server nella bio SG.",
         ":set-supporter": "Imposta il canale dedicato ai controlli degli account Supporter.",
         ":giveaway": "Avvia un giveaway temporizzato, raccoglie le partecipazioni e assegna casualmente il premio ai vincitori estratti.",
-        ":help": "Mostra il menu delle lingue nel canale e invia in DM la guida completa dei comandi organizzata per categorie.",
+         ":help": "Mostra il menu delle lingue e invia in DM la guida completa dei 54 comandi, divisa tra Community, Staff/Eventi e Admin/Manager.",
         ":setup-result": "Imposta il canale per pubblicare automaticamente i risultati finali dei tornei.",
         ":setup-scomesse": "Imposta il canale per pubblicare i pannelli delle scommesse sui match.",
         ":set-welcome": "Imposta il canale in cui il bot pubblica i messaggi di benvenuto e di uscita dei membri.",
@@ -5449,12 +5519,20 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 localized_purpose = localized_descriptions.get(lang, {}).get(
                     command_name, purpose
                 )
+                if page_index == 0:
+                    permission_label = "Utente" if lang == "it" else "User"
+                elif page_index == 1:
+                    permission_label = "Staff / Host"
+                else:
+                    permission_label = "Admin / Manager / Owner"
                 # Keep every card genuinely compact on mobile.  Never cut a
                 # localized sentence in the middle; the catalog entries are
                 # intentionally short, while this protects future additions.
                 if len(localized_purpose) > 140:
                     localized_purpose = localized_purpose[:137].rsplit(" ", 1)[0] + "…"
-                command_lines.append(f"`{usage}` — {localized_purpose}")
+                command_lines.append(
+                    f"`{usage}` — **{permission_label}** — {localized_purpose}"
+                )
             embed.description = f"{card_description}\n\n" + "\n".join(command_lines)
             if is_first_category_card:
                 embed.set_image(url=STUMBLE_IMG)
