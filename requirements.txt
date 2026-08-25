@@ -6,5 +6,5 @@ aiohttp
 aiohttp
 discord.py
 flask
-openai
 requests
+google-generativeai

@@ -31,7 +31,7 @@ import inspect
 from datetime import datetime, timedelta
 import random
 import traceback
-from openai import OpenAI
+import google.generativeai as genai
 
 
 
@@ -482,24 +482,13 @@ DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
     "hello", "hi", "hey",
 }
-# Prefer OpenRouter when configured, while still supporting a regular OpenAI
-# key.  Do not create a client with a fake key: that masks configuration
-# errors and makes the first DM request fail in a confusing way.
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENROUTER_CONFIGURED = bool(OPENROUTER_API_KEY or OPENAI_API_KEY)
-AI_PROVIDER = "openrouter" if OPENROUTER_API_KEY else ("openai" if OPENAI_API_KEY else None)
-AI_MODEL = "google/gemma-2-9b-it:free" if AI_PROVIDER == "openrouter" else "gpt-4o-mini"
-AI_FALLBACK_MODELS = ("qwen/qwen-2.5-72b-instruct:free",) if AI_PROVIDER == "openrouter" else ()
-# Backwards-compatible names used by older diagnostics and integrations.
-OPENROUTER_MODEL = AI_MODEL
-OPENROUTER_FALLBACK_MODELS = AI_FALLBACK_MODELS
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1" if AI_PROVIDER == "openrouter" else None,
-    api_key=OPENROUTER_API_KEY or OPENAI_API_KEY or "missing-key",
-    max_retries=0,
-    timeout=30.0,
-)
+# Gemini is used exclusively for the private DM assistant.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
+AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
+AI_MODEL = "gemini-1.5-flash"
+if GEMINI_CONFIGURED:
+    genai.configure(api_key=GEMINI_API_KEY)
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 
@@ -507,16 +496,10 @@ ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 def clean_ai_response(response) -> str:
     """Extract the user-facing AI text at one centralized boundary."""
     try:
-        content = response.choices[0].message.content or ""
-        if isinstance(content, list):
-            content = "".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in content
-            )
-        text = str(content).strip()
+        text = str(response.text or "").strip()
     except (AttributeError, IndexError, TypeError, ValueError):
         return ""
-    # Some OpenRouter models leak their private reasoning or answer labels.
+    # Models can leak private reasoning or answer labels.
     # Remove those artifacts before the text can reach Discord.
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"^\s*(?:assistant|final answer|response)\s*:\s*", "", text, flags=re.IGNORECASE)
@@ -529,50 +512,56 @@ def clean_ai_response(response) -> str:
     text = text.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
     return text
 
-async def openrouter_completion_with_retries(**kwargs):
-    """Call the configured AI provider with bounded retries and clear failures."""
-    if not OPENROUTER_CONFIGURED:
-        raise RuntimeError("No OPENROUTER_API_KEY or OPENAI_API_KEY is configured")
+async def gemini_completion_with_retries(messages, system_instruction):
+    """Call Gemini with bounded retries and the full DM command context."""
+    if not GEMINI_CONFIGURED:
+        raise RuntimeError("No GEMINI_API_KEY is configured")
+    history = []
+    for message in messages[:-1]:
+        role = message.get("role")
+        if role == "system":
+            continue
+        if role in {"user", "assistant"}:
+            history.append({
+                "role": "model" if role == "assistant" else "user",
+                "parts": [message.get("content", "")],
+            })
+    prompt = messages[-1].get("content", "") if messages else ""
     last_error = None
-    for model in (AI_MODEL, *AI_FALLBACK_MODELS):
-        for attempt in range(3):
-            request_kwargs = dict(kwargs)
-            request_kwargs["model"] = model
-            try:
-                response = await asyncio.wait_for(
-                    asyncio.to_thread(client.chat.completions.create, **request_kwargs),
-                    timeout=35.0,
-                )
-                if not getattr(response, "choices", None):
-                    raise RuntimeError("The AI provider returned no choices")
-                return response
-            except Exception as exc:
-                last_error = exc
-                status_code = getattr(exc, "status_code", None)
-                error_name = type(exc).__name__.lower()
-                error_text = str(exc).lower()
-                retryable = (
-                    status_code == 429
-                    or status_code is None
-                    or "ratelimit" in error_name
-                    or "rate limit" in str(exc).lower()
-                    or isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
-                    or any(word in error_name for word in ("connection", "timeout", "tempor"))
-                )
-                # Authentication, invalid-request, and model errors will not
-                # improve on retry and should be surfaced immediately.
-                if any(word in error_text for word in (
-                    "authentication", "unauthorized", "invalid api key",
-                    "invalid_request", "does not exist", "not found",
-                )):
-                    retryable = False
-                # OpenRouter's free-model daily quota cannot be fixed by
-                # retrying; retrying only delays the user's response.
-                if "free-models-per-day" in error_text:
-                    retryable = False
-                if not retryable or attempt == 2:
-                    break
-                await asyncio.sleep(1.5 * (attempt + 1))
+    for attempt in range(3):
+        try:
+            model = genai.GenerativeModel(
+                model_name=AI_MODEL,
+                system_instruction=system_instruction,
+            )
+            chat = model.start_chat(history=history)
+            response = await asyncio.wait_for(
+                chat.send_message_async(
+                    prompt,
+                    generation_config={"temperature": 0.1},
+                ),
+                timeout=35.0,
+            )
+            if not clean_ai_response(response):
+                raise RuntimeError("Gemini returned no text")
+            return response
+        except Exception as exc:
+            last_error = exc
+            error_text = str(exc).lower()
+            retryable = (
+                isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
+                or any(word in error_text for word in (
+                    "rate", "quota", "tempor", "unavailable", "connection",
+                ))
+            )
+            if any(word in error_text for word in (
+                "api key", "authentication", "permission", "invalid argument",
+                "not found",
+            )):
+                retryable = False
+            if not retryable or attempt == 2:
+                break
+            await asyncio.sleep(1.5 * (attempt + 1))
     raise last_error or RuntimeError("The AI provider returned an unknown error")
 
 
@@ -4211,7 +4200,7 @@ async def on_message(message: discord.Message):
 
         # Greetings should always receive one immediate Italian response.
         # They do not need an API call, so they still work when the free
-        # OpenRouter daily quota is exhausted or the user has not typed
+        # Gemini is unavailable or the user has not typed
         # :start yet.
         greeting_text = re.sub(r"[^\wÀ-ÖØ-öø-ÿ]+", " ", message.content.lower()).strip()
         if greeting_text in DM_GREETING_WORDS:
@@ -4228,12 +4217,12 @@ async def on_message(message: discord.Message):
             await _log_dm(message, "OUT", "DM GREETING — static Italian response")
             return
 
-        # ── Single OpenRouter/OpenAI DM assistant ──────────────────────────
+        # ── Single Gemini DM assistant ─────────────────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            if not OPENROUTER_CONFIGURED:
+            if not GEMINI_CONFIGURED:
                 await message.channel.send(
                     "⚠️ Il servizio IA non è configurato. Aggiungi "
-                    "OPENROUTER_API_KEY o OPENAI_API_KEY nei Secrets di Replit."
+                    "GEMINI_API_KEY nei Secrets di Replit."
                 )
                 return
 
@@ -4248,9 +4237,10 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
- 3. LANGUAGE RULE: This is a private DM conversation. Reply exclusively in
-    Italian, regardless of the language used by the user. The command guide
-    sent to DMs must also be in Italian.
+ 3. LANGUAGE RULE: This is a private DM conversation. Reply in the same
+    language used by the user and support multilingual conversations. Users
+    may switch languages at any time; follow the current language naturally.
+    The :help menu sends the complete command guide in the selected language.
  4. NATURAL CONVERSATION: Reply naturally and directly. Do not repeat the
     welcome embed or its headings in normal replies.
 5. STRICT NO-HALLUCINATION: Only answer based on the command reference. If a command
@@ -4267,13 +4257,23 @@ async def on_message(message: discord.Message):
  the ticket panel. Explain that staff selection is based on server activity and
  the application. To become a Supporter, they must put the server link in their
  bio and use `:supporter` to start verification.
- 9. BOOST GUIDE: `:boost` only shows the perks for members who boost the server;
+ 9. ACCOUNT LINK GUIDE: Explain that `:link` starts the Stumble Guys account
+ linking flow, collects the SG username, and sends screenshot instructions in
+ the DM. Staff verify the account and assign the Verified SG role. Never ask
+ users to expose credentials or private account information.
+ 10. PROGRESSION GUIDE: Explain that chat messages grant XP, levels grant
+ Ruby rewards, milestone levels grant special roles, and Ranked Points determine
+ tournament rank. Use the live command reference for exact values and syntax.
+ 11. TOURNAMENT AND ECONOMY GUIDE: Explain registration buttons, host/staff
+ permissions, brackets, match codes, winners, betting, teams, giveaways, the
+ shop, Ruby, Crystals, Gems, and Ranked Points only from the command database.
+ 12. BOOST GUIDE: `:boost` only shows the perks for members who boost the server;
  it does not perform or start a boost.
- 10. FORMATTING: Use **bold** for important keywords. Include the server link
+ 13. FORMATTING: Use **bold** for important keywords. Include the server link
  only when the user explicitly asks for it.
- 11. SECURITY: If the message contains insults, threats, or mentions nuking or
+ 14. SECURITY: If the message contains insults, threats, or mentions nuking or
    destroying the server, ALWAYS start the response with '[ALERT]'.
- 12. Never show analysis, drafts, or internal thoughts. Reply only with the final
+ 15. Never show analysis, drafts, or internal thoughts. Reply only with the final
    answer for the user.
 
 SERVER INFO:
@@ -4291,9 +4291,9 @@ COMPLETE COMMAND DATABASE:
                         {"role": "system", "content": sys_prompt},
                         *conversation,
                     ]
-                    response = await openrouter_completion_with_retries(
+                    response = await gemini_completion_with_retries(
                         messages=messages,
-                        temperature=0.1,
+                        system_instruction=sys_prompt,
                     )
                     reply_text = clean_ai_response(response)
                     if not reply_text:
@@ -4315,18 +4315,10 @@ COMPLETE COMMAND DATABASE:
                 except Exception as e:
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
                     error_text = str(e).lower()
-                    if "free-models-per-day" in error_text:
-                        error_message = (
-                            "⚠️ La quota giornaliera dei modelli gratuiti OpenRouter è esaurita. "
-                            "I saluti continuano a funzionare, ma le richieste IA torneranno "
-                            "disponibili dopo il reset della quota oppure usando un provider "
-                            "con una chiave API abilitata."
-                        )
-                    else:
-                        error_message = (
-                            "⚠️ Non riesco a elaborare questa richiesta in questo momento. "
-                            "Riprova tra poco."
-                        )
+                    error_message = (
+                        "⚠️ Non riesco a elaborare questa richiesta in questo momento. "
+                        "Riprova tra poco."
+                    )
                     await message.channel.send(error_message)
             return
         await bot.process_commands(message)
@@ -5874,7 +5866,14 @@ def _help_dm_chunks(embeds: list[discord.Embed], max_chars: int = 1900) -> list[
 
 
 LANG_OPTIONS = {
+    "🇬🇧 English":   "en",
     "🇮🇹 Italiano":  "it",
+    "🇪🇸 Español":   "es",
+    "🇩🇪 Deutsch":   "de",
+    "🇵🇹 Português": "pt",
+    "🇫🇷 Français":  "fr",
+    "🏛️ Latin":      "la",
+    "🇮🇳 Hindi":     "hi",
 }
 
 
