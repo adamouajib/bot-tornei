@@ -476,6 +476,10 @@ ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
 DM_IDLE_SECONDS = 15 * 60
+DM_GREETING_WORDS = {
+    "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
+    "hello", "hi", "hey",
+}
 # Prefer OpenRouter when configured, while still supporting a regular OpenAI
 # key.  Do not create a client with a fake key: that masks configuration
 # errors and makes the first DM request fail in a confusing way.
@@ -559,6 +563,10 @@ async def openrouter_completion_with_retries(**kwargs):
                     "authentication", "unauthorized", "invalid api key",
                     "invalid_request", "does not exist", "not found",
                 )):
+                    retryable = False
+                # OpenRouter's free-model daily quota cannot be fixed by
+                # retrying; retrying only delays the user's response.
+                if "free-models-per-day" in error_text:
                     retryable = False
                 if not retryable or attempt == 2:
                     break
@@ -4179,6 +4187,25 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
 
+        # Greetings should always receive one immediate Italian response.
+        # They do not need an API call, so they still work when the free
+        # OpenRouter daily quota is exhausted or the user has not typed
+        # :start yet.
+        greeting_text = re.sub(r"[^\wÀ-ÖØ-öø-ÿ]+", " ", message.content.lower()).strip()
+        if greeting_text in DM_GREETING_WORDS:
+            greeting_embed = discord.Embed(
+                title="🤖 Official PCF™ Assistant",
+                description=(
+                    "Ciao! 👋 Sono l’assistente ufficiale PCF™.\n\n"
+                    "Posso aiutarti con comandi, regole e informazioni sul server.\n"
+                    "Scrivi `:start` per aprire la chat privata completa."
+                ),
+                color=discord.Color.blurple(),
+            )
+            await message.channel.send(embed=greeting_embed)
+            await _log_dm(message, "OUT", "DM GREETING — static Italian response")
+            return
+
         # ── Single OpenRouter/OpenAI DM assistant ──────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
             if not OPENROUTER_CONFIGURED:
@@ -4261,11 +4288,21 @@ COMPLETE COMMAND DATABASE:
                     await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
-                    error_embed = discord.Embed(
-                        description=(
+                    error_text = str(e).lower()
+                    if "free-models-per-day" in error_text:
+                        error_message = (
+                            "⚠️ La quota giornaliera dei modelli gratuiti OpenRouter è esaurita. "
+                            "I saluti continuano a funzionare, ma le richieste IA torneranno "
+                            "disponibili dopo il reset della quota oppure usando un provider "
+                            "con una chiave API abilitata."
+                        )
+                    else:
+                        error_message = (
                             "⚠️ Non riesco a elaborare questa richiesta in questo momento. "
                             "Riprova tra poco."
-                        ),
+                        )
+                    error_embed = discord.Embed(
+                        description=error_message,
                         color=discord.Color.orange(),
                     )
                     await message.channel.send(embed=error_embed)
