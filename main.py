@@ -10,7 +10,7 @@ import asyncio
 import inspect
 from datetime import datetime, timedelta
 import random
-import google.generativeai as genai
+from groq import Groq
 
 
 
@@ -334,8 +334,8 @@ _supporter_to_remove: set = set()
 pending_sg_links: dict = {}
 ACTIVE_SESSIONS_FILE = "active_sessions.json"
 active_ai_sessions: set[int] = set()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+client = Groq(api_key=GROQ_API_KEY)
 ALERT_RECIPIENT_ID = 1338274535325175810
 
 
@@ -365,18 +365,18 @@ def save_sessions() -> None:
 load_sessions()
 
 
-def clean_gemini_response(response) -> str:
-    """Extract the user-facing Gemini text at one centralized boundary."""
+def clean_ai_response(response) -> str:
+    """Extract the user-facing AI text at one centralized boundary."""
     try:
-        return (response.text or "").strip()
-    except (AttributeError, ValueError):
+        return (response.choices[0].message.content or "").strip()
+    except (AttributeError, IndexError, TypeError, ValueError):
         return ""
 
 
 async def send_threat_alert(
     message: discord.Message, offender_reply: str
 ) -> None:
-    """Send Adam a detailed DM when Gemini flags a moderation alert."""
+    """Send Adam a detailed DM when Groq flags a moderation alert."""
     try:
         recipient = bot.get_user(ALERT_RECIPIENT_ID)
         if recipient is None:
@@ -390,7 +390,7 @@ async def send_threat_alert(
         embed = discord.Embed(
             title="🚨 Alert moderazione IA",
             description=(
-                "Gemini ha rilevato un possibile **insulto, comportamento tossico "
+                "Groq ha rilevato un possibile **insulto, comportamento tossico "
                 "o minaccia al server/bot**."
             ),
             color=discord.Color.red(),
@@ -3627,9 +3627,9 @@ async def on_message(message: discord.Message):
 
         # ── Session-based AI support assistant ─────────────────────────
         if message.author.id in active_ai_sessions and message.content.strip():
-            if not GEMINI_API_KEY:
+            if not GROQ_API_KEY:
                 await message.channel.send(
-                    "⚠️ `GEMINI_API_KEY` non trovata nei Secrets di Replit!"
+                    "⚠️ `GROQ_API_KEY` non trovata nei Secrets di Replit!"
                 )
                 return
 
@@ -3641,23 +3641,37 @@ async def on_message(message: discord.Message):
                         or cmd.brief
                         or "Descrizione non disponibile nel codice."
                     )
-                    bot_commands_list.append(f"- :{cmd.name} -> {desc}")
+                    usage = f":{cmd.name} {cmd.signature}".strip()
+                    aliases = (
+                        ", ".join(f":{alias}" for alias in cmd.aliases)
+                        or "nessun alias"
+                    )
+                    bot_commands_list.append(
+                        f"- Nome: :{cmd.name}\n"
+                        f"  Descrizione: {desc}\n"
+                        f"  Utilizzo: {usage}\n"
+                        f"  Alias: {aliases}"
+                    )
                 commands_string = "\n".join(bot_commands_list)
 
                 sys_prompt = f"""
 1. Sei PCF™ system, l'assistente IA del server Discord PCF™.
-2. REGOLA ANTI-INVENZIONI: Se l'utente chiede informazioni su un comando non
+2. REGOLA FONDAMENTALE SUI COMANDI: Hai accesso a una lista completa di 54
+   comandi ({commands_string}). Prima di rispondere, DEVI scansionare e leggere
+   l'INTERO elenco. Non ignorare né saltare alcun comando.
+3. Se l'utente ti chiede spiegazioni o approfondimenti su un comando presente
+   nell'elenco, fornisci subito tutti i dettagli, la sintassi e l'utilizzo.
+4. ANTI-INVENZIONI: Se l'utente chiede di un comando NON presente nell'elenco o
    presente nel database o privo di descrizione dettagliata nel codice, rispondi
    chiaramente che non hai informazioni specifiche su quel comando. NON INVENTARE
    mai funzioni inventate (es. RAM, processore, Node.js).
-3. Formattazione: usa il **grassetto** per parole chiave importanti. Usa SEMPRE
+5. Formattazione: usa il **grassetto** per parole chiave importanti. Usa SEMPRE
    la sintassi link Markdown [PCF™ Server](https://discord.gg/pcf-cup-community-1046154910368014417)
    e mai il link esteso.
-4. ALLERTA SICUREZZA: Se il messaggio dell'utente contiene insulti, bestemmie,
-   minacce o menzioni di nukare/distruggere il server/bot, INIZIA TASSATIVAMENTE
-   la risposta con '[ALERT]'. Rispondi con tono fermo e serio dicendo che le
-   minacce non sono tollerate.
-5. Non mostrare mai analisi, bozze o pensieri interni. Rispondi esclusivamente
+6. SICUREZZA: Se il messaggio contiene insulti, bestemmie, minacce o menzioni
+   di nukare/distruggere il server, INIZIA TASSATIVAMENTE la risposta con
+   '[ALERT]'.
+7. Non mostrare mai analisi, bozze o pensieri interni. Rispondi esclusivamente
    nella lingua dell'utente.
 
 INFO SERVER:
@@ -3669,36 +3683,16 @@ DATABASE COMPLETO DEI COMANDI:
 {commands_string}
 """
                 try:
-                    model = genai.GenerativeModel(
-                        "gemini-1.5-flash",
-                        system_instruction=sys_prompt,
+                    messages = [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": message.content},
+                    ]
+                    response = client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=messages,
+                        temperature=0.1,
                     )
-                    try:
-                        response = model.generate_content(message.content)
-                    except Exception as first_error:
-                        print(
-                            f"[GEMINI] First generation attempt failed; "
-                            f"retrying in 2 seconds: {first_error}"
-                        )
-                        await asyncio.sleep(2)
-                        try:
-                            response = model.generate_content(message.content)
-                        except Exception as second_error:
-                            print(
-                                f"[GEMINI] Second generation attempt failed: "
-                                f"{second_error}"
-                            )
-                            busy_embed = discord.Embed(
-                                description=(
-                                    "⏳ L'assistente è momentaneamente "
-                                    "occupato. Riprova tra pochissimi secondi!"
-                                ),
-                                color=discord.Color.orange(),
-                            )
-                            await message.channel.send(embed=busy_embed)
-                            return
-
-                    reply_text = clean_gemini_response(response)
+                    reply_text = clean_ai_response(response)
                     if not reply_text:
                         await message.channel.send(
                             "⚠️ Ops! L'IA non ha restituito una risposta."
@@ -3718,7 +3712,7 @@ DATABASE COMPLETO DEI COMANDI:
                     )
                     await message.channel.send(embed=response_embed)
                 except Exception as e:
-                    print(f"[GEMINI API ERROR] {e}")
+                    print(f"[GROQ API ERROR] {e}")
                     busy_embed = discord.Embed(
                         description=(
                             "⏳ L'assistente è momentaneamente occupato. "
