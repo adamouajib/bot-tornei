@@ -697,10 +697,10 @@ def build_ai_system_instruction() -> str:
         "https://discord.gg/pcf-cup-community-1046154910368014417\n"
         "- Se un utente chiede il link del server, invia SEMPRE questo link: "
         "https://discord.gg/pcf-cup-community-1046154910368014417\n\n"
-        "IDENTITÀ DEL CREATORE:\n"
-        "- Il bot è stato creato esclusivamente da Adam (<@1338274535325175810>).\n"
-        "- Non attribuire mai la creazione del bot ad altre persone e non citare "
-        "altri creatori.\n\n"
+        "IDENTITÀ DEL SERVER E DEL BOT:\n"
+        "- Il server PCF™ è stato creato da Piccolofe (<@1012712686770995201>).\n"
+        "- Il bot è stato creato successivamente da Adam (<@1338274535325175810>).\n"
+        "- Non confondere mai il creatore del server con il creatore del bot.\n\n"
         "LISTA E SPIEGAZIONE DEI COMANDI:\n"
         f"La lista seguente contiene il catalogo completo dei {len(command_lines)} comandi "
         "registrati dal bot (prefix e slash/application command). Gli alias "
@@ -721,7 +721,8 @@ def build_ai_system_instruction() -> str:
         "appropriato.\n"
         "- Se il messaggio è normale, NON inserire [REPORT_ADMIN].\n\n"
         "REGOLE GENERALI:\n"
-        "- Il bot è stato creato esclusivamente da Adam (<@1338274535325175810>).\n"
+        "- Il server è stato creato da Piccolofe (<@1012712686770995201>) e il "
+        "bot è stato creato successivamente da Adam (<@1338274535325175810>).\n"
         "- Non mostrare mai pensieri interni o schemi. Rispondi sempre nella "
         "lingua dell'utente.\n\n"
         "REGOLE TRATTAMENTO UTENTI IN CHAT:\n"
@@ -5518,10 +5519,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ],
         [
             (":profile", "Shows a member’s rank, Ranked Points, Ruby, Crystals, Gems, level, W Items and tournament wins.", "[@user] optional member mention; defaults to the person using the command.", ":profile @Player"),
-            (":leaderboard", "Displays the server leaderboard ordered by Ranked Points with rank indicators and progress bars.", "No arguments.", ":leaderboard"),
             (":set-leaderboard (alias :set_leaderboard)", "Sets the channel where the automatic leaderboard message is posted or refreshed.", "<#channel> text-channel mention; admin access.", ":set-leaderboard #leaderboard"),
             (":hoster-lb (aliases :hosterlb, :hoster_lb, :staff-lb, :stafflb, :staff_lb, :classifica-staff)", "Shows the staff/hoster leaderboard for weekly and all-time hosted tournaments.", "No arguments.", ":hoster-lb"),
-            (":gems", "Displays the Stumble Guys gems leaderboard ordered by each profile’s gem balance.", "No arguments.", ":gems"),
             (":give (alias :add)", "Gives a selected currency to a member.", "<@user> <ruby|cristalli|punti> <amount>; admin access.", ":give @Player ruby 5000"),
             (":add-rubini (alias :add_rubini)", "Adds Ruby to a member’s profile.", "<@user> <amount>; admin access.", ":add-rubini @Player 1000"),
             (":remove-rubini (alias :remove_rubini)", "Removes Ruby from a member’s profile.", "<@user> <amount>; admin access.", ":remove-rubini @Player 250"),
@@ -5540,7 +5539,6 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":myteam", "Shows the team you currently belong to, including its members and leader.", "No arguments.", ":myteam"),
             (":teamleave", "Removes you from your current team.", "No arguments.", ":teamleave"),
             (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
-            (":stumble-top (aliases :stumbletop)", "Shows the top players in the Stumble™ activity rankings.", "No arguments.", ":stumble-top"),
             (":boost", "Mostra allo Staff i vantaggi Ruby, Cristalli e ruolo assegnati ai booster.", "Nessun argomento; richiede un ruolo Staff.", ":boost"),
             (":link", "Starts the Stumble Guys account-linking flow so staff can verify the account.", "No arguments; follow the button/modal instructions in the channel.", ":link"),
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
@@ -5561,8 +5559,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # The official guide is permission-first: members see community tools
     # together, while privileged commands are grouped by the role they need.
     community_names = {
-        "profile", "leaderboard", "gems", "shop", "team", "myteam",
-        "teamleave", "1v1", "stumble-top", "link", "supporter",
+        "profile", "shop", "team", "myteam", "teamleave", "1v1", "link", "supporter",
         "help",
     }
     staff_names = {
@@ -5572,7 +5569,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     }
     admin_names = {
         "big-tour", "big-event", "big-start", "big-event-winner",
-        "set-leaderboard", "hoster-lb", "give", "add-rubini",
+        "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "set-supporter", "giveaway", "setup-result",
         "setup-scomesse", "set-welcome", "add-ticket", "pex", "reset-all",
