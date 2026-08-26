@@ -394,7 +394,7 @@ def format_ai_error(exc: Exception) -> str:
         "**What to check:**\n"
         "• `GEMINI_API_KEY` is configured in the environment where the bot is running.\n"
         "• The bot was restarted after changing the key.\n"
-        "• The Gemini API key has access to `gemini-1.5-flash`.\n"
+        "• The Gemini API key has access to at least one supported Gemini model.\n"
         "• The bot has permission to read and send messages in this private channel."
     )
 
@@ -524,7 +524,14 @@ DM_GREETING_WORDS = {
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
 AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
-AI_MODEL = "gemini-1.5-flash"
+CANDIDATE_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-flash-latest",
+    "gemini-1.5-flash-latest",
+]
+_working_model_name: str | None = None
+_model_resolution_lock = asyncio.Lock()
 if GEMINI_CONFIGURED:
     genai.configure(api_key=GEMINI_API_KEY)
 else:
@@ -539,6 +546,75 @@ AI_BANNED_WORDS = {
     "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "motherfucker",
     "puta", "mierda", "joder", "imbecil", "idiota", "stupido", "stupida",
 }
+
+def _probe_model(model_name: str) -> str:
+    """Verify a Gemini model with a tiny synchronous request.
+
+    This function is always called through asyncio.to_thread so the blocking
+    google-generativeai SDK cannot pause Discord's event loop.
+    """
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content(
+        "Reply with OK.",
+        generation_config={"max_output_tokens": 1, "temperature": 0},
+    )
+    if not getattr(response, "text", "").strip():
+        raise RuntimeError(f"Gemini model {model_name} returned no text")
+    return model_name
+
+def _resolve_working_model_name() -> str:
+    """Find and cache the first model that actually supports generation."""
+    global _working_model_name
+    if _working_model_name:
+        return _working_model_name
+    if not GEMINI_CONFIGURED:
+        raise RuntimeError("No GEMINI_API_KEY is configured")
+
+    errors = []
+    for model_name in CANDIDATE_MODELS:
+        try:
+            _working_model_name = _probe_model(model_name)
+            print(f"[GEMINI MODEL] Modello attivo: {_working_model_name}")
+            return _working_model_name
+        except Exception as exc:
+            errors.append(f"{model_name}: {exc}")
+            print(f"[GEMINI MODEL] Modello non disponibile {model_name}: {exc}")
+
+    try:
+        available_models = genai.list_models()
+        for model_info in available_models:
+            methods = getattr(model_info, "supported_generation_methods", [])
+            if "generateContent" not in methods:
+                continue
+            model_name = getattr(model_info, "name", "")
+            if not model_name:
+                continue
+            try:
+                _working_model_name = _probe_model(model_name)
+                print(f"[GEMINI MODEL] Fallback dinamico attivo: {_working_model_name}")
+                return _working_model_name
+            except Exception as exc:
+                errors.append(f"{model_name}: {exc}")
+                print(f"[GEMINI MODEL] Fallback non disponibile {model_name}: {exc}")
+    except Exception as exc:
+        errors.append(f"list_models: {exc}")
+        print(f"[GEMINI MODEL] Errore scansione modelli: {exc}")
+
+    details = "; ".join(errors[-4:])
+    raise ValueError(
+        "Nessun modello Gemini valido trovato con questa API Key."
+        + (f" Dettagli: {details}" if details else "")
+    )
+
+async def get_working_model(system_instruction: str | None = None):
+    """Resolve a working model without blocking the Discord event loop."""
+    async with _model_resolution_lock:
+        model_name = await asyncio.to_thread(_resolve_working_model_name)
+    return await asyncio.to_thread(
+        genai.GenerativeModel,
+        model_name,
+        system_instruction=system_instruction,
+    )
 
 def _contains_inappropriate_content(content: str) -> bool:
     normalized = re.sub(r"[\W_]+", " ", content.casefold(), flags=re.UNICODE)
@@ -761,10 +837,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
     last_error = None
     for attempt in range(3):
         try:
-            model = genai.GenerativeModel(
-                AI_MODEL,
-                system_instruction=system_instruction,
-            )
+            model = await get_working_model(system_instruction)
             chat = model.start_chat(history=history)
             response = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -780,6 +853,9 @@ async def gemini_completion_with_retries(messages, system_instruction):
         except Exception as exc:
             last_error = exc
             error_text = str(exc).lower()
+            if "404" in error_text or "not found" in error_text:
+                global _working_model_name
+                _working_model_name = None
             retryable = (
                 isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
                 or any(word in error_text for word in (
