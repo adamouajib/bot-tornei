@@ -562,7 +562,14 @@ async def initialize_gemini_model():
                 sock_connect=8.0,
                 sock_read=GEMINI_ATTEMPT_TIMEOUT_SECONDS,
             )
-            _gemini_session = aiohttp.ClientSession(timeout=timeout)
+            _gemini_session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(
+                    force_close=True,
+                    limit=10,
+                    ttl_dns_cache=300,
+                ),
+            )
         if _working_model_name is None:
             _working_model_name = GEMINI_MODEL_NAME
             print(f"[GEMINI REST] Client inizializzato; modello: {_working_model_name}")
@@ -865,18 +872,24 @@ async def gemini_completion_with_retries(messages, system_instruction):
                 raise RuntimeError(f"Gemini returned no text{suffix}")
             return reply_text
         except asyncio.TimeoutError as exc:
-            traceback.print_exc()
             last_error = exc
+            print(
+                f"[GEMINI TIMEOUT] Tentativo {attempt + 1}/3 scaduto "
+                f"({GEMINI_ATTEMPT_TIMEOUT_SECONDS:.0f}s) con {_working_model_name}."
+            )
+            if await _switch_to_fallback_model():
+                continue
             if attempt == 2:
                 break
             await asyncio.sleep(1.5 * (attempt + 1))
         except Exception as exc:
-            traceback.print_exc()
             last_error = exc
             error_text = str(exc).lower()
             if "404" in error_text or "not found" in error_text:
                 if await _switch_to_fallback_model():
                     continue
+            if isinstance(exc, aiohttp.ClientError) and await _switch_to_fallback_model():
+                continue
             retryable = (
                 isinstance(exc, (TimeoutError, ConnectionError, aiohttp.ClientError))
                 or any(word in error_text for word in (
