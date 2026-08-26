@@ -590,8 +590,8 @@ GEMINI_ATTEMPT_TIMEOUT_SECONDS = 12.0
 AI_REQUEST_TIMEOUT_SECONDS = 50.0
 # Gemini's request body has no separate max-input-token request parameter.
 # Keep a local budget for the system prompt plus conversation so future
-# additions cannot accidentally cross the intended 100k-token ceiling.
-GEMINI_PROMPT_TOKEN_BUDGET = 100_000
+# additions cannot accidentally cross the intended 200k-token ceiling.
+GEMINI_PROMPT_TOKEN_BUDGET = 200_000
 GEMINI_CHARS_PER_TOKEN_ESTIMATE = 4
 GEMINI_RATE_LIMIT_RETRY_DELAYS = (2.0, 2.0)
 if not GEMINI_CONFIGURED:
@@ -1379,6 +1379,33 @@ def build_ai_server_knowledge() -> str:
     else:
         active_event_state = "No Flash Event or Big Event is currently configured."
 
+    twitch_state = db.get("twitch_live")
+    twitch_watch_time = (
+        twitch_state.get("watch_time")
+        if isinstance(twitch_state, dict)
+        and isinstance(twitch_state.get("watch_time"), dict)
+        else {}
+    )
+    if isinstance(twitch_state, dict) and twitch_state.get("is_live"):
+        tracked_viewers = sum(
+            1
+            for row in twitch_watch_time.values()
+            if isinstance(row, dict) and row.get("present")
+        )
+        twitch_status = (
+            f"Piccolofe's Twitch live is currently tracked as LIVE. "
+            f"The dashboard currently sees {tracked_viewers} viewer(s) in Twitch chat; "
+            f"watch time is updated every {TWITCH_POLL_MINUTES} minutes."
+        )
+    elif isinstance(twitch_state, dict) and twitch_watch_time:
+        twitch_status = (
+            "The most recently tracked Piccolofe Twitch live has ended. "
+            "Recorded watch-time data may still be used with `:claim-tw <twitch_name>` "
+            "when the viewer has reached the required minimum."
+        )
+    else:
+        twitch_status = "No Piccolofe Twitch live is currently tracked."
+
     return f"""
 DETAILED PCF™ SERVER HANDBOOK
 This is the authoritative user-facing knowledge for the Discord server. Use it
@@ -1401,18 +1428,35 @@ CURRENCIES, PROGRESSION, AND REWARDS
 - Ruby and Crystals are the server's main internal currencies. Gems are real
   Stumble Guys Gems tracked for account transfers. Ranked Points determine the
   member's competitive rank, while XP tracks chat progression.
+- Keep the currencies separate in every answer: XP is progression, Ranked Points
+  determine rank, Ruby is the main wager/reward currency, Crystals are used for
+  W Items and Gems packages, and Gems are the Stumble Guys currency recorded for
+  rewards and staff transfers. Never call one currency another or merge their
+  balances.
 - A qualifying server message of at least 3 characters grants {XP_PER_MSG} XP,
   with an XP cooldown of {XP_COOLDOWN_SECS} seconds per member. The progressive
   curve requires (level + 1) × 100 XP for the next level.
 - Every new chat level grants {100} Ruby. Every fifth level additionally grants
   500 Ruby and 50 Crystals. Level-role status is currently: {level_role_lines}.
-- Tournament match qualification and tournament victory award 100 Ranked
-  Points where the relevant command completes the result. A tournament winner
-  also receives the configured prize and the winner role. Team tournament
-  winners receive the configured prize, +100 Ranked Points, and the win
-  statistic for each real team member.
+- Ranked Points: completing a qualifying tournament match gives +100 Ranked
+  Points to the recorded real winner; closing a team tournament gives +100
+  Ranked Points to each real member of the winning team. A final tournament
+  winner also increments the tournament-win statistic, receives the configured
+  prize and receives the winner role. Placements other than first do not
+  automatically receive Ranked Points unless the configured command explicitly
+  says so.
+- Ruby earning routes are chat level-ups, tournament and event prizes, Stumble
+  Machine wins, server boosts, supporter rewards, Ruby/Crystal exchanges,
+  limited drops, giveaways and staff awards. Exact tournament, event, drop and
+  giveaway amounts come from their current configuration; never invent them.
+- Crystals earning routes are every fifth chat level, tournament and event
+  prizes, triple-red Stumble Machine wins, server boosts, limited drops and
+  staff awards. Crystals are also obtained by exchanging Ruby and are spent on
+  W Items or Gems packages.
 - Flash Event winners receive the configured base Ruby/Crystal amount multiplied
-  by their number of wins, plus event-win trophies.
+  by their number of recorded wins, plus event-win trophies. The base amount
+  belongs to the active event and must be read from its current prize instead of
+  being guessed.
 - Server boosts award 5,000 Ruby and 1,000 Crystals for the first tracked boost,
   and 10,000 Ruby and 2,000 Crystals from the second tracked boost onward,
   plus the Booster role. :boost only explains these perks; it never performs a
@@ -1423,6 +1467,17 @@ CURRENCIES, PROGRESSION, AND REWARDS
 - The public Gems leaderboard shows awarded Gems. Do not promise automatic
   delivery unless the relevant Big Tournament prize and account verification
   are in place.
+- Watching Piccolofe's Twitch live is an additional Gems reward route. The
+  tracker checks viewers visible in Twitch chat every {TWITCH_POLL_MINUTES}
+  minutes and accumulates watch time only for viewers it can see. After the
+  stream has ended, use `:claim-tw <twitch_name>` with the exact Twitch login;
+  at least 30 tracked minutes are required, the claim can be made only once for
+  that completed stream, and it credits {TWITCH_REWARD_GEMS} Gems to the
+  member's server record. The command cannot be claimed while the stream is
+  still live. This Twitch reward gives Gems only, not Ruby, Crystals, XP or
+  Ranked Points. Never promise an external Stumble Guys transfer automatically;
+  explain that the server record/leaderboard is updated and staff handles any
+  real-account transfer process that is separately confirmed.
 - Ranked thresholds are:
 {rank_lines}
 
@@ -1487,6 +1542,11 @@ SLOT MACHINE
   Crystals multiplied by the multiplier. A pair of a non-chicken symbol awards
   100–2,000 Ruby multiplied by the multiplier. Three chickens lose the wager;
   any other non-winning combination loses the wager.
+- The wager is deducted before the spin. A win returns only the prize shown by
+  the result; a loss does not refund the wager. Crown jackpots also assign the
+  Stumble Gambler role. The multiplier scales both the wager and the listed
+  reward range, so x10 means a 5,000 Ruby wager and up to ten times the
+  base reward. The machine never awards Gems or Ranked Points.
 
 SHOP AND EARNING CRYSTALS
 - :shop is the public legacy notice. :test opens the interactive shop in the
@@ -1531,6 +1591,7 @@ STAFF, SUPPORT, ACCOUNT LINKING, AND TICKETS
 LIVE SERVER STATUS
 - {active_tournament}
 - {active_event_state}
+- {twitch_status}
 - Use this live status only when it answers the member's question. Do not
   claim that a tournament, event, prize, room, or winner exists if the status
   says it does not.
