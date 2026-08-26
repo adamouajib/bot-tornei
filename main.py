@@ -382,20 +382,22 @@ def banner_file(path: str, filename: str) -> discord.File | None:
     return None
 
 def format_ai_error(exc: Exception) -> str:
-    """Give users actionable AI diagnostics without exposing credentials."""
-    detail = str(exc).strip() or "No additional details were returned."
-    detail = re.sub(r"(AIzaSy[A-Za-z0-9_-]{20,})", "[REDACTED_API_KEY]", detail)
-    detail = re.sub(r"(?i)(api[_ -]?key\s*[:=]\s*)\S+", r"\1[REDACTED]", detail)
-    detail = detail[:900]
+    """Return a safe, user-friendly error while keeping technical details in logs."""
+    error_text = str(exc).casefold()
+    if any(marker in error_text for marker in ("429", "quota", "rate limit", "resource exhausted")):
+        return (
+            "⏳ **L'IA è momentaneamente occupata.**\n\n"
+            "È stato raggiunto il limite temporaneo di richieste. "
+            "Attendi qualche secondo e riprova."
+        )
+    if "timeout" in error_text or "timed out" in error_text:
+        return (
+            "⏳ **La risposta sta impiegando troppo tempo.**\n\n"
+            "Riprova tra poco."
+        )
     return (
-        "⚠️ **The AI could not process your request.**\n\n"
-        f"**Problem type:** `{type(exc).__name__}`\n"
-        f"**Technical details:** `{detail}`\n\n"
-        "**What to check:**\n"
-        "• `GEMINI_API_KEY` is configured in the environment where the bot is running.\n"
-        "• The bot was restarted after changing the key.\n"
-        "• The Gemini API key has access to at least one supported Gemini model.\n"
-        "• The bot has permission to read and send messages in this private channel."
+        "⚠️ **Non riesco a rispondere in questo momento.**\n\n"
+        "Riprova tra poco. Se il problema continua, avvisa lo staff."
     )
 
 def get_rank_info(punti: int):
@@ -673,7 +675,7 @@ def _ai_welcome_embed(guild: discord.Guild, channel: discord.TextChannel) -> dis
         value="Questions about Tournaments, Shop, Events, becoming Staff, or any other topic.",
         inline=False,
     )
-    embed.set_footer(text="🤖 Powered by Google Gemini AI", icon_url=bot.user.display_avatar.url if bot.user else None)
+    embed.set_footer(text="🤖 Powered by Adam IA", icon_url=bot.user.display_avatar.url if bot.user else None)
     return embed
 
 class PrivateAIChatView(View):
