@@ -538,6 +538,7 @@ _gemini_session: aiohttp.ClientSession | None = None
 _gemini_session_lock = asyncio.Lock()
 GEMINI_ATTEMPT_TIMEOUT_SECONDS = 12.0
 AI_REQUEST_TIMEOUT_SECONDS = 50.0
+GEMINI_RATE_LIMIT_RETRY_DELAYS = (1.5, 2.0)
 if not GEMINI_CONFIGURED:
     print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
 ALERT_RECIPIENT_ID = 1338274535325175810
@@ -603,6 +604,17 @@ def _contains_inappropriate_content(content: str) -> bool:
     return bool(words & AI_BANNED_WORDS) or any(
         phrase in normalized for phrase in ("kill the server", "nuke the server", "ammazza il server")
     )
+
+def _is_gemini_rate_limit_error(error_text: str) -> bool:
+    """Recognize quota/rate-limit responses before generic error handling."""
+    return any(marker in error_text.casefold() for marker in (
+        "429",
+        "quota",
+        "rate limit",
+        "too many requests",
+        "resource exhausted",
+        "resource_exhausted",
+    ))
 
 async def _get_ai_main_guild() -> discord.Guild | None:
     """Return the primary guild the bot is connected to."""
@@ -897,6 +909,20 @@ async def gemini_completion_with_retries(messages, system_instruction):
         except Exception as exc:
             last_error = exc
             error_text = str(exc).lower()
+            if _is_gemini_rate_limit_error(error_text):
+                # Keep this retry inside the caller's typing() context so the
+                # user sees only "typing..." while Gemini recovers.
+                print(
+                    f"[GEMINI 429] Tentativo {attempt + 1}/3 — "
+                    "nuovo tentativo automatico."
+                )
+                if attempt < len(GEMINI_RATE_LIMIT_RETRY_DELAYS):
+                    await asyncio.sleep(GEMINI_RATE_LIMIT_RETRY_DELAYS[attempt])
+                    # A quota can be model-specific, so use the next
+                    # configured fallback when one is available.
+                    await _switch_to_fallback_model()
+                    continue
+                break
             if "404" in error_text or "not found" in error_text:
                 if await _switch_to_fallback_model():
                     continue
@@ -1010,7 +1036,6 @@ def build_ai_source_context() -> str:
         ".js",
         ".jsx",
         ".json",
-        ".lock",
         ".md",
         ".py",
         ".pyi",
