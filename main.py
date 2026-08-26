@@ -745,13 +745,20 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
         conversation = dm_conversations.setdefault(user_id, [])
         conversation.append({"role": "user", "content": message.content})
         conversation[:] = conversation[-12:]
-        system_prompt = (
-            "You are the Official PCF™ Server Assistant. Automatically detect the language "
-            "of the user's latest message and reply exactly in that language, preserving its "
-            "script and tone. Never reveal internal reasoning. Help with the Discord server, "
-            "its commands, tournaments, shop, events, staff applications, and rules. "
-            "The user is writing in a private server channel."
-        )
+        try:
+            system_prompt = build_ai_system_instruction()
+        except Exception as exc:
+            # Keep the existing concise behavior if a non-AI context file
+            # cannot be read. The Gemini client and response handling remain
+            # unchanged, and the user can still use the assistant.
+            print(f"[AI CONTEXT WARNING] Could not build project context: {exc}")
+            system_prompt = (
+                "You are the Official PCF™ Server Assistant. Automatically detect the language "
+                "of the user's latest message and reply exactly in that language, preserving its "
+                "script and tone. Never reveal internal reasoning. Help with the Discord server, "
+                "its commands, tournaments, shop, events, staff applications, and rules. "
+                "The user is writing in a private server channel."
+            )
         reply_text = ""
         try:
             # Keep the typing indicator scoped only to generation. This guarantees
@@ -965,34 +972,110 @@ async def send_threat_alert(
 
 
 def build_ai_source_context() -> str:
-    """Read the current bot source and project layout for the DM assistant."""
-    source_path = os.path.abspath(__file__)
-    try:
-        with open(source_path, "r", encoding="utf-8") as source_file:
-            source = source_file.read()
-    except OSError as exc:
-        source = f"[Unable to read the current main.py source: {exc}]"
+    """Read all safe, text-based project code and configuration for the AI.
 
+    This is intentionally generated from disk instead of maintained as a
+    second copy of the bot's behavior.  Environment files, runtime data,
+    generated archives, internal agent files and binary assets are excluded
+    so the assistant learns the implementation without receiving secrets or
+    private session data.
+    """
+    source_path = os.path.abspath(__file__)
     project_root = os.path.dirname(source_path)
+    ignored_directories = {
+        ".git",
+        ".cache",
+        ".local",
+        ".agents",
+        ".pythonlibs",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+    }
+    ignored_filenames = {
+        "active_sessions.json",
+        "bot.zip",
+        "db.json",
+    }
+    allowed_extensions = {
+        ".cfg",
+        ".config",
+        ".css",
+        ".gitignore",
+        ".html",
+        ".ini",
+        ".js",
+        ".jsx",
+        ".json",
+        ".lock",
+        ".md",
+        ".py",
+        ".pyi",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".yaml",
+        ".yml",
+    }
+    allowed_filenames = {
+        ".gitignore",
+        ".replit",
+    }
+
     project_files = []
     for root, directories, filenames in os.walk(project_root):
         directories[:] = sorted(
-            directory for directory in directories
-            if directory not in {".git", ".pythonlibs", "__pycache__"}
+            directory
+            for directory in directories
+            if directory not in ignored_directories
         )
         for filename in sorted(filenames):
             relative_path = os.path.relpath(
                 os.path.join(root, filename),
                 project_root,
             )
+            normalized_parts = set(relative_path.split(os.sep))
+            extension = os.path.splitext(filename)[1].lower()
+            if (
+                filename in ignored_filenames
+                or filename.startswith(".env")
+                or normalized_parts & ignored_directories
+                or (
+                    filename not in allowed_filenames
+                    and extension not in allowed_extensions
+                )
+            ):
+                continue
             project_files.append(relative_path)
+
+    project_files.sort()
+    source_sections = []
+    for relative_path in project_files:
+        file_path = os.path.join(project_root, relative_path)
+        try:
+            with open(file_path, "r", encoding="utf-8") as source_file:
+                source = source_file.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            source_sections.append(
+                f"----- BEGIN {relative_path} -----\n"
+                f"[Unable to read this text file: {exc}]\n"
+                f"----- END {relative_path} -----"
+            )
+            continue
+        source_sections.append(
+            f"----- BEGIN {relative_path} -----\n"
+            f"{source}\n"
+            f"----- END {relative_path} -----"
+        )
 
     return (
         "PROJECT FILE STRUCTURE (generated at request time):\n"
         + "\n".join(f"- {path}" for path in project_files)
         + "\n\nPERSISTED DATABASE STRUCTURE:\n"
-        "- db.json is a local JSON file generated at runtime and is not a "
-        "source file or a secret.\n"
+        "- db.json is a local JSON file generated at runtime and is not "
+        "included in the source context.\n"
         "- Top-level persisted sections include profiles, teams, tour, event, "
         "big_event, event_history, event_bans, leaderboard_channel_id, "
         "leaderboard_msg_ids, welcome_channel_id, level_channel_id, "
@@ -1001,18 +1084,18 @@ def build_ai_source_context() -> str:
         "- Each profile stores the member name, Ranked Points, Ruby, Crystals, "
         "Gems, XP/message progression, level, staff counters, Stumble Guys "
         "name and owned W Items. The exact keys and serialization behavior "
-        "are defined in the source below.\n"
+        "are defined in main.py.\n"
         "- Runtime-only interaction state includes active DM sessions, "
         "conversation history, ticket state, tournament controls and betting "
         "controls; do not claim these are permanent database records.\n\n"
-        "COMPLETE CURRENT main.py SOURCE:\n"
-        "The following is authoritative implementation context. Read it when "
-        "answering questions about commands, slash commands, arguments, "
-        "permissions, forms/modals, buttons, shop, tournaments, events, DM "
-        "behavior, links, moderation, progression or persistence.\n"
-        "----- BEGIN main.py -----\n"
-        f"{source}\n"
-        "----- END main.py -----"
+        "COMPLETE CURRENT PROJECT SOURCE AND CONFIGURATION:\n"
+        "The following files are authoritative implementation context. Read "
+        "them when answering questions about commands, slash commands, "
+        "arguments, permissions, forms/modals, buttons, shop, tournaments, "
+        "events, DM behavior, links, moderation, progression, persistence, "
+        "startup or deployment configuration. Never reveal environment "
+        "variables or credentials even if a file references them.\n"
+        + "\n".join(source_sections)
     )
 
 
