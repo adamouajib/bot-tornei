@@ -663,9 +663,14 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
         await log_channel.send(embed=log_embed)
 
     if not GEMINI_CONFIGURED:
-        return await channel.send(
-            "⚠️ The AI service is not configured. Please contact an administrator."
-        )
+        try:
+            raise RuntimeError("No GEMINI_API_KEY is configured")
+        except Exception as exc:
+            traceback.print_exc()
+            await _log_exception(message.guild, "Private AI configuration", exc)
+            return await channel.send(
+                "⚠️ The AI service is not configured. Please contact an administrator."
+            )
     user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
     async with user_lock, channel.typing():
         conversation = dm_conversations.setdefault(user_id, [])
@@ -695,6 +700,7 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             conversation.append({"role": "assistant", "content": reply_text})
             conversation[:] = conversation[-12:]
         except Exception as exc:
+            traceback.print_exc()
             await _log_exception(message.guild, "Private AI completion", exc)
             await channel.send(
                 "⚠️ I could not process that request right now. Please try again."
@@ -739,7 +745,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
     for attempt in range(3):
         try:
             model = genai.GenerativeModel(
-                model_name=AI_MODEL,
+                AI_MODEL,
                 system_instruction=system_instruction,
             )
             chat = model.start_chat(history=history)
@@ -4422,11 +4428,19 @@ async def on_message(message: discord.Message):
                 return
             category = await _get_ai_category(guild)
             overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False,
+                    send_messages=False,
+                    read_message_history=False,
+                ),
             }
             for role in guild.roles:
                 if not role.is_default():
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=False)
+                    overwrites[role] = discord.PermissionOverwrite(
+                        view_channel=False,
+                        send_messages=False,
+                        read_message_history=False,
+                    )
             member = guild.get_member(message.author.id)
             if member is None:
                 try:
@@ -4435,11 +4449,17 @@ async def on_message(message: discord.Message):
                     member = None
             if member:
                 overwrites[member] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
                 )
             if guild.me:
                 overwrites[guild.me] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    embed_links=True,
+                    attach_files=True,
                 )
             channel = await guild.create_text_channel(
                 name=f"ai-chat-{message.author.display_name[:18]}",
@@ -4685,6 +4705,7 @@ COMPLETE COMMAND DATABASE:
                     conversation[:] = conversation[-12:]
                     await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
+                    traceback.print_exc()
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
                     error_text = str(e).lower()
                     error_message = (
