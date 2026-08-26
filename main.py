@@ -381,6 +381,23 @@ def banner_file(path: str, filename: str) -> discord.File | None:
     print(f"[banner] Missing image asset: {path}")
     return None
 
+def format_ai_error(exc: Exception) -> str:
+    """Give users actionable AI diagnostics without exposing credentials."""
+    detail = str(exc).strip() or "No additional details were returned."
+    detail = re.sub(r"(AIzaSy[A-Za-z0-9_-]{20,})", "[REDACTED_API_KEY]", detail)
+    detail = re.sub(r"(?i)(api[_ -]?key\s*[:=]\s*)\S+", r"\1[REDACTED]", detail)
+    detail = detail[:900]
+    return (
+        "⚠️ **The AI could not process your request.**\n\n"
+        f"**Problem type:** `{type(exc).__name__}`\n"
+        f"**Technical details:** `{detail}`\n\n"
+        "**What to check:**\n"
+        "• `GEMINI_API_KEY` is configured in the environment where the bot is running.\n"
+        "• The bot was restarted after changing the key.\n"
+        "• The Gemini API key has access to `gemini-1.5-flash`.\n"
+        "• The bot has permission to read and send messages in this private channel."
+    )
+
 def get_rank_info(punti: int):
     current = RANK_DATA[0]
     for entry in RANK_DATA:
@@ -668,9 +685,7 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
         except Exception as exc:
             traceback.print_exc()
             await _log_exception(message.guild, "Private AI configuration", exc)
-            return await channel.send(
-                "⚠️ The AI service is not configured. Please contact an administrator."
-            )
+            return await channel.send(format_ai_error(exc))
     user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
     async with user_lock, channel.typing():
         conversation = dm_conversations.setdefault(user_id, [])
@@ -702,9 +717,7 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
         except Exception as exc:
             traceback.print_exc()
             await _log_exception(message.guild, "Private AI completion", exc)
-            await channel.send(
-                "⚠️ I could not process that request right now. Please try again."
-            )
+            await channel.send(format_ai_error(exc))
 
 
 def clean_ai_response(response) -> str:
@@ -4707,12 +4720,7 @@ COMPLETE COMMAND DATABASE:
                 except Exception as e:
                     traceback.print_exc()
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
-                    error_text = str(e).lower()
-                    error_message = (
-                        "⚠️ Non riesco a elaborare questa richiesta in questo momento. "
-                        "Riprova tra poco."
-                    )
-                    await message.channel.send(error_message)
+                    await message.channel.send(format_ai_error(e))
             return
         await bot.process_commands(message)
         return
