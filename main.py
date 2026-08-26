@@ -398,6 +398,10 @@ class GeminiRateLimitError(RuntimeError):
     """Internal error used after Gemini rate-limit retries are exhausted."""
 
 
+class GeminiPromptTooLargeError(RuntimeError):
+    """Internal error used when the complete Gemini prompt exceeds its budget."""
+
+
 def format_ai_error(exc: Exception) -> str:
     """Return a safe, user-friendly error while keeping technical details in logs."""
     error_text = str(exc).casefold()
@@ -408,6 +412,11 @@ def format_ai_error(exc: Exception) -> str:
         )
     if isinstance(exc, GeminiRateLimitError):
         return "⚠️ Il servizio è momentaneamente occupato. Riprova tra poco."
+    if isinstance(exc, GeminiPromptTooLargeError):
+        return (
+            "⚠️ La conoscenza richiesta è temporaneamente troppo estesa. "
+            "Prova a fare una domanda più specifica."
+        )
     return (
         "⚠️ **Non riesco a rispondere in questo momento.**\n\n"
         "Riprova tra poco. Se il problema continua, avvisa lo staff."
@@ -555,6 +564,11 @@ _gemini_session: aiohttp.ClientSession | None = None
 _gemini_session_lock = asyncio.Lock()
 GEMINI_ATTEMPT_TIMEOUT_SECONDS = 12.0
 AI_REQUEST_TIMEOUT_SECONDS = 50.0
+# Gemini's request body has no separate max-input-token request parameter.
+# Keep a local budget for the system prompt plus conversation so future
+# additions cannot accidentally cross the intended 100k-token ceiling.
+GEMINI_PROMPT_TOKEN_BUDGET = 100_000
+GEMINI_CHARS_PER_TOKEN_ESTIMATE = 4
 GEMINI_RATE_LIMIT_RETRY_DELAYS = (2.0, 2.0)
 if not GEMINI_CONFIGURED:
     print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
@@ -994,6 +1008,19 @@ async def gemini_completion_with_retries(messages, system_instruction):
             })
     if not contents:
         raise RuntimeError("Gemini request has no user message")
+    prompt_characters = len(system_instruction or "") + sum(
+        len(str(item.get("content", "")))
+        for item in messages
+        if item.get("role") in {"user", "assistant"}
+    )
+    estimated_prompt_tokens = (
+        prompt_characters + GEMINI_CHARS_PER_TOKEN_ESTIMATE - 1
+    ) // GEMINI_CHARS_PER_TOKEN_ESTIMATE
+    if estimated_prompt_tokens > GEMINI_PROMPT_TOKEN_BUDGET:
+        raise GeminiPromptTooLargeError(
+            f"Gemini prompt budget exceeded: approximately "
+            f"{estimated_prompt_tokens} tokens"
+        )
     payload = {
         "systemInstruction": {
             "parts": [{"text": system_instruction or ""}],
