@@ -275,7 +275,10 @@ def hoster_only():
 
 def admin_only():
     async def predicate(ctx):
-        return any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
+        )
     return commands.check(predicate)
 
 def owner_only():
@@ -688,7 +691,7 @@ def _ai_welcome_embed(guild: discord.Guild, channel: discord.TextChannel) -> dis
         inline=False,
     )
     embed.set_footer(
-        text="🤖 Assistente creato da Adam",
+        text="🤖 Official PCF™ Assistant",
         icon_url=bot.user.display_avatar.url if bot.user else None,
     )
     return embed
@@ -758,29 +761,31 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             await _log_exception(message.guild, "Private AI configuration", exc)
             return await channel.send(format_ai_error(exc))
     user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
-    async with user_lock:
-        conversation = dm_conversations.setdefault(user_id, [])
-        conversation.append({"role": "user", "content": message.content})
-        conversation[:] = conversation[-12:]
-        try:
-            system_prompt = build_ai_system_instruction()
-        except Exception as exc:
+    # Keep the typing indicator active while a previous message from the same
+    # user is still being processed. This prevents fast follow-up messages
+    # from appearing stuck while they wait for the per-user conversation lock.
+    async with channel.typing():
+        async with user_lock:
+            conversation = dm_conversations.setdefault(user_id, [])
+            conversation.append({"role": "user", "content": message.content})
+            conversation[:] = conversation[-12:]
+            try:
+                system_prompt = build_ai_system_instruction()
+            except Exception as exc:
             # Keep the existing concise behavior if a non-AI context file
             # cannot be read. The Gemini client and response handling remain
             # unchanged, and the user can still use the assistant.
-            print(f"[AI CONTEXT WARNING] Could not build project context: {exc}")
-            system_prompt = (
-                "You are the Official PCF™ Server Assistant. Automatically detect the language "
-                "of the user's latest message and reply exactly in that language, preserving its "
-                "script and tone. Never reveal internal reasoning. Help with the Discord server, "
-                "its commands, tournaments, shop, events, staff applications, and rules. "
-                "The user is writing in a private server channel."
-            )
-        reply_text = ""
-        try:
-            # Keep the typing indicator scoped only to generation. This guarantees
-            # it is closed before any response or error message is sent.
-            async with channel.typing():
+                print(f"[AI CONTEXT WARNING] Could not build project context: {exc}")
+                system_prompt = (
+                    "You are the Official PCF™ Server Assistant. Automatically detect the language "
+                    "of the user's latest message and reply exactly in that language, preserving its "
+                    "script and tone. Never reveal internal reasoning. Never mention Adam or the "
+                    "creator unless the user explicitly asks about your identity or creator. Help "
+                    "with the Discord server, its commands, tournaments, shop, events, staff "
+                    "applications, and rules. The user is writing in a private server channel."
+                )
+            reply_text = ""
+            try:
                 response = await asyncio.wait_for(
                     gemini_completion_with_retries(
                         [{"role": "system", "content": system_prompt}, *conversation],
@@ -789,37 +794,37 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
                     timeout=AI_REQUEST_TIMEOUT_SECONDS,
                 )
                 reply_text = clean_ai_response(response)
-        except asyncio.TimeoutError as exc:
-            traceback.print_exc()
-            print(
-                "[GEMINI TIMEOUT] La richiesta ha superato il tempo massimo "
-                f"di {AI_REQUEST_TIMEOUT_SECONDS:.0f} secondi."
-            )
-            await _log_exception(message.guild, "Private AI timeout", exc)
-            return await channel.send(
-                "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
-            )
-        except Exception as exc:
-            traceback.print_exc()
-            print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
-            await _log_exception(message.guild, "Private AI completion", exc)
-            return await channel.send(format_ai_error(exc))
-        if not reply_text:
-            return await channel.send(
-                "⚠️ Non riesco a generare una risposta in questo momento. Riprova tra poco."
-            )
-        try:
-            for response_chunk in split_ai_response(reply_text):
-                await channel.send(embed=discord.Embed(
-                    description=response_chunk,
-                    color=discord.Color(0x00F0FF),
-                ))
-            conversation.append({"role": "assistant", "content": reply_text})
-            conversation[:] = conversation[-12:]
-        except Exception as exc:
-            traceback.print_exc()
-            print(f"[AI SEND ERROR] Errore invio risposta: {exc}")
-            await _log_exception(message.guild, "Private AI response send", exc)
+            except asyncio.TimeoutError as exc:
+                traceback.print_exc()
+                print(
+                    "[GEMINI TIMEOUT] La richiesta ha superato il tempo massimo "
+                    f"di {AI_REQUEST_TIMEOUT_SECONDS:.0f} secondi."
+                )
+                await _log_exception(message.guild, "Private AI timeout", exc)
+                return await channel.send(
+                    "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
+                await _log_exception(message.guild, "Private AI completion", exc)
+                return await channel.send(format_ai_error(exc))
+            if not reply_text:
+                return await channel.send(
+                    "⚠️ Non riesco a generare una risposta in questo momento. Riprova tra poco."
+                )
+            try:
+                for response_chunk in split_ai_response(reply_text):
+                    await channel.send(embed=discord.Embed(
+                        description=response_chunk,
+                        color=discord.Color(0x00F0FF),
+                    ))
+                conversation.append({"role": "assistant", "content": reply_text})
+                conversation[:] = conversation[-12:]
+            except Exception as exc:
+                traceback.print_exc()
+                print(f"[AI SEND ERROR] Errore invio risposta: {exc}")
+                await _log_exception(message.guild, "Private AI response send", exc)
 
 
 def clean_ai_response(response) -> str:
