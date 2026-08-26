@@ -27,11 +27,11 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ui import Button, View, Modal, TextInput
 import asyncio
+import aiohttp
 import inspect
 from datetime import datetime, timedelta
 import random
 import traceback
-import google.generativeai as genai
 
 
 
@@ -531,15 +531,11 @@ GEMINI_FALLBACK_MODEL_NAMES = (
 )
 GEMINI_MODEL_NAMES = (GEMINI_MODEL_NAME, *GEMINI_FALLBACK_MODEL_NAMES)
 _working_model_name: str | None = None
-_gemini_model = None
+_gemini_http_session: aiohttp.ClientSession | None = None
 _model_resolution_lock = asyncio.Lock()
 AI_REQUEST_TIMEOUT_SECONDS = 20.0
-if GEMINI_CONFIGURED:
-    genai.configure(
-        api_key=GEMINI_API_KEY,
-        transport="rest",
-    )
-else:
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+if not GEMINI_CONFIGURED:
     print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
@@ -552,30 +548,45 @@ AI_BANNED_WORDS = {
     "puta", "mierda", "joder", "imbecil", "idiota", "stupido", "stupida",
 }
 
+class GeminiRESTError(RuntimeError):
+    """HTTP error returned by the Gemini REST endpoint."""
+
+    def __init__(self, status: int, detail: str):
+        self.status = status
+        super().__init__(f"Gemini REST HTTP {status}: {detail}")
+
 async def initialize_gemini_model():
-    """Construct the primary Gemini model once when the bot starts."""
-    global _gemini_model, _working_model_name
-    if _gemini_model is not None:
-        return _gemini_model
+    """Create one reusable asynchronous REST client when the bot starts."""
+    global _gemini_http_session, _working_model_name
+    if _gemini_http_session is not None and not _gemini_http_session.closed:
+        return _gemini_http_session
     if not GEMINI_CONFIGURED:
         raise RuntimeError("No GEMINI_API_KEY is configured")
     async with _model_resolution_lock:
-        if _gemini_model is None:
+        if _gemini_http_session is None or _gemini_http_session.closed:
             _working_model_name = GEMINI_MODEL_NAME
-            _gemini_model = await asyncio.to_thread(
-                genai.GenerativeModel,
-                GEMINI_MODEL_NAME,
+            _gemini_http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(
+                    total=AI_REQUEST_TIMEOUT_SECONDS,
+                    connect=5,
+                    sock_connect=5,
+                    sock_read=15,
+                ),
+                headers={"Content-Type": "application/json"},
             )
-            print(f"[GEMINI MODEL] Modello inizializzato all'avvio: {_working_model_name}")
-    return _gemini_model
+            print(
+                f"[GEMINI MODEL] REST asincrono inizializzato all'avvio: "
+                f"{_working_model_name}"
+            )
+    return _gemini_http_session
 
 async def get_working_model():
-    """Return the startup-initialized Gemini model."""
+    """Return the startup-initialized REST client."""
     return await initialize_gemini_model()
 
 async def _switch_to_fallback_model() -> bool:
     """Switch to the next fixed fallback after a model-not-found response."""
-    global _gemini_model, _working_model_name
+    global _working_model_name
     try:
         current_index = GEMINI_MODEL_NAMES.index(_working_model_name)
     except ValueError:
@@ -586,10 +597,6 @@ async def _switch_to_fallback_model() -> bool:
     async with _model_resolution_lock:
         if _working_model_name != GEMINI_MODEL_NAMES[next_index]:
             _working_model_name = GEMINI_MODEL_NAMES[next_index]
-            _gemini_model = await asyncio.to_thread(
-                genai.GenerativeModel,
-                _working_model_name,
-            )
             print(f"[GEMINI MODEL] Fallback attivo: {_working_model_name}")
     return True
 
@@ -702,12 +709,9 @@ class PrivateAIChatView(View):
 async def _handle_private_ai_message(message: discord.Message, channel: discord.TextChannel):
     user_id = message.author.id
     ai_channel_last_activity[user_id] = datetime.utcnow()
-    try:
-        await channel.edit(
-            topic=f"AI_SESSION_USER_ID:{user_id}|LAST_ACTIVITY:{datetime.utcnow().isoformat()}"
-        )
-    except (discord.Forbidden, discord.HTTPException):
-        pass
+    # Do not PATCH the channel on every message. Discord rate-limits topic
+    # updates and a retry-after value can otherwise block this handler for
+    # several minutes before it even reaches Gemini.
     if _contains_inappropriate_content(message.content):
         log_channel = await _get_ai_log_channel(message.guild)
         log_embed = discord.Embed(
@@ -797,7 +801,8 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
 def clean_ai_response(response) -> str:
     """Extract the user-facing AI text at one centralized boundary."""
     try:
-        text = str(response.text or "").strip()
+        raw_text = response if isinstance(response, str) else response.text
+        text = str(raw_text or "").strip()
     except (AttributeError, IndexError, TypeError, ValueError):
         return ""
     # Models can leak private reasoning or answer labels.
@@ -814,44 +819,78 @@ def clean_ai_response(response) -> str:
     return text
 
 async def gemini_completion_with_retries(messages, system_instruction):
-    """Call Gemini with bounded retries and the full DM command context."""
+    """Call Gemini's REST API asynchronously with bounded retries."""
     if not GEMINI_CONFIGURED:
         raise RuntimeError("No GEMINI_API_KEY is configured")
-    history = []
-    for message in messages[:-1]:
-        role = message.get("role")
-        if role == "system":
-            continue
-        if role in {"user", "assistant"}:
-            history.append({
-                "role": "model" if role == "assistant" else "user",
-                "parts": [message.get("content", "")],
-            })
-    prompt = messages[-1].get("content", "") if messages else ""
     last_error = None
     for attempt in range(3):
         try:
-            model = await get_working_model()
-            chat = model.start_chat(history=history)
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    chat.send_message,
-                    prompt,
-                    generation_config={"temperature": 0.1},
-                ),
-                timeout=AI_REQUEST_TIMEOUT_SECONDS,
-            )
-            if not clean_ai_response(response):
-                raise RuntimeError("Gemini returned no text")
-            return response
+            session = await get_working_model()
+            contents = []
+            for item in messages:
+                role = item.get("role")
+                content = str(item.get("content", "")).strip()
+                if role not in {"user", "assistant"} or not content:
+                    continue
+                contents.append({
+                    "role": "model" if role == "assistant" else "user",
+                    "parts": [{"text": content}],
+                })
+            if not contents:
+                raise RuntimeError("Gemini request has no user message")
+
+            payload = {
+                "systemInstruction": {
+                    "parts": [{"text": system_instruction}],
+                },
+                "contents": contents,
+                "generationConfig": {
+                    "temperature": 0.1,
+                },
+            }
+            url = f"{GEMINI_API_URL}/{_working_model_name}:generateContent"
+            async with session.post(
+                url,
+                params={"key": GEMINI_API_KEY},
+                json=payload,
+            ) as api_response:
+                data = await api_response.json(content_type=None)
+                if api_response.status >= 400:
+                    detail = data.get("error", {}).get("message", str(data))
+                    raise GeminiRESTError(api_response.status, detail)
+                parts = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [])
+                )
+                response_text = "".join(
+                    part.get("text", "") for part in parts if part.get("text")
+                ).strip()
+                if not response_text:
+                    raise RuntimeError("Gemini REST returned no text")
+                return response_text
+        except GeminiRESTError as exc:
+            last_error = exc
+            error_text = str(exc).lower()
+            if exc.status in {400, 404} and (
+                "model" in error_text or "not found" in error_text
+            ):
+                if await _switch_to_fallback_model():
+                    continue
+            retryable = exc.status in {408, 425, 429, 500, 502, 503, 504}
         except Exception as exc:
             last_error = exc
             error_text = str(exc).lower()
-            if "404" in error_text or "not found" in error_text:
-                if await _switch_to_fallback_model():
-                    continue
             retryable = (
-                isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
+                isinstance(
+                    exc,
+                    (
+                        asyncio.TimeoutError,
+                        TimeoutError,
+                        aiohttp.ClientError,
+                        ConnectionError,
+                    ),
+                )
                 or any(word in error_text for word in (
                     "rate", "quota", "tempor", "unavailable", "connection",
                 ))
