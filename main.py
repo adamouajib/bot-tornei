@@ -527,6 +527,8 @@ AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
 AI_MODEL = "gemini-1.5-flash"
 if GEMINI_CONFIGURED:
     genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 AI_CATEGORY_NAME = "💬 AI CHATS"
@@ -715,7 +717,9 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             conversation.append({"role": "assistant", "content": reply_text})
             conversation[:] = conversation[-12:]
         except Exception as exc:
+            import traceback
             traceback.print_exc()
+            print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
             await _log_exception(message.guild, "Private AI completion", exc)
             await channel.send(format_ai_error(exc))
 
@@ -763,7 +767,8 @@ async def gemini_completion_with_retries(messages, system_instruction):
             )
             chat = model.start_chat(history=history)
             response = await asyncio.wait_for(
-                chat.send_message_async(
+                asyncio.to_thread(
+                    chat.send_message,
                     prompt,
                     generation_config={"temperature": 0.1},
                 ),
@@ -4718,7 +4723,9 @@ COMPLETE COMMAND DATABASE:
                     conversation[:] = conversation[-12:]
                     await _log_dm(message, "OUT", reply_text)
                 except Exception as e:
+                    import traceback
                     traceback.print_exc()
+                    print(f"[GEMINI ERROR] Errore dettagliato: {e}")
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
                     await message.channel.send(format_ai_error(e))
             return
