@@ -1,4 +1,5 @@
 - [Gemini response boundary](gemini-response-boundary.md) — Keep one output cleaner at the Gemini extraction boundary before any Discord delivery.
+- [Rapid AI chat turns](ai-chat-turn-batching.md) — Treat quick successive messages as one turn and keep typing visible until the combined reply is sent.
 - [Gemini REST networking](gemini-rest-networking.md) — Prefer bounded async REST calls over the deprecated synchronous Gemini SDK in hosted bot flows.
 - [GitHub push authentication](github-push-authentication.md) — The configured GitHub HTTPS remote rejects pushes without a valid workspace authorization.
 - [Keep-alive bootstrap](keep-alive-bootstrap.md) — Preserve the Flask/nest_asyncio startup block at the beginning of main.py and in bot.zip.

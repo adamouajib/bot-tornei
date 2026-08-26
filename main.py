@@ -523,6 +523,9 @@ _supporter_to_remove: set = set()
 pending_sg_links: dict = {}
 ai_user_locks: dict[int, asyncio.Lock] = {}
 active_ai_sessions: set[int] = set()
+ai_pending_messages: dict[int, list[discord.Message]] = {}
+ai_debounce_tasks: dict[int, asyncio.Task] = {}
+ai_processing_users: set[int] = set()
 dm_last_activity: dict[int, datetime] = {}
 dm_conversations: dict[int, list[dict[str, str]]] = {}
 dm_language_preferences: dict[int, str] = {}
@@ -533,6 +536,7 @@ DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
     "hello", "hi", "hey",
 }
+AI_DEBOUNCE_SECONDS = 2.0
 # Gemini is used exclusively for the private AI assistant.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
@@ -753,24 +757,104 @@ class PrivateAIChatView(View):
         ai_private_channels.pop(self.user_id, None)
         ai_channel_last_activity.pop(self.user_id, None)
         active_ai_sessions.discard(self.user_id)
+        _clear_private_ai_queue(self.user_id)
         dm_conversations.pop(self.user_id, None)
         ai_user_locks.pop(self.user_id, None)
         if channel:
             await channel.delete(reason="Private AI chat closed by user")
 
-async def _handle_private_ai_message(message: discord.Message, channel: discord.TextChannel):
+
+def _clear_private_ai_queue(user_id: int) -> None:
+    """Cancel delayed AI work when a private chat is closed or expires."""
+    ai_pending_messages.pop(user_id, None)
+    task = ai_debounce_tasks.pop(user_id, None)
+    if task and not task.done():
+        task.cancel()
+    ai_processing_users.discard(user_id)
+
+
+def _schedule_private_ai_batch(user_id: int, channel: discord.TextChannel) -> None:
+    """Start or restart the quiet period used to combine fast messages."""
+    previous = ai_debounce_tasks.get(user_id)
+    if previous and not previous.done():
+        previous.cancel()
+    ai_debounce_tasks[user_id] = asyncio.create_task(
+        _run_debounced_private_ai_batch(user_id, channel)
+    )
+
+
+async def _run_debounced_private_ai_batch(
+    user_id: int, channel: discord.TextChannel
+) -> None:
+    """Wait briefly, then process all messages received during that pause."""
+    current_task = asyncio.current_task()
+    processing_started = False
+    try:
+        await asyncio.sleep(AI_DEBOUNCE_SECONDS)
+        if ai_debounce_tasks.get(user_id) is not current_task:
+            return
+        ai_debounce_tasks.pop(user_id, None)
+        ai_processing_users.add(user_id)
+        processing_started = True
+        messages = ai_pending_messages.pop(user_id, [])
+        if messages:
+            await _process_private_ai_batch(messages, channel)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        print(f"[AI QUEUE ERROR] Errore gestione messaggi in coda: {exc}")
+        try:
+            await channel.send(format_ai_error(exc))
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    finally:
+        if ai_debounce_tasks.get(user_id) is current_task:
+            ai_debounce_tasks.pop(user_id, None)
+        if processing_started:
+            ai_processing_users.discard(user_id)
+            if ai_pending_messages.get(user_id):
+                _schedule_private_ai_batch(user_id, channel)
+
+
+async def _handle_private_ai_message(
+    message: discord.Message, channel: discord.TextChannel
+) -> None:
+    """Queue fast follow-up messages so one conversation turn gets one reply."""
+    if not message.content.strip():
+        return
     user_id = message.author.id
+    ai_pending_messages.setdefault(user_id, []).append(message)
+    if user_id not in ai_processing_users:
+        _schedule_private_ai_batch(user_id, channel)
+
+
+async def _process_private_ai_batch(
+    messages: list[discord.Message], channel: discord.TextChannel
+):
+    """Generate one answer for the messages collected during the quiet period."""
+    if not messages:
+        return
+    message = messages[-1]
+    user_id = message.author.id
+    combined_content = "\n".join(
+        queued.content.strip() for queued in messages if queued.content.strip()
+    )
     ai_channel_last_activity[user_id] = datetime.utcnow()
     # Do not PATCH the channel on every message. Discord rate-limits topic
     # updates and a retry-after value can otherwise block this handler for
     # several minutes before it even reaches Gemini.
-    if _contains_inappropriate_content(message.content):
+    flagged_message = next(
+        (queued for queued in messages if _contains_inappropriate_content(queued.content)),
+        None,
+    )
+    if flagged_message:
         log_channel = await _get_ai_log_channel(message.guild)
         log_embed = discord.Embed(
             title="🚨 AI Chat Moderation Alert",
             description="A private AI chat message was flagged for offensive or inappropriate content.",
             color=discord.Color.red(),
-            timestamp=message.created_at,
+            timestamp=flagged_message.created_at,
         )
         log_embed.add_field(
             name="User",
@@ -780,12 +864,12 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
         log_embed.add_field(name="Private channel", value=channel.mention, inline=True)
         log_embed.add_field(
             name="Date / time",
-            value=f"<t:{int(message.created_at.timestamp())}:F>",
+            value=f"<t:{int(flagged_message.created_at.timestamp())}:F>",
             inline=True,
         )
         log_embed.add_field(
             name="Flagged content",
-            value=message.content[:1024] or "*(attachment)*",
+            value=flagged_message.content[:1024] or "*(attachment)*",
             inline=False,
         )
         await log_channel.send(embed=log_embed)
@@ -798,13 +882,12 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             await _log_exception(message.guild, "Private AI configuration", exc)
             return await channel.send(format_ai_error(exc))
     user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
-    # Keep the typing indicator active while a previous message from the same
-    # user is still being processed. This prevents fast follow-up messages
-    # from appearing stuck while they wait for the per-user conversation lock.
+    # Keep the typing indicator active while the batch waits for the lock and
+    # while Gemini is generating the single combined response.
     async with _channel_typing(channel):
         async with user_lock:
             conversation = dm_conversations.setdefault(user_id, [])
-            conversation.append({"role": "user", "content": message.content})
+            conversation.append({"role": "user", "content": combined_content})
             conversation[:] = conversation[-12:]
             try:
                 system_prompt = build_ai_system_instruction()
@@ -1938,6 +2021,7 @@ async def _cleanup_dm_session(user_id: int, channel=None):
     """Reset an AI session and remove every DM message the bot can delete."""
     active_ai_sessions.discard(user_id)
     dm_last_activity.pop(user_id, None)
+    _clear_private_ai_queue(user_id)
     dm_conversations.pop(user_id, None)
     ai_user_locks.pop(user_id, None)
     if channel is None:
@@ -1999,6 +2083,7 @@ async def cleanup_idle_ai_channels():
         ai_private_channels.pop(user_id, None)
         ai_channel_last_activity.pop(user_id, None)
         active_ai_sessions.discard(user_id)
+        _clear_private_ai_queue(user_id)
         dm_conversations.pop(user_id, None)
         ai_user_locks.pop(user_id, None)
 
@@ -5122,6 +5207,7 @@ COMPLETE COMMAND DATABASE:
                 ai_private_channels.pop(message.author.id, None)
                 ai_channel_last_activity.pop(message.author.id, None)
                 active_ai_sessions.discard(message.author.id)
+                _clear_private_ai_queue(message.author.id)
                 dm_conversations.pop(message.author.id, None)
                 ai_user_locks.pop(message.author.id, None)
                 await message.channel.delete(reason="Private AI chat closed by user")
@@ -8306,8 +8392,9 @@ async def stumble_top(ctx):
 
 
 # --- AVVIO DEL BOT ---
-token = os.getenv("DISCORD_API_TOKEN") or os.getenv("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
-if token != "MISSING_DISCORD_TOKEN":
-    bot.run(token)
-else:
-    print("ERROR: DISCORD_TOKEN not found.")
+if __name__ == "__main__":
+    token = os.getenv("DISCORD_API_TOKEN") or os.getenv("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
+    if token != "MISSING_DISCORD_TOKEN":
+        bot.run(token)
+    else:
+        print("ERROR: DISCORD_TOKEN not found.")
