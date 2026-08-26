@@ -816,7 +816,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
         if role in {"user", "assistant"}:
             contents.append({
                 "role": "model" if role == "assistant" else "user",
-                "parts": [item.get("content", "")],
+                    "parts": [{"text": item.get("content", "")}],
             })
     if not contents:
         raise RuntimeError("Gemini request has no user message")
