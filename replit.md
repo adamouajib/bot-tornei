@@ -8,12 +8,11 @@ The project runs as a Python Discord bot through the `Discord bot` workflow:
 python main.py
 ```
 
-The workflow is configured as a console process and starts automatically. The bot requires the `DISCORD_API_TOKEN` secret in Replit Secrets. Never place the token in source files or commit it.
+The workflow is configured as a console process and starts automatically. The bot requires the `DISCORD_TOKEN` secret in Replit Secrets. Never place the token in source files or commit it.
 
 ## Hosting
 
-The bot is hosted externally on Bot-Hosting.net. Do not start `main.py` or the
-Discord bot workflow locally on Replit after making changes or pushing to GitHub.
+The bot can run through the configured Replit workflow with `python main.py`.
 
 Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime dependency is `discord.py`.
 
@@ -25,7 +24,7 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 - Adam (`1338274535325175810`) and Piccolofe (`1012712686770995201`) are the only owners and control system commands such as `:set-log`, `:leaderboard`, `:staff-lb`, and `:machine`.
 - `:give` supports Ruby, Crystals, Ranked Points, and Gems; only Managers/owners can distribute Gems.
 - The legacy `:add-rubini`, `:remove-rubini`, and `:add-cristalli` commands are removed.
-- `GEMINI_API_KEY` must be present for DM AI. The assistant calls Google's Gemini `generateContent` REST endpoint asynchronously through `aiohttp`, using `gemini-2.0-flash` with fixed fallbacks; requests are serialized per user, have bounded network timeouts, show Discord typing status, and retry transient/rate-limit failures up to three times. The assistant identifies exclusively as the Official PCF™ Server Assistant and replies in the user's language.
+- `GEMINI_API_KEY` must be present for the private AI channel created by `:start`. The assistant calls Google's Gemini `generateContent` REST endpoint asynchronously through `aiohttp`, using `gemini-3.6-flash` with fixed fallbacks; requests are serialized per user, have bounded network timeouts, show Discord typing status, and retry transient/rate-limit failures up to three times. The assistant identifies exclusively as the Official PCF™ Server Assistant and replies in the user's language.
 - In DM assistant conversations, requests such as “dammi i comandi” return the complete command guide with required permissions. Staff applications do not require Supporter status; members should be active in the server and apply through the ticket panel. `:boost` displays booster perks only and does not perform a boost.
 - `:set-log #channel` records command activity, slash/component interactions, sanctions, DM AI traffic, and uncaught errors for the configured server.
 - The supplied PCF Tournament and Shop artwork is included in `bot.zip`; Discord embeds currently use a valid HTTPS fallback because Discord rejects local filesystem paths as image URLs.
