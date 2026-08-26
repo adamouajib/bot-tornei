@@ -524,10 +524,10 @@ DM_GREETING_WORDS = {
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
 AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
-GEMINI_MODEL_NAME = "gemini-3.6-flash"
+GEMINI_MODEL_NAME = "gemini-3.5-flash-lite"
 GEMINI_FALLBACK_MODEL_NAMES = (
-    "gemini-flash-latest",
-    "gemini-3.7-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
 )
 GEMINI_MODEL_NAMES = (GEMINI_MODEL_NAME, *GEMINI_FALLBACK_MODEL_NAMES)
 _working_model_name: str | None = None
