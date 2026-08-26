@@ -27,11 +27,11 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ui import Button, View, Modal, TextInput
 import asyncio
-import aiohttp
 import inspect
 from datetime import datetime, timedelta
 import random
 import traceback
+import google.generativeai as genai
 
 
 
@@ -531,11 +531,15 @@ GEMINI_FALLBACK_MODEL_NAMES = (
 )
 GEMINI_MODEL_NAMES = (GEMINI_MODEL_NAME, *GEMINI_FALLBACK_MODEL_NAMES)
 _working_model_name: str | None = None
-_gemini_http_session: aiohttp.ClientSession | None = None
+_gemini_model = None
 _model_resolution_lock = asyncio.Lock()
 AI_REQUEST_TIMEOUT_SECONDS = 20.0
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-if not GEMINI_CONFIGURED:
+if GEMINI_CONFIGURED:
+    genai.configure(
+        api_key=GEMINI_API_KEY,
+        transport="rest",
+    )
+else:
     print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
@@ -548,45 +552,30 @@ AI_BANNED_WORDS = {
     "puta", "mierda", "joder", "imbecil", "idiota", "stupido", "stupida",
 }
 
-class GeminiRESTError(RuntimeError):
-    """HTTP error returned by the Gemini REST endpoint."""
-
-    def __init__(self, status: int, detail: str):
-        self.status = status
-        super().__init__(f"Gemini REST HTTP {status}: {detail}")
-
 async def initialize_gemini_model():
-    """Create one reusable asynchronous REST client when the bot starts."""
-    global _gemini_http_session, _working_model_name
-    if _gemini_http_session is not None and not _gemini_http_session.closed:
-        return _gemini_http_session
+    """Construct the REST-configured Gemini model once when the bot starts."""
+    global _gemini_model, _working_model_name
+    if _gemini_model is not None:
+        return _gemini_model
     if not GEMINI_CONFIGURED:
         raise RuntimeError("No GEMINI_API_KEY is configured")
     async with _model_resolution_lock:
-        if _gemini_http_session is None or _gemini_http_session.closed:
+        if _gemini_model is None:
             _working_model_name = GEMINI_MODEL_NAME
-            _gemini_http_session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(
-                    total=AI_REQUEST_TIMEOUT_SECONDS,
-                    connect=5,
-                    sock_connect=5,
-                    sock_read=15,
-                ),
-                headers={"Content-Type": "application/json"},
+            _gemini_model = await asyncio.to_thread(
+                genai.GenerativeModel,
+                GEMINI_MODEL_NAME,
             )
-            print(
-                f"[GEMINI MODEL] REST asincrono inizializzato all'avvio: "
-                f"{_working_model_name}"
-            )
-    return _gemini_http_session
+            print(f"[GEMINI MODEL] REST inizializzato all'avvio: {_working_model_name}")
+    return _gemini_model
 
 async def get_working_model():
-    """Return the startup-initialized REST client."""
+    """Return the startup-initialized REST-configured model."""
     return await initialize_gemini_model()
 
 async def _switch_to_fallback_model() -> bool:
     """Switch to the next fixed fallback after a model-not-found response."""
-    global _working_model_name
+    global _gemini_model, _working_model_name
     try:
         current_index = GEMINI_MODEL_NAMES.index(_working_model_name)
     except ValueError:
@@ -597,6 +586,10 @@ async def _switch_to_fallback_model() -> bool:
     async with _model_resolution_lock:
         if _working_model_name != GEMINI_MODEL_NAMES[next_index]:
             _working_model_name = GEMINI_MODEL_NAMES[next_index]
+            _gemini_model = await asyncio.to_thread(
+                genai.GenerativeModel,
+                _working_model_name,
+            )
             print(f"[GEMINI MODEL] Fallback attivo: {_working_model_name}")
     return True
 
@@ -771,6 +764,7 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
                 )
                 reply_text = clean_ai_response(response)
         except asyncio.TimeoutError as exc:
+            traceback.print_exc()
             print("[GEMINI TIMEOUT] La richiesta ha superato i 20 secondi.")
             await _log_exception(message.guild, "Private AI timeout", exc)
             return await channel.send(
@@ -819,82 +813,56 @@ def clean_ai_response(response) -> str:
     return text
 
 async def gemini_completion_with_retries(messages, system_instruction):
-    """Call Gemini's REST API asynchronously with bounded retries."""
+    """Call Gemini through the REST-configured SDK without blocking Discord."""
     if not GEMINI_CONFIGURED:
         raise RuntimeError("No GEMINI_API_KEY is configured")
+    history = []
+    for item in messages[:-1]:
+        role = item.get("role")
+        if role in {"user", "assistant"}:
+            history.append({
+                "role": "model" if role == "assistant" else "user",
+                "parts": [item.get("content", "")],
+            })
+    prompt = messages[-1].get("content", "") if messages else ""
     last_error = None
     for attempt in range(3):
         try:
-            session = await get_working_model()
-            contents = []
-            for item in messages:
-                role = item.get("role")
-                content = str(item.get("content", "")).strip()
-                if role not in {"user", "assistant"} or not content:
-                    continue
-                contents.append({
-                    "role": "model" if role == "assistant" else "user",
-                    "parts": [{"text": content}],
-                })
-            if not contents:
-                raise RuntimeError("Gemini request has no user message")
-
-            payload = {
-                "systemInstruction": {
-                    "parts": [{"text": system_instruction}],
-                },
-                "contents": contents,
-                "generationConfig": {
-                    "temperature": 0.1,
-                },
-            }
-            url = f"{GEMINI_API_URL}/{_working_model_name}:generateContent"
-            async with session.post(
-                url,
-                params={"key": GEMINI_API_KEY},
-                json=payload,
-            ) as api_response:
-                data = await api_response.json(content_type=None)
-                if api_response.status >= 400:
-                    detail = data.get("error", {}).get("message", str(data))
-                    raise GeminiRESTError(api_response.status, detail)
-                parts = (
-                    data.get("candidates", [{}])[0]
-                    .get("content", {})
-                    .get("parts", [])
-                )
-                response_text = "".join(
-                    part.get("text", "") for part in parts if part.get("text")
-                ).strip()
-                if not response_text:
-                    raise RuntimeError("Gemini REST returned no text")
-                return response_text
-        except GeminiRESTError as exc:
+            model = await get_working_model()
+            chat = await asyncio.to_thread(
+                model.start_chat,
+                history=history,
+            )
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    chat.send_message,
+                    prompt,
+                    generation_config={"temperature": 0.1},
+                ),
+                timeout=AI_REQUEST_TIMEOUT_SECONDS,
+            )
+            if not clean_ai_response(response):
+                raise RuntimeError("Gemini returned no text")
+            return response
+        except asyncio.TimeoutError as exc:
+            traceback.print_exc()
+            last_error = exc
+            if attempt == 2:
+                break
+            await asyncio.sleep(1.5 * (attempt + 1))
+        except Exception as exc:
+            traceback.print_exc()
             last_error = exc
             error_text = str(exc).lower()
-            if exc.status in {400, 404} and (
-                "model" in error_text or "not found" in error_text
-            ):
+            if "404" in error_text or "not found" in error_text:
                 if await _switch_to_fallback_model():
                     continue
-            retryable = exc.status in {408, 425, 429, 500, 502, 503, 504}
-        except Exception as exc:
-            last_error = exc
-            error_text = str(exc).lower()
             retryable = (
-                isinstance(
-                    exc,
-                    (
-                        asyncio.TimeoutError,
-                        TimeoutError,
-                        aiohttp.ClientError,
-                        ConnectionError,
-                    ),
-                )
+                isinstance(exc, (TimeoutError, ConnectionError))
                 or any(word in error_text for word in (
                     "rate", "quota", "tempor", "unavailable", "connection",
-                ))
-            )
+                )
+            ):
             if any(word in error_text for word in (
                 "api key", "authentication", "permission", "invalid argument",
                 "not found",
@@ -4722,7 +4690,7 @@ async def on_message(message: discord.Message):
         # Gemini is unavailable or the user has not typed
         # :start yet.
         greeting_text = re.sub(r"[^\wÀ-ÖØ-öø-ÿ]+", " ", message.content.lower()).strip()
-        if greeting_text in DM_GREETING_WORDS:
+        if message.author.id not in active_ai_sessions and greeting_text in DM_GREETING_WORDS:
             greeting_embed = discord.Embed(
                 title="🤖 Official PCF™ Assistant",
                 description=(
@@ -4829,6 +4797,7 @@ COMPLETE COMMAND DATABASE:
                         )
                         reply_text = clean_ai_response(response)
                 except asyncio.TimeoutError as exc:
+                    traceback.print_exc()
                     print("[GEMINI TIMEOUT] La richiesta DM ha superato i 20 secondi.")
                     await _log_exception(message.guild, "Private DM AI timeout", exc)
                     await message.channel.send(
