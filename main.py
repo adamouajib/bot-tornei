@@ -525,12 +525,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
 AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
 GEMINI_MODEL_NAME = "gemini-2.0-flash"
-CANDIDATE_MODELS = [
-    GEMINI_MODEL_NAME,
-    "gemini-2.5-flash",
-    "gemini-flash-latest",
+GEMINI_FALLBACK_MODEL_NAMES = (
     "gemini-1.5-flash-latest",
-]
+    "gemini-flash-latest",
+)
+GEMINI_MODEL_NAMES = (GEMINI_MODEL_NAME, *GEMINI_FALLBACK_MODEL_NAMES)
 _working_model_name: str | None = None
 _gemini_model = None
 _model_resolution_lock = asyncio.Lock()
@@ -550,82 +549,46 @@ AI_BANNED_WORDS = {
     "puta", "mierda", "joder", "imbecil", "idiota", "stupido", "stupida",
 }
 
-def _probe_model(model_name: str) -> str:
-    """Verify a Gemini model with a tiny synchronous request.
-
-    This function is always called through asyncio.to_thread so the blocking
-    google-generativeai SDK cannot pause Discord's event loop.
-    """
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(
-        "Reply with OK.",
-        generation_config={"max_output_tokens": 1, "temperature": 0},
-    )
-    if not getattr(response, "text", "").strip():
-        raise RuntimeError(f"Gemini model {model_name} returned no text")
-    return model_name
-
-def _resolve_working_model_name() -> str:
-    """Find and cache the first model that actually supports generation."""
-    global _working_model_name
-    if _working_model_name:
-        return _working_model_name
-    if not GEMINI_CONFIGURED:
-        raise RuntimeError("No GEMINI_API_KEY is configured")
-
-    errors = []
-    for model_name in CANDIDATE_MODELS:
-        try:
-            _working_model_name = _probe_model(model_name)
-            print(f"[GEMINI MODEL] Modello attivo: {_working_model_name}")
-            return _working_model_name
-        except Exception as exc:
-            errors.append(f"{model_name}: {exc}")
-            print(f"[GEMINI MODEL] Modello non disponibile {model_name}: {exc}")
-
-    try:
-        available_models = genai.list_models()
-        for model_info in available_models:
-            methods = getattr(model_info, "supported_generation_methods", [])
-            if "generateContent" not in methods:
-                continue
-            model_name = getattr(model_info, "name", "")
-            if not model_name:
-                continue
-            try:
-                _working_model_name = _probe_model(model_name)
-                print(f"[GEMINI MODEL] Fallback dinamico attivo: {_working_model_name}")
-                return _working_model_name
-            except Exception as exc:
-                errors.append(f"{model_name}: {exc}")
-                print(f"[GEMINI MODEL] Fallback non disponibile {model_name}: {exc}")
-    except Exception as exc:
-        errors.append(f"list_models: {exc}")
-        print(f"[GEMINI MODEL] Errore scansione modelli: {exc}")
-
-    details = "; ".join(errors[-4:])
-    raise ValueError(
-        "Nessun modello Gemini valido trovato con questa API Key."
-        + (f" Dettagli: {details}" if details else "")
-    )
-
 async def initialize_gemini_model():
-    """Resolve and construct the Gemini model once for the bot process."""
-    global _gemini_model
+    """Construct the primary Gemini model once when the bot starts."""
+    global _gemini_model, _working_model_name
     if _gemini_model is not None:
         return _gemini_model
+    if not GEMINI_CONFIGURED:
+        raise RuntimeError("No GEMINI_API_KEY is configured")
     async with _model_resolution_lock:
         if _gemini_model is None:
-            model_name = await asyncio.to_thread(_resolve_working_model_name)
+            _working_model_name = GEMINI_MODEL_NAME
             _gemini_model = await asyncio.to_thread(
                 genai.GenerativeModel,
-                model_name,
+                GEMINI_MODEL_NAME,
             )
+            print(f"[GEMINI MODEL] Modello inizializzato all'avvio: {_working_model_name}")
     return _gemini_model
 
 async def get_working_model():
-    """Return the startup-initialized Gemini model, resolving only if needed."""
+    """Return the startup-initialized Gemini model."""
     return await initialize_gemini_model()
+
+async def _switch_to_fallback_model() -> bool:
+    """Switch to the next fixed fallback after a model-not-found response."""
+    global _gemini_model, _working_model_name
+    try:
+        current_index = GEMINI_MODEL_NAMES.index(_working_model_name)
+    except ValueError:
+        current_index = -1
+    next_index = current_index + 1
+    if next_index >= len(GEMINI_MODEL_NAMES):
+        return False
+    async with _model_resolution_lock:
+        if _working_model_name != GEMINI_MODEL_NAMES[next_index]:
+            _working_model_name = GEMINI_MODEL_NAMES[next_index]
+            _gemini_model = await asyncio.to_thread(
+                genai.GenerativeModel,
+                _working_model_name,
+            )
+            print(f"[GEMINI MODEL] Fallback attivo: {_working_model_name}")
+    return True
 
 def _contains_inappropriate_content(content: str) -> bool:
     normalized = re.sub(r"[\W_]+", " ", content.casefold(), flags=re.UNICODE)
@@ -882,10 +845,8 @@ async def gemini_completion_with_retries(messages, system_instruction):
             last_error = exc
             error_text = str(exc).lower()
             if "404" in error_text or "not found" in error_text:
-                global _working_model_name
-                _working_model_name = None
-                global _gemini_model
-                _gemini_model = None
+                if await _switch_to_fallback_model():
+                    continue
             retryable = (
                 isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
                 or any(word in error_text for word in (
@@ -1896,6 +1857,14 @@ async def send_setup_notifications():
 async def on_ready():
     load_db()
     print(f"🔥 Stumble™ bot ONLINE!")
+    if GEMINI_CONFIGURED:
+        try:
+            await initialize_gemini_model()
+        except Exception as exc:
+            traceback.print_exc()
+            print(f"[GEMINI STARTUP ERROR] Impossibile inizializzare Gemini: {exc}")
+    else:
+        print("[GEMINI WARNING] IA non inizializzata: GEMINI_API_KEY mancante.")
     try:
         await bot.tree.sync()
         print("[on_ready] Slash commands synced")
@@ -4735,7 +4704,7 @@ async def on_message(message: discord.Message):
                 return
 
             user_lock = ai_user_locks.setdefault(message.author.id, asyncio.Lock())
-            async with user_lock, message.channel.typing():
+            async with user_lock:
                 commands_string = build_ai_system_instruction()
 
                 sys_prompt = f"""
@@ -4799,41 +4768,54 @@ SERVER INFO:
 COMPLETE COMMAND DATABASE:
 {commands_string}
 """
+                conversation = dm_conversations.setdefault(message.author.id, [])
+                conversation.append({"role": "user", "content": message.content})
+                conversation[:] = conversation[-12:]
+                messages = [
+                    {"role": "system", "content": sys_prompt},
+                    *conversation,
+                ]
                 try:
-                    conversation = dm_conversations.setdefault(message.author.id, [])
-                    conversation.append({"role": "user", "content": message.content})
-                    conversation[:] = conversation[-12:]
-                    messages = [
-                        {"role": "system", "content": sys_prompt},
-                        *conversation,
-                    ]
-                    response = await gemini_completion_with_retries(
-                        messages=messages,
-                        system_instruction=sys_prompt,
+                    # Keep typing scoped to the blocking Gemini call only.
+                    async with message.channel.typing():
+                        response = await asyncio.wait_for(
+                            gemini_completion_with_retries(
+                                messages=messages,
+                                system_instruction=sys_prompt,
+                            ),
+                            timeout=AI_REQUEST_TIMEOUT_SECONDS,
+                        )
+                        reply_text = clean_ai_response(response)
+                except asyncio.TimeoutError as exc:
+                    print("[GEMINI TIMEOUT] La richiesta DM ha superato i 20 secondi.")
+                    await _log_exception(message.guild, "Private DM AI timeout", exc)
+                    await message.channel.send(
+                        "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
                     )
-                    reply_text = clean_ai_response(response)
-                    if not reply_text:
-                        await message.channel.send("⚠️ Non riesco a rispondere in questo momento. Riprova tra poco.")
-                        return
-
-                    if reply_text.startswith("[ALERT]"):
-                        reply_text = reply_text.removeprefix("[ALERT]").strip()
-                        await send_threat_alert(message, reply_text)
-
-                    response_embed = discord.Embed(
-                        description=reply_text[:4096],
-                        color=discord.Color.blurple(),
-                    )
-                    await message.channel.send(embed=response_embed)
-                    conversation.append({"role": "assistant", "content": reply_text})
-                    conversation[:] = conversation[-12:]
-                    await _log_dm(message, "OUT", reply_text)
+                    return
                 except Exception as e:
-                    import traceback
                     traceback.print_exc()
                     print(f"[GEMINI ERROR] Errore dettagliato: {e}")
                     await _log_exception(message.guild, f"{AI_PROVIDER} DM completion", e)
                     await message.channel.send(format_ai_error(e))
+                    return
+
+                if not reply_text:
+                    await message.channel.send("⚠️ Non riesco a rispondere in questo momento. Riprova tra poco.")
+                    return
+
+                if reply_text.startswith("[ALERT]"):
+                    reply_text = reply_text.removeprefix("[ALERT]").strip()
+                    await send_threat_alert(message, reply_text)
+
+                response_embed = discord.Embed(
+                    description=reply_text[:4096],
+                    color=discord.Color.blurple(),
+                )
+                await message.channel.send(embed=response_embed)
+                conversation.append({"role": "assistant", "content": reply_text})
+                conversation[:] = conversation[-12:]
+                await _log_dm(message, "OUT", reply_text)
             return
         await bot.process_commands(message)
         return
