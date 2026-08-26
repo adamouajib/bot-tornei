@@ -381,15 +381,13 @@ def banner_file(path: str, filename: str) -> discord.File | None:
     print(f"[banner] Missing image asset: {path}")
     return None
 
+class GeminiRateLimitError(RuntimeError):
+    """Internal error used after Gemini rate-limit retries are exhausted."""
+
+
 def format_ai_error(exc: Exception) -> str:
     """Return a safe, user-friendly error while keeping technical details in logs."""
     error_text = str(exc).casefold()
-    if any(marker in error_text for marker in ("429", "quota", "rate limit", "resource exhausted")):
-        return (
-            "⏳ **L'IA è momentaneamente occupata.**\n\n"
-            "È stato raggiunto il limite temporaneo di richieste. "
-            "Attendi qualche secondo e riprova."
-        )
     if "timeout" in error_text or "timed out" in error_text:
         return (
             "⏳ **La risposta sta impiegando troppo tempo.**\n\n"
@@ -896,7 +894,14 @@ async def gemini_completion_with_retries(messages, system_instruction):
                 if response.status >= 400:
                     error_data = response_data.get("error", {}) if isinstance(response_data, dict) else {}
                     error_message = error_data.get("message") or f"HTTP {response.status}"
-                    raise RuntimeError(f"Gemini API {response.status}: {error_message}")
+                    error_type = (
+                        GeminiRateLimitError
+                        if response.status == 429
+                        else RuntimeError
+                    )
+                    raise error_type(
+                        f"Gemini API {response.status}: {error_message}"
+                    )
 
             candidates = response_data.get("candidates", [])
             parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
@@ -934,9 +939,6 @@ async def gemini_completion_with_retries(messages, system_instruction):
                 )
                 if attempt < len(GEMINI_RATE_LIMIT_RETRY_DELAYS):
                     await asyncio.sleep(GEMINI_RATE_LIMIT_RETRY_DELAYS[attempt])
-                    # A quota can be model-specific, so use the next
-                    # configured fallback when one is available.
-                    await _switch_to_fallback_model()
                     continue
                 break
             if "404" in error_text or "not found" in error_text:
