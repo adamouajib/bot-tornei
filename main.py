@@ -49,6 +49,8 @@ def save_db():
             "result_channel_id": db.get("result_channel_id"),
             "betting_channel_id": db.get("betting_channel_id"),
             "log_channel_id": db.get("log_channel_id"),
+            "canale_dashboard_twitch": db.get("canale_dashboard_twitch"),
+            "twitch_live": db.get("twitch_live", {}),
             "supporters": db.get("supporters", {}),
             "gems":     db.get("gems",     {}),
             "sg_links": db.get("sg_links", {}),
@@ -89,6 +91,8 @@ def load_db():
         db["result_channel_id"]    = data.get("result_channel_id")
         db["betting_channel_id"]   = data.get("betting_channel_id")
         db["log_channel_id"]       = data.get("log_channel_id")
+        db["canale_dashboard_twitch"] = data.get("canale_dashboard_twitch")
+        db["twitch_live"]          = data.get("twitch_live", {})
         db["supporters"]           = data.get("supporters", {})
         db["gems"]                 = data.get("gems",     {})
         db["sg_links"]             = data.get("sg_links", {})
@@ -157,6 +161,16 @@ XP_PER_LEVEL      = 100
 
 SUPPORTER_LINK = "https://discord.gg/ZptqBM8ZC3"
 DB_FILE = "db.json"
+
+# ── Twitch live dashboard ───────────────────────────────────────────────────
+TWITCH_CHANNEL_LOGIN = "piccolofe"
+TWITCH_POLL_MINUTES = 2
+TWITCH_API_BASE = "https://api.twitch.tv/helix"
+TWITCH_API_TIMEOUT_SECONDS = 15.0
+# The reward is intentionally kept in one place so it can be changed without
+# touching the claim rules or the Twitch polling code.
+TWITCH_REWARD_GEMS = 50
+TWITCH_REWARD_CRYSTALS = 500
 
 TOUR_HUB_CHANNEL_ID    = 1510038159751254047
 TOUR_REG_CHANNEL_ID    = 1410696022463877320
@@ -335,7 +349,7 @@ ADMIN_COMMANDS = {
     "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
-    "linked", "leaderboard", "gems", "stumble-top",
+    "linked", "leaderboard", "gems", "stumble-top", "set-tw",
 }
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
@@ -519,6 +533,8 @@ db = {
     "result_channel_id": None,
     "betting_channel_id": None,
     "log_channel_id": None,
+    "canale_dashboard_twitch": None,
+    "twitch_live": {},
     "supporters": {},
     "gems": {},       # {user_id_str: {"name": str, "sg_name": str, "total": int}}
     "sg_links": {},   # {user_id_str: sg_name}
@@ -547,6 +563,13 @@ DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
     "hello", "hi", "hey",
 }
+_twitch_session: aiohttp.ClientSession | None = None
+_twitch_session_lock = asyncio.Lock()
+_twitch_state_lock = asyncio.Lock()
+_twitch_missing_credentials_logged = False
+_twitch_last_api_error_logged = False
+_twitch_access_token: str | None = None
+_twitch_access_token_expires_at: datetime | None = None
 AI_DEBOUNCE_SECONDS = 2.0
 # Gemini is used exclusively for the private AI assistant.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -1584,7 +1607,7 @@ def build_ai_system_instruction() -> str:
             "warn", "time", "give", "reset", "add-punti", "big-event",
             "big-start", "big-event-winner", "drop", "add-ticket",
             "ban-event", "add-rubini", "remove-rubini", "add-cristalli",
-            "set-supporter",
+            "set-supporter", "set-tw",
         }
         host_commands = {
             "match", "set-winner", "qual", "bracket", "end", "cod-event",
@@ -2272,6 +2295,364 @@ async def _auto_assign_hosts_dm(guild: discord.Guild, t: dict):
             print(f"[auto_assign_hosts_dm] {e}")
 
 # ==========================================
+# 🔴 TWITCH LIVE DASHBOARD
+# ==========================================
+def _new_twitch_live_state() -> dict:
+    return {
+        "is_live": False,
+        "stream_id": None,
+        "started_at": None,
+        "dashboard_message_id": None,
+        "dashboard_guild_id": None,
+        "watch_time": {},
+    }
+
+
+def _get_twitch_live_state() -> dict:
+    """Return a normalized state object that is safe to persist in db.json."""
+    state = db.get("twitch_live")
+    if not isinstance(state, dict):
+        state = _new_twitch_live_state()
+        db["twitch_live"] = state
+    defaults = _new_twitch_live_state()
+    for key, value in defaults.items():
+        state.setdefault(key, value.copy() if isinstance(value, dict) else value)
+    if not isinstance(state.get("watch_time"), dict):
+        state["watch_time"] = {}
+    return state
+
+
+def _normalise_twitch_name(name: str) -> str:
+    return str(name or "").strip().lstrip("@").casefold()
+
+
+def _twitch_access_token_from_environment() -> str:
+    token = (
+        os.getenv("TWITCH_ACCESS_TOKEN")
+        or os.getenv("TWITCH_OAUTH_TOKEN")
+        or ""
+    ).strip()
+    return token.removeprefix("oauth:").strip()
+
+
+async def _get_twitch_session() -> aiohttp.ClientSession:
+    global _twitch_session
+    async with _twitch_session_lock:
+        if _twitch_session is None or _twitch_session.closed:
+            timeout = aiohttp.ClientTimeout(
+                total=TWITCH_API_TIMEOUT_SECONDS,
+                connect=8.0,
+                sock_connect=8.0,
+                sock_read=TWITCH_API_TIMEOUT_SECONDS,
+            )
+            _twitch_session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(
+                    force_close=True,
+                    limit=4,
+                    ttl_dns_cache=300,
+                ),
+            )
+    return _twitch_session
+
+
+async def _twitch_api_get(path: str, params: dict) -> tuple[str, dict | None]:
+    """Return ('ok'|'offline'|'unavailable', JSON payload)."""
+    global _twitch_missing_credentials_logged, _twitch_last_api_error_logged
+    client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
+    access_token = _twitch_access_token_from_environment()
+    if not client_id or not access_token:
+        if not _twitch_missing_credentials_logged:
+            print(
+                "[TWITCH WARNING] TWITCH_CLIENT_ID and TWITCH_ACCESS_TOKEN "
+                "are required for live and chatter tracking."
+            )
+            _twitch_missing_credentials_logged = True
+        return "unavailable", None
+
+    try:
+        session = await _get_twitch_session()
+        async with session.get(
+            f"{TWITCH_API_BASE}/{path.lstrip('/')}",
+            params=params,
+            headers={
+                "Client-ID": client_id,
+                "Authorization": f"Bearer {access_token}",
+            },
+        ) as response:
+            if response.status == 200:
+                return "ok", await response.json()
+            if response.status == 404:
+                return "offline", None
+            if not _twitch_last_api_error_logged:
+                print(f"[TWITCH API] GET {path} returned HTTP {response.status}")
+                _twitch_last_api_error_logged = True
+            return "unavailable", None
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        if not _twitch_last_api_error_logged:
+            print(f"[TWITCH API] {type(exc).__name__}: {exc}")
+            _twitch_last_api_error_logged = True
+        return "unavailable", None
+
+
+async def _get_twitch_live_stream() -> tuple[str, dict | None]:
+    status, payload = await _twitch_api_get(
+        "streams",
+        {"user_login": TWITCH_CHANNEL_LOGIN},
+    )
+    if status != "ok":
+        return status, None
+    streams = payload.get("data", []) if isinstance(payload, dict) else []
+    return ("online", streams[0]) if streams else ("offline", None)
+
+
+async def _get_twitch_chatters(broadcaster_id: str) -> tuple[str, dict[str, str]]:
+    """Fetch all visible chatters, keyed by lowercase Twitch login."""
+    moderator_id = os.getenv("TWITCH_MODERATOR_ID", "").strip() or broadcaster_id
+    chatters: dict[str, str] = {}
+    cursor = None
+    for _ in range(20):  # 20,000 chatters is more than enough for one poll.
+        params = {
+            "broadcaster_id": str(broadcaster_id),
+            "moderator_id": moderator_id,
+            "first": "1000",
+        }
+        if cursor:
+            params["after"] = cursor
+        status, payload = await _twitch_api_get("chat/chatters", params)
+        if status != "ok":
+            return status, {}
+        for chatter in (payload or {}).get("data", []):
+            login = _normalise_twitch_name(chatter.get("user_login", ""))
+            display_name = str(chatter.get("user_name") or login)
+            if login:
+                chatters[login] = display_name
+        cursor = (payload or {}).get("pagination", {}).get("cursor")
+        if not cursor:
+            break
+    return "ok", chatters
+
+
+def _twitch_embed_chunks(entries: list[tuple[str, int]]) -> tuple[list[str], int]:
+    """Split User | Time rows while staying below Discord's embed limits."""
+    lines = [f"{name} | {minutes} min" for name, minutes in entries]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+    for line in lines:
+        if current and current_length + len(line) + 1 > 900:
+            chunks.append("\n".join(current))
+            current = []
+            current_length = 0
+        current.append(line)
+        current_length += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+
+    # Discord limits an embed to 6000 characters. Six 900-character fields
+    # leave room for the title, description, field names and footer.
+    visible_chunks = chunks[:6]
+    omitted = max(0, len(chunks) - len(visible_chunks))
+    return visible_chunks, omitted
+
+
+def _build_twitch_embed(
+    *,
+    ended: bool,
+    entries: list[tuple[str, int]],
+    stream: dict | None = None,
+) -> discord.Embed:
+    if ended:
+        embed = discord.Embed(
+            title="⚪ LIVE ENDED",
+            description=(
+                "piccolofe's live stream has ended.\n"
+                f"Final watch-time summary for {len(entries)} tracked viewer(s):"
+            ),
+            color=discord.Color.light_grey(),
+        )
+    else:
+        embed = discord.Embed(
+            title="🔴 LIVE NOW - Viewer Stats",
+            description=(
+                "Only viewers currently present in Twitch chat are shown below.\n"
+                "Watch time is updated every 2 minutes."
+            ),
+            color=discord.Color.red(),
+        )
+        if stream and stream.get("title"):
+            embed.add_field(
+                name="Stream",
+                value=str(stream["title"])[:1024],
+                inline=False,
+            )
+
+    chunks, omitted = _twitch_embed_chunks(entries)
+    if not chunks:
+        embed.add_field(
+            name="User | Time",
+            value=(
+                "No viewers are currently visible in Twitch chat."
+                if not ended else "No watch-time data was recorded."
+            ),
+            inline=False,
+        )
+    else:
+        suffix = " (final)" if ended else ""
+        for index, chunk in enumerate(chunks, start=1):
+            block_name = f"User | Time{suffix}"
+            if len(chunks) > 1:
+                block_name += f" • Block {index}/{len(chunks)}"
+            embed.add_field(name=block_name, value=chunk, inline=False)
+    footer = "PCF™ Twitch Watch Tracker"
+    if omitted:
+        footer += f" • {omitted} block(s) omitted to respect Discord limits"
+    embed.set_footer(text=footer)
+    return embed
+
+
+def _twitch_watch_entries(state: dict, present_only: bool = False) -> list[tuple[str, int]]:
+    rows = []
+    for login, row in state.get("watch_time", {}).items():
+        if not isinstance(row, dict):
+            continue
+        if present_only and not row.get("present", False):
+            continue
+        rows.append((str(row.get("name") or login), int(row.get("minutes", 0))))
+    return sorted(rows, key=lambda item: (-item[1], item[0].casefold()))
+
+
+async def _get_twitch_dashboard_channel():
+    channel_id = db.get("canale_dashboard_twitch")
+    if not channel_id:
+        return None
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
+async def _edit_or_send_twitch_dashboard(embed: discord.Embed, state: dict) -> None:
+    channel = await _get_twitch_dashboard_channel()
+    if channel is None:
+        return
+    message_id = state.get("dashboard_message_id")
+    if message_id:
+        try:
+            message = await channel.fetch_message(int(message_id))
+            await message.edit(embed=embed)
+            return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            # If the original was deleted, create a replacement and continue
+            # editing that replacement on all subsequent polling cycles.
+            pass
+    message = await channel.send(embed=embed)
+    state["dashboard_message_id"] = message.id
+    state["dashboard_guild_id"] = channel.guild.id
+
+
+async def _finish_twitch_live(state: dict) -> None:
+    state["is_live"] = False
+    embed = _build_twitch_embed(
+        ended=True,
+        entries=_twitch_watch_entries(state),
+    )
+    try:
+        await _edit_or_send_twitch_dashboard(embed, state)
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[TWITCH DASHBOARD] Could not publish final summary: {exc}")
+    save_db()
+
+
+async def _poll_twitch_live_dashboard() -> None:
+    status, stream = await _get_twitch_live_stream()
+    if status == "unavailable":
+        return  # Never mark a live ended because Twitch temporarily failed.
+
+    async with _twitch_state_lock:
+        state = _get_twitch_live_state()
+        if status == "offline":
+            if state.get("is_live"):
+                await _finish_twitch_live(state)
+            return
+
+        stream_id = str(stream.get("id"))
+        if not state.get("is_live") or str(state.get("stream_id")) != stream_id:
+            state.clear()
+            state.update(_new_twitch_live_state())
+            state.update({
+                "is_live": True,
+                "stream_id": stream_id,
+                "started_at": stream.get("started_at"),
+            })
+            chatter_status, chatters = await _get_twitch_chatters(stream.get("user_id", ""))
+            if chatter_status == "ok":
+                for login, display_name in chatters.items():
+                    state["watch_time"][login] = {
+                        "name": display_name,
+                        "minutes": 0,
+                        "present": True,
+                        "claimed": False,
+                    }
+            try:
+                await _edit_or_send_twitch_dashboard(
+                    _build_twitch_embed(
+                        ended=False,
+                        entries=_twitch_watch_entries(state, present_only=True),
+                        stream=stream,
+                    ),
+                    state,
+                )
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[TWITCH DASHBOARD] Could not publish live embed: {exc}")
+            save_db()
+            return
+
+        chatter_status, chatters = await _get_twitch_chatters(stream.get("user_id", ""))
+        if chatter_status != "ok":
+            return  # Preserve totals and the last accurate presence list.
+        for row in state["watch_time"].values():
+            if isinstance(row, dict):
+                row["present"] = False
+        for login, display_name in chatters.items():
+            row = state["watch_time"].setdefault(
+                login,
+                {
+                    "name": display_name,
+                    "minutes": 0,
+                    "present": False,
+                    "claimed": False,
+                },
+            )
+            row["name"] = display_name
+            row["present"] = True
+            row["minutes"] = int(row.get("minutes", 0)) + TWITCH_POLL_MINUTES
+        try:
+            await _edit_or_send_twitch_dashboard(
+                _build_twitch_embed(
+                    ended=False,
+                    entries=_twitch_watch_entries(state, present_only=True),
+                    stream=stream,
+                ),
+                state,
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[TWITCH DASHBOARD] Could not update live embed: {exc}")
+        save_db()
+
+
+@tasks.loop(minutes=TWITCH_POLL_MINUTES)
+async def twitch_live_dashboard():
+    try:
+        await _poll_twitch_live_dashboard()
+    except Exception as exc:
+        print(f"[TWITCH DASHBOARD] {type(exc).__name__}: {exc}")
+
+
+# ==========================================
 # 🔄 BACKGROUND TASKS
 # ==========================================
 @tasks.loop(hours=1)
@@ -2511,6 +2892,8 @@ async def on_ready():
         cleanup_idle_dm_sessions.start()
     if not cleanup_idle_ai_channels.is_running():
         cleanup_idle_ai_channels.start()
+    if not twitch_live_dashboard.is_running():
+        twitch_live_dashboard.start()
     # Auto-create special roles if they don't exist
     for guild in bot.guilds:
         for role_name, color in [
@@ -2614,6 +2997,65 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 await channel.send(embed=embed)
             except Exception:
                 pass
+
+
+@bot.command(name="set-tw", aliases=["set_tw"])
+@admin_only()
+async def set_twitch_dashboard(ctx, channel: discord.TextChannel):
+    """Set the Discord channel used for the piccolofe live dashboard."""
+    db["canale_dashboard_twitch"] = channel.id
+    save_db()
+    await ctx.send(
+        f"✅ Twitch live dashboard channel set to {channel.mention}.",
+        delete_after=8.0,
+    )
+
+
+@bot.command(name="claim-tw", aliases=["claim_tw"])
+async def claim_twitch_reward(ctx, twitch_name: str):
+    """Claim the reward for the most recently completed piccolofe stream."""
+    status, _stream = await _get_twitch_live_stream()
+    if status == "online":
+        return await ctx.send(
+            "❌ The live stream is still ongoing! You can claim your reward once it ends."
+        )
+    if status == "unavailable":
+        return await ctx.send(
+            "❌ I couldn't confirm that the live stream has ended yet. Please try again later."
+        )
+
+    async with _twitch_state_lock:
+        state = _get_twitch_live_state()
+        if state.get("is_live"):
+            await _finish_twitch_live(state)
+        login = _normalise_twitch_name(twitch_name)
+        row = state.get("watch_time", {}).get(login)
+        if not isinstance(row, dict):
+            return await ctx.send(
+                "❌ You haven't accumulated 30 minutes of watch time during the last stream."
+            )
+        if row.get("claimed"):
+            return await ctx.send(
+                "⚠️ You have already claimed your reward for this stream!"
+            )
+        minutes = int(row.get("minutes", 0))
+        if minutes < 30:
+            return await ctx.send(
+                "❌ You haven't accumulated 30 minutes of watch time during the last stream."
+            )
+
+        prof = get_profile(ctx.author.id, ctx.author.display_name)
+        _record_gems(ctx.author, TWITCH_REWARD_GEMS)
+        prof["cristalli"] = prof.get("cristalli", 0) + TWITCH_REWARD_CRYSTALS
+        row["claimed"] = True
+        row["claimed_by"] = ctx.author.id
+        save_db()
+
+    await ctx.send(
+        "✅ Congratulations! You watched piccolofe's stream for at least 30 minutes "
+        "and received your reward!\n"
+        f"Reward: **{TWITCH_REWARD_GEMS} Gems** + **{TWITCH_REWARD_CRYSTALS} Crystals**."
+    )
 
 
 @bot.command(name="set-welcome", aliases=["set_welcome"])
@@ -6615,6 +7057,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
+            (":set-tw (alias :set_tw)", "Sets the Discord channel for the live Twitch viewer dashboard for piccolofe.", "<#channel> text-channel mention; administrator or owner access.", ":set-tw #twitch-live"),
+            (":claim-tw (alias :claim_tw)", "Claims the reward for the most recent completed piccolofe stream after at least 30 tracked minutes.", "<twitch_name>; only available after Twitch confirms that the stream has ended.", ":claim-tw MyTwitchName"),
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
             (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
             (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
@@ -6626,7 +7070,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # together, while privileged commands are grouped by the role they need.
     community_names = {
         "profile", "shop", "team", "myteam", "teamleave", "1v1", "link", "supporter",
-        "help",
+        "help", "claim-tw",
     }
     staff_names = {
         "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
@@ -6638,7 +7082,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "set-supporter", "giveaway", "setup-result",
-        "setup-scomesse", "set-welcome", "add-ticket", "pex", "reset-all",
+        "setup-scomesse", "set-welcome", "add-ticket", "set-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
