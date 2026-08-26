@@ -1007,7 +1007,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
             # A higher temperature avoids repetitive/canned replies while
             # the handbook and command registry keep factual answers precise.
             "temperature": 0.8,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": 4096,
         },
     }
     last_error = None
@@ -1593,19 +1593,44 @@ def build_ai_system_instruction() -> str:
     add_app_commands(bot.tree.get_commands())
     command_lines.sort(key=str.casefold)
     command_reference = "\n".join(command_lines)
+    expanded_command_reference = "\n\n".join(
+        (
+            f"COMMAND KNOWLEDGE RECORD {index}:\n"
+            f"{line}\n"
+            "- Explain this command from the exact record above. State its "
+            "purpose, the required access level, the complete syntax and the "
+            "visible result. Preserve every argument placeholder and do not "
+            "invent aliases, rewards, limits, channels or permissions.\n"
+            "- If the member asks how to use it, give a concrete example and "
+            "mention prerequisites, confirmation buttons, temporary messages, "
+            "database changes, rewards or side effects only when supported by "
+            "the handbook or the live help guide.\n"
+            "- If the member does not have the required access, explain who "
+            "can run it and provide the correct member-facing alternative "
+            "instead of pretending the command will work for them."
+        )
+        for index, line in enumerate(command_lines, start=1)
+    )
     server_knowledge = build_ai_server_knowledge()
     project_metadata = build_ai_source_context()
     detailed_guide = ""
     try:
-        # Reuse the same detailed catalogue shown by :help so the AI does not
-        # drift from the user-facing command guide.
-        guide_chunks = []
-        for embed in _build_help_embeds("en"):
-            if embed.title:
-                guide_chunks.append(embed.title)
-            if embed.description:
-                guide_chunks.append(embed.description)
-        detailed_guide = "\n".join(guide_chunks)
+        # Reuse the same detailed catalog shown by :help in every supported
+        # language so Gemini can answer multilingual questions with the exact
+        # user-facing syntax instead of relying on translated guesses.
+        language_guides = []
+        for language_label, language_code in LANG_OPTIONS.items():
+            guide_chunks = []
+            for embed in _build_help_embeds(language_code):
+                if embed.title:
+                    guide_chunks.append(embed.title)
+                if embed.description:
+                    guide_chunks.append(embed.description)
+            language_guides.append(
+                f"LANGUAGE GUIDE — {language_label} ({language_code}):\n"
+                + "\n".join(guide_chunks)
+            )
+        detailed_guide = "\n\n".join(language_guides)
     except (NameError, AttributeError):
         # The help catalogue is defined later in the module. This fallback is
         # only for an unusual call during a partial import.
@@ -1652,9 +1677,15 @@ def build_ai_system_instruction() -> str:
         "prefix and slash/application commands. Aliases are shown on the same line. "
         "Use this catalog as the source of truth and never invent commands:\n"
         f"{command_reference or '- No commands registered.'}\n\n"
+        "EXPANDED COMMAND KNOWLEDGE:\n"
+        "These records are a second, detailed index of the same live command "
+        "registry. Use them to make command answers comprehensive without "
+        "exposing implementation source:\n"
+        f"{expanded_command_reference or '- No command records available.'}\n\n"
          "DETAILED COMMAND GUIDE:\n"
-         "This is the same detailed guide used by :help. Use it to explain "
-         "purpose, arguments, examples, permissions and side effects:\n"
+        "This is the complete multilingual guide used by :help. Use the "
+        "matching language section to explain purpose, arguments, examples, "
+        "permissions and side effects exactly:\n"
          f"{detailed_guide or '- No detailed guide available.'}\n\n"
          "SAFE PROJECT METADATA (NO PYTHON SOURCE):\n"
          f"{project_metadata}\n\n"
