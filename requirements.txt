@@ -3,3 +3,8 @@ flask
 requests
 aiohttp
 google-generativeai
+aiohttp
+discord.py
+flask
+google-generativeai
+requests
