@@ -30,6 +30,8 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 - Python source files are never sent to Gemini. Environment files, runtime database/session data, archives, internal agent files, credentials and binary assets are excluded from the supplemental project metadata.
 - Direct messages do not use the AI assistant; normal DM messages instruct members to use `:start`, which opens the private AI channel in the server. `:link` only shows the account-link setup: members must go to channel `1542227301322719314` and use its button. Support, report and staff-application tickets use the buttons in channel `1147528589676380181`; normal members should not run `:add-ticket`. Staff applications do not require Supporter status; members should be active in the server and apply through the ticket panel. `:boost` displays booster perks only and does not perform a boost.
 - `:set-log #channel` records command activity, slash/component interactions, sanctions, DM AI traffic, and uncaught errors for the configured server.
+- `:set-tw #channel` is Admin-only and stores the single Discord channel used for the `piccolofe` Twitch dashboard. The dashboard polls every 3 minutes, records chatters' total minutes in `db.json`, and changes to `⚪ LIVE ENDED` when the stream finishes.
+- Twitch tracking uses the `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` Replit Secrets for the Twitch OAuth client-credentials flow. `:claim-tw <twitch_name>` awards 50 Gems after a completed stream when the viewer has at least 30 tracked minutes.
 - The supplied PCF Tournament and Shop artwork is included in `bot.zip`; Discord embeds currently use a valid HTTPS fallback because Discord rejects local filesystem paths as image URLs.
 
 ## Runtime data

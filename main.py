@@ -164,13 +164,13 @@ DB_FILE = "db.json"
 
 # ── Twitch live dashboard ───────────────────────────────────────────────────
 TWITCH_CHANNEL_LOGIN = "piccolofe"
-TWITCH_POLL_MINUTES = 2
+TWITCH_POLL_MINUTES = 3
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
+TWITCH_OAUTH_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_API_TIMEOUT_SECONDS = 15.0
 # The reward is intentionally kept in one place so it can be changed without
 # touching the claim rules or the Twitch polling code.
 TWITCH_REWARD_GEMS = 50
-TWITCH_REWARD_CRYSTALS = 500
 
 TOUR_HUB_CHANNEL_ID    = 1510038159751254047
 TOUR_REG_CHANNEL_ID    = 1410696022463877320
@@ -565,6 +565,7 @@ DM_GREETING_WORDS = {
 }
 _twitch_session: aiohttp.ClientSession | None = None
 _twitch_session_lock = asyncio.Lock()
+_twitch_token_lock = asyncio.Lock()
 _twitch_state_lock = asyncio.Lock()
 _twitch_missing_credentials_logged = False
 _twitch_last_api_error_logged = False
@@ -2326,15 +2327,6 @@ def _normalise_twitch_name(name: str) -> str:
     return str(name or "").strip().lstrip("@").casefold()
 
 
-def _twitch_access_token_from_environment() -> str:
-    token = (
-        os.getenv("TWITCH_ACCESS_TOKEN")
-        or os.getenv("TWITCH_OAUTH_TOKEN")
-        or ""
-    ).strip()
-    return token.removeprefix("oauth:").strip()
-
-
 async def _get_twitch_session() -> aiohttp.ClientSession:
     global _twitch_session
     async with _twitch_session_lock:
@@ -2356,43 +2348,119 @@ async def _get_twitch_session() -> aiohttp.ClientSession:
     return _twitch_session
 
 
+async def _get_twitch_access_token() -> str | None:
+    """Get and cache an app token using the Twitch client credentials flow."""
+    global _twitch_access_token, _twitch_access_token_expires_at
+    global _twitch_last_api_error_logged
+    client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
+    client_secret = os.getenv("TWITCH_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        return None
+
+    now = datetime.utcnow()
+    if (
+        _twitch_access_token
+        and _twitch_access_token_expires_at
+        and _twitch_access_token_expires_at > now + timedelta(seconds=60)
+    ):
+        return _twitch_access_token
+
+    async with _twitch_token_lock:
+        now = datetime.utcnow()
+        if (
+            _twitch_access_token
+            and _twitch_access_token_expires_at
+            and _twitch_access_token_expires_at > now + timedelta(seconds=60)
+        ):
+            return _twitch_access_token
+        try:
+            session = await _get_twitch_session()
+            async with session.post(
+                TWITCH_OAUTH_URL,
+                params={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "client_credentials",
+                },
+            ) as response:
+                if response.status != 200:
+                    if not _twitch_last_api_error_logged:
+                        print(
+                            f"[TWITCH AUTH] Token request returned HTTP "
+                            f"{response.status}"
+                        )
+                        _twitch_last_api_error_logged = True
+                    return None
+                payload = await response.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            if not _twitch_last_api_error_logged:
+                print(f"[TWITCH AUTH] {type(exc).__name__}: {exc}")
+                _twitch_last_api_error_logged = True
+            return None
+
+        token = str(payload.get("access_token") or "").strip()
+        if not token:
+            return None
+        _twitch_access_token = token
+        expires_in = int(payload.get("expires_in") or 0)
+        _twitch_access_token_expires_at = (
+            datetime.utcnow() + timedelta(seconds=max(expires_in, 60))
+        )
+        return token
+
+
+async def _invalidate_twitch_access_token() -> None:
+    global _twitch_access_token, _twitch_access_token_expires_at
+    async with _twitch_token_lock:
+        _twitch_access_token = None
+        _twitch_access_token_expires_at = None
+
+
 async def _twitch_api_get(path: str, params: dict) -> tuple[str, dict | None]:
     """Return ('ok'|'offline'|'unavailable', JSON payload)."""
     global _twitch_missing_credentials_logged, _twitch_last_api_error_logged
     client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
-    access_token = _twitch_access_token_from_environment()
-    if not client_id or not access_token:
+    client_secret = os.getenv("TWITCH_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
         if not _twitch_missing_credentials_logged:
             print(
-                "[TWITCH WARNING] TWITCH_CLIENT_ID and TWITCH_ACCESS_TOKEN "
+                "[TWITCH WARNING] TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET "
                 "are required for live and chatter tracking."
             )
             _twitch_missing_credentials_logged = True
         return "unavailable", None
 
-    try:
-        session = await _get_twitch_session()
-        async with session.get(
-            f"{TWITCH_API_BASE}/{path.lstrip('/')}",
-            params=params,
-            headers={
-                "Client-ID": client_id,
-                "Authorization": f"Bearer {access_token}",
-            },
-        ) as response:
-            if response.status == 200:
-                return "ok", await response.json()
-            if response.status == 404:
-                return "offline", None
+    for attempt in range(2):
+        access_token = await _get_twitch_access_token()
+        if not access_token:
+            return "unavailable", None
+        try:
+            session = await _get_twitch_session()
+            async with session.get(
+                f"{TWITCH_API_BASE}/{path.lstrip('/')}",
+                params=params,
+                headers={
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {access_token}",
+                },
+            ) as response:
+                if response.status == 200:
+                    return "ok", await response.json()
+                if response.status == 404:
+                    return "offline", None
+                if response.status == 401 and attempt == 0:
+                    await _invalidate_twitch_access_token()
+                    continue
+                if not _twitch_last_api_error_logged:
+                    print(f"[TWITCH API] GET {path} returned HTTP {response.status}")
+                    _twitch_last_api_error_logged = True
+                return "unavailable", None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if not _twitch_last_api_error_logged:
-                print(f"[TWITCH API] GET {path} returned HTTP {response.status}")
+                print(f"[TWITCH API] {type(exc).__name__}: {exc}")
                 _twitch_last_api_error_logged = True
             return "unavailable", None
-    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-        if not _twitch_last_api_error_logged:
-            print(f"[TWITCH API] {type(exc).__name__}: {exc}")
-            _twitch_last_api_error_logged = True
-        return "unavailable", None
+    return "unavailable", None
 
 
 async def _get_twitch_live_stream() -> tuple[str, dict | None]:
@@ -2473,10 +2541,10 @@ def _build_twitch_embed(
         )
     else:
         embed = discord.Embed(
-            title="🔴 LIVE NOW - Viewer Stats",
+            title="🔴 LIVE NOW - Stats",
             description=(
                 "Only viewers currently present in Twitch chat are shown below.\n"
-                "Watch time is updated every 2 minutes."
+                "Watch time is updated every 3 minutes."
             ),
             color=discord.Color.red(),
         )
@@ -2490,7 +2558,7 @@ def _build_twitch_embed(
     chunks, omitted = _twitch_embed_chunks(entries)
     if not chunks:
         embed.add_field(
-            name="User | Time",
+            name="User | Mins",
             value=(
                 "No viewers are currently visible in Twitch chat."
                 if not ended else "No watch-time data was recorded."
@@ -2500,7 +2568,7 @@ def _build_twitch_embed(
     else:
         suffix = " (final)" if ended else ""
         for index, chunk in enumerate(chunks, start=1):
-            block_name = f"User | Time{suffix}"
+            block_name = f"User | Mins{suffix}"
             if len(chunks) > 1:
                 block_name += f" • Block {index}/{len(chunks)}"
             embed.add_field(name=block_name, value=chunk, inline=False)
@@ -3016,9 +3084,7 @@ async def claim_twitch_reward(ctx, twitch_name: str):
     """Claim the reward for the most recently completed piccolofe stream."""
     status, _stream = await _get_twitch_live_stream()
     if status == "online":
-        return await ctx.send(
-            "❌ The live stream is still ongoing! You can claim your reward once it ends."
-        )
+        return await ctx.send("❌ Stream is still live! Wait until it ends.")
     if status == "unavailable":
         return await ctx.send(
             "❌ I couldn't confirm that the live stream has ended yet. Please try again later."
@@ -3031,30 +3097,22 @@ async def claim_twitch_reward(ctx, twitch_name: str):
         login = _normalise_twitch_name(twitch_name)
         row = state.get("watch_time", {}).get(login)
         if not isinstance(row, dict):
-            return await ctx.send(
-                "❌ You haven't accumulated 30 minutes of watch time during the last stream."
-            )
+            return await ctx.send("❌ Not enough watch time (30 mins required).")
         if row.get("claimed"):
-            return await ctx.send(
-                "⚠️ You have already claimed your reward for this stream!"
-            )
+            return await ctx.send("⚠️ Reward already claimed!")
         minutes = int(row.get("minutes", 0))
         if minutes < 30:
-            return await ctx.send(
-                "❌ You haven't accumulated 30 minutes of watch time during the last stream."
-            )
+            return await ctx.send("❌ Not enough watch time (30 mins required).")
 
         prof = get_profile(ctx.author.id, ctx.author.display_name)
         _record_gems(ctx.author, TWITCH_REWARD_GEMS)
-        prof["cristalli"] = prof.get("cristalli", 0) + TWITCH_REWARD_CRYSTALS
         row["claimed"] = True
         row["claimed_by"] = ctx.author.id
         save_db()
 
     await ctx.send(
-        "✅ Congratulations! You watched piccolofe's stream for at least 30 minutes "
-        "and received your reward!\n"
-        f"Reward: **{TWITCH_REWARD_GEMS} Gems** + **{TWITCH_REWARD_CRYSTALS} Crystals**."
+        "✅ Reward claimed! You watched 30+ mins.\n"
+        f"Reward: **{TWITCH_REWARD_GEMS} Gems**."
     )
 
 
