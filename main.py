@@ -535,7 +535,10 @@ _gemini_model = None
 _model_resolution_lock = asyncio.Lock()
 AI_REQUEST_TIMEOUT_SECONDS = 20.0
 if GEMINI_CONFIGURED:
-    genai.configure(api_key=GEMINI_API_KEY)
+    genai.configure(
+        api_key=GEMINI_API_KEY,
+        transport="rest",
+    )
 else:
     print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
 ALERT_RECIPIENT_ID = 1338274535325175810
