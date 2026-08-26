@@ -534,7 +534,8 @@ _working_model_name: str | None = None
 _model_resolution_lock = asyncio.Lock()
 _gemini_session: aiohttp.ClientSession | None = None
 _gemini_session_lock = asyncio.Lock()
-AI_REQUEST_TIMEOUT_SECONDS = 20.0
+GEMINI_ATTEMPT_TIMEOUT_SECONDS = 12.0
+AI_REQUEST_TIMEOUT_SECONDS = 50.0
 if not GEMINI_CONFIGURED:
     print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
 ALERT_RECIPIENT_ID = 1338274535325175810
@@ -556,10 +557,10 @@ async def initialize_gemini_model():
     async with _gemini_session_lock:
         if _gemini_session is None or _gemini_session.closed:
             timeout = aiohttp.ClientTimeout(
-                total=AI_REQUEST_TIMEOUT_SECONDS,
-                connect=10.0,
-                sock_connect=10.0,
-                sock_read=AI_REQUEST_TIMEOUT_SECONDS,
+                total=GEMINI_ATTEMPT_TIMEOUT_SECONDS,
+                connect=8.0,
+                sock_connect=8.0,
+                sock_read=GEMINI_ATTEMPT_TIMEOUT_SECONDS,
             )
             _gemini_session = aiohttp.ClientSession(timeout=timeout)
         if _working_model_name is None:
@@ -825,7 +826,10 @@ async def gemini_completion_with_retries(messages, system_instruction):
             "parts": [{"text": system_instruction or ""}],
         },
         "contents": contents,
-        "generationConfig": {"temperature": 0.1},
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 256,
+        },
     }
     last_error = None
     for attempt in range(3):
