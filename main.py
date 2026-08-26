@@ -806,10 +806,11 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
                 "⚠️ I could not generate a reply right now. Please try again."
             )
         try:
-            await channel.send(embed=discord.Embed(
-                description=reply_text[:4096],
-                color=discord.Color(0x00F0FF),
-            ))
+            for response_chunk in split_ai_response(reply_text):
+                await channel.send(embed=discord.Embed(
+                    description=response_chunk,
+                    color=discord.Color(0x00F0FF),
+                ))
             conversation.append({"role": "assistant", "content": reply_text})
             conversation[:] = conversation[-12:]
         except Exception as exc:
@@ -838,6 +839,21 @@ def clean_ai_response(response) -> str:
     text = text.replace("```text", "").replace("```markdown", "").replace("```", "").strip()
     return text
 
+def split_ai_response(text: str, max_chars: int = 3900) -> list[str]:
+    """Split long AI replies without dropping any content."""
+    remaining = str(text or "")
+    chunks = []
+    while len(remaining) > max_chars:
+        boundary = remaining.rfind("\n", 0, max_chars)
+        if boundary < max_chars // 2:
+            boundary = remaining.rfind(" ", 0, max_chars)
+        split_at = boundary + 1 if boundary >= 0 else max_chars
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
 async def gemini_completion_with_retries(messages, system_instruction):
     """Call Gemini's async REST endpoint with bounded retries."""
     if not GEMINI_CONFIGURED:
@@ -859,7 +875,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
         "contents": contents,
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 256,
+            "maxOutputTokens": 1024,
         },
     }
     last_error = None
@@ -4830,10 +4846,19 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
 
-        # Greetings should always receive one immediate Italian response.
-        # They do not need an API call, so they still work when the free
-        # Gemini is unavailable or the user has not typed
-        # :start yet.
+        # Direct DMs never use Gemini. :start opens the private server
+        # channel where the AI conversation takes place.
+        await message.channel.send(
+            "👋 Se vuoi parlare con me, usa `:start`.\n"
+            "Ti aprirò una chat privata nel server."
+        )
+        await _log_dm(message, "OUT", "DM AI disabled — use :start")
+        await bot.process_commands(message)
+        return
+
+        # Kept below temporarily for compatibility with the existing session
+        # cleanup state; the early return above makes the direct-DM AI path
+        # unreachable by design.
         greeting_text = re.sub(r"[^\wÀ-ÖØ-öø-ÿ]+", " ", message.content.lower()).strip()
         if message.author.id not in active_ai_sessions and greeting_text in DM_GREETING_WORDS:
             greeting_embed = discord.Embed(
@@ -4869,7 +4894,7 @@ async def on_message(message: discord.Message):
 2. COMMAND RULE: The complete live command reference is provided below. It
    includes prefix and slash commands, syntax, and the permission level for
    each command. Use it as the source of truth and never invent a command.
-  3. LANGUAGE RULE: This is a private DM conversation. Reply in the same
+  3. LANGUAGE RULE: This is a private server-channel conversation. Reply in the same
      language used by the user's latest message and support multilingual
      conversations. Users may switch languages at any time; follow the current
      language naturally. The :help menu supports English, Italian, Spanish,
