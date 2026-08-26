@@ -2502,7 +2502,7 @@ async def _get_twitch_chatters(broadcaster_id: str) -> tuple[str, dict[str, str]
 
 
 def _twitch_embed_chunks(entries: list[tuple[str, int]]) -> tuple[list[str], int]:
-    """Split User | Time rows while staying below Discord's embed limits."""
+    """Split User | Mins rows while staying below Discord's embed limits."""
     lines = [f"{name} | {minutes} min" for name, minutes in entries]
     chunks: list[str] = []
     current: list[str] = []
