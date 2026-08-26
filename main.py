@@ -861,8 +861,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
                 isinstance(exc, (TimeoutError, ConnectionError))
                 or any(word in error_text for word in (
                     "rate", "quota", "tempor", "unavailable", "connection",
-                )
-            ):
+                )))
             if any(word in error_text for word in (
                 "api key", "authentication", "permission", "invalid argument",
                 "not found",
