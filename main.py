@@ -524,14 +524,17 @@ DM_GREETING_WORDS = {
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
 AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
+GEMINI_MODEL_NAME = "gemini-2.0-flash"
 CANDIDATE_MODELS = [
-    "gemini-2.0-flash",
+    GEMINI_MODEL_NAME,
     "gemini-2.5-flash",
     "gemini-flash-latest",
     "gemini-1.5-flash-latest",
 ]
 _working_model_name: str | None = None
+_gemini_model = None
 _model_resolution_lock = asyncio.Lock()
+AI_REQUEST_TIMEOUT_SECONDS = 20.0
 if GEMINI_CONFIGURED:
     genai.configure(api_key=GEMINI_API_KEY)
 else:
@@ -606,15 +609,23 @@ def _resolve_working_model_name() -> str:
         + (f" Dettagli: {details}" if details else "")
     )
 
-async def get_working_model(system_instruction: str | None = None):
-    """Resolve a working model without blocking the Discord event loop."""
+async def initialize_gemini_model():
+    """Resolve and construct the Gemini model once for the bot process."""
+    global _gemini_model
+    if _gemini_model is not None:
+        return _gemini_model
     async with _model_resolution_lock:
-        model_name = await asyncio.to_thread(_resolve_working_model_name)
-    return await asyncio.to_thread(
-        genai.GenerativeModel,
-        model_name,
-        system_instruction=system_instruction,
-    )
+        if _gemini_model is None:
+            model_name = await asyncio.to_thread(_resolve_working_model_name)
+            _gemini_model = await asyncio.to_thread(
+                genai.GenerativeModel,
+                model_name,
+            )
+    return _gemini_model
+
+async def get_working_model():
+    """Return the startup-initialized Gemini model, resolving only if needed."""
+    return await initialize_gemini_model()
 
 def _contains_inappropriate_content(content: str) -> bool:
     normalized = re.sub(r"[\W_]+", " ", content.casefold(), flags=re.UNICODE)
@@ -765,7 +776,7 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             await _log_exception(message.guild, "Private AI configuration", exc)
             return await channel.send(format_ai_error(exc))
     user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
-    async with user_lock, channel.typing():
+    async with user_lock:
         conversation = dm_conversations.setdefault(user_id, [])
         conversation.append({"role": "user", "content": message.content})
         conversation[:] = conversation[-12:]
@@ -776,16 +787,35 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             "its commands, tournaments, shop, events, staff applications, and rules. "
             "The user is writing in a private server channel."
         )
+        reply_text = ""
         try:
-            response = await gemini_completion_with_retries(
-                [{"role": "system", "content": system_prompt}, *conversation],
-                system_prompt,
-            )
-            reply_text = clean_ai_response(response)
-            if not reply_text:
-                return await channel.send(
-                    "⚠️ I could not generate a reply right now. Please try again."
+            # Keep the typing indicator scoped only to generation. This guarantees
+            # it is closed before any response or error message is sent.
+            async with channel.typing():
+                response = await asyncio.wait_for(
+                    gemini_completion_with_retries(
+                        [{"role": "system", "content": system_prompt}, *conversation],
+                        system_prompt,
+                    ),
+                    timeout=AI_REQUEST_TIMEOUT_SECONDS,
                 )
+                reply_text = clean_ai_response(response)
+        except asyncio.TimeoutError as exc:
+            print("[GEMINI TIMEOUT] La richiesta ha superato i 20 secondi.")
+            await _log_exception(message.guild, "Private AI timeout", exc)
+            return await channel.send(
+                "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
+            await _log_exception(message.guild, "Private AI completion", exc)
+            return await channel.send(format_ai_error(exc))
+        if not reply_text:
+            return await channel.send(
+                "⚠️ I could not generate a reply right now. Please try again."
+            )
+        try:
             await channel.send(embed=discord.Embed(
                 description=reply_text[:4096],
                 color=discord.Color(0x00F0FF),
@@ -793,11 +823,9 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
             conversation.append({"role": "assistant", "content": reply_text})
             conversation[:] = conversation[-12:]
         except Exception as exc:
-            import traceback
             traceback.print_exc()
-            print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
-            await _log_exception(message.guild, "Private AI completion", exc)
-            await channel.send(format_ai_error(exc))
+            print(f"[AI SEND ERROR] Errore invio risposta: {exc}")
+            await _log_exception(message.guild, "Private AI response send", exc)
 
 
 def clean_ai_response(response) -> str:
@@ -837,7 +865,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
     last_error = None
     for attempt in range(3):
         try:
-            model = await get_working_model(system_instruction)
+            model = await get_working_model()
             chat = model.start_chat(history=history)
             response = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -845,7 +873,7 @@ async def gemini_completion_with_retries(messages, system_instruction):
                     prompt,
                     generation_config={"temperature": 0.1},
                 ),
-                timeout=35.0,
+                timeout=AI_REQUEST_TIMEOUT_SECONDS,
             )
             if not clean_ai_response(response):
                 raise RuntimeError("Gemini returned no text")
@@ -856,6 +884,8 @@ async def gemini_completion_with_retries(messages, system_instruction):
             if "404" in error_text or "not found" in error_text:
                 global _working_model_name
                 _working_model_name = None
+                global _gemini_model
+                _gemini_model = None
             retryable = (
                 isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError))
                 or any(word in error_text for word in (
