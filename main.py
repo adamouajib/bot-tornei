@@ -524,9 +524,9 @@ DM_GREETING_WORDS = {
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_CONFIGURED = bool(GEMINI_API_KEY)
 AI_PROVIDER = "gemini" if GEMINI_CONFIGURED else None
-GEMINI_MODEL_NAME = "gemini-3.5-flash-lite"
+GEMINI_MODEL_NAME = "gemini-3.1-flash-lite"
 GEMINI_FALLBACK_MODEL_NAMES = (
-    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
 )
 GEMINI_MODEL_NAMES = (GEMINI_MODEL_NAME, *GEMINI_FALLBACK_MODEL_NAMES)
@@ -767,7 +767,10 @@ async def _handle_private_ai_message(message: discord.Message, channel: discord.
                 reply_text = clean_ai_response(response)
         except asyncio.TimeoutError as exc:
             traceback.print_exc()
-            print("[GEMINI TIMEOUT] La richiesta ha superato i 20 secondi.")
+            print(
+                "[GEMINI TIMEOUT] La richiesta ha superato il tempo massimo "
+                f"di {AI_REQUEST_TIMEOUT_SECONDS:.0f} secondi."
+            )
             await _log_exception(message.guild, "Private AI timeout", exc)
             return await channel.send(
                 "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
@@ -4830,7 +4833,10 @@ COMPLETE COMMAND DATABASE:
                         reply_text = clean_ai_response(response)
                 except asyncio.TimeoutError as exc:
                     traceback.print_exc()
-                    print("[GEMINI TIMEOUT] La richiesta DM ha superato i 20 secondi.")
+                    print(
+                        "[GEMINI TIMEOUT] La richiesta DM ha superato il tempo "
+                        f"massimo di {AI_REQUEST_TIMEOUT_SECONDS:.0f} secondi."
+                    )
                     await _log_exception(message.guild, "Private DM AI timeout", exc)
                     await message.channel.send(
                         "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"

@@ -3,7 +3,7 @@ name: Gemini REST networking
 description: Hosting-network guidance for Gemini calls in this Discord bot.
 ---
 
-Use the Gemini `generateContent` REST endpoint through one reusable `aiohttp` session with explicit connect, socket, and total timeouts. Keep the Discord event loop free of synchronous SDK calls and avoid awaiting per-message Discord channel edits before generation. Model availability is key/account-dependent, so confirm the configured model through the live API and keep tested fallbacks. REST message parts must be objects shaped as `{"text": ...}`.
+Use the Gemini `generateContent` REST endpoint through one reusable `aiohttp` session with explicit connect, socket, and total timeouts. Keep the Discord event loop free of synchronous SDK calls and avoid awaiting per-message Discord channel edits before generation. Model availability is key/account-dependent, so confirm the configured model through the live API and keep tested fallbacks. REST message parts must be objects shaped as `{"text": ...}`. When pooled sockets stall, use a force-closing connector and switch models after a timeout.
 
 **Why:** The hosted bot observed Gemini SDK model fallbacks timing out while a Discord channel-topic `PATCH` was also delayed by rate limiting. Direct async REST cancellation bounds the network operation, and removing the per-message topic update prevents Discord backpressure from blocking AI delivery. A previously configured model also returned 404 because it was retired or unavailable to the API key, and the first REST conversion returned 400 when SDK-style string parts were sent.
 
