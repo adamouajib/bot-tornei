@@ -8327,23 +8327,23 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
 
     def build_drop_embed(drop: dict, ended: bool = False) -> discord.Embed:
         claimed_ids = drop.get("claimed_ids", [])
-        winners = " ".join(f"<@{uid}>" for uid in claimed_ids) or "Nessuno ancora"
-        status = "✅ Drop concluso" if ended else "🎁 Claim disponibili"
+        winners = " ".join(f"<@{uid}>" for uid in claimed_ids) or "No winners yet"
+        status = "✅ Drop ended" if ended else "🎁 Claims available"
         embed = discord.Embed(
             title=f"{status} — {display_currency}",
             description=(
-                f"**Premio:** {amount} {display_currency}\n"
-                f"**Claim disponibili:** {max(0, max_people - len(claimed_ids))}/{max_people}\n\n"
-                f"Premi il pulsante **CLAIM** per partecipare."
+                f"**Prize:** {amount} {display_currency}\n"
+                f"**Claims available:** {max(0, max_people - len(claimed_ids))}/{max_people}\n\n"
+                f"Press the **CLAIM** button to participate."
             ),
             color=discord.Color.dark_grey() if ended else discord.Color.green(),
         )
         embed.add_field(
-            name=f"🏆 Vincitori del drop ({len(claimed_ids)}/{max_people})",
+            name=f"🏆 Drop winners ({len(claimed_ids)}/{max_people})",
             value=winners,
             inline=False,
         )
-        embed.set_footer(text=f"Rilasciato da {ctx.author.display_name} • Claim limitati")
+        embed.set_footer(text=f"Released by {ctx.author.display_name} • Limited claims")
         return embed
 
     class DropView(View):
