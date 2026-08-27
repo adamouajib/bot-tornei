@@ -362,7 +362,7 @@ ADMIN_COMMANDS = {
     "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
-    "linked", "leaderboard", "gems", "stumble-top", "set-tw",
+    "linked", "leaderboard", "gems", "stumble-top", "set-tw", "setup-shop",
 }
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
@@ -1934,6 +1934,7 @@ active_duels: dict = {}
 #           bet_a, bet_b, confirmed_ids, channel_id, guild_id}}
 active_bets: dict = {}
 # {match_id_str: {p1, p2, bets: {uid: {choice, amount}}, channel_id}}
+_shop_panel_view_registered = False
 
 def get_profile(user_id, username):
     uid = str(user_id)
@@ -3121,7 +3122,7 @@ async def send_setup_notifications():
     global _setup_notifications_sent
     if _setup_notifications_sent:
         return
-    setup_names = {"setup", "setup-result", "setup-scomesse", "big-tour"}
+    setup_names = {"setup", "setup-result", "setup-scomesse", "setup-shop", "big-tour"}
     rows = []
     for command in sorted(bot.commands, key=lambda item: item.name.casefold()):
         if command.name not in setup_names:
@@ -3152,6 +3153,7 @@ async def send_setup_notifications():
 
 @bot.event
 async def on_ready():
+    global _shop_panel_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
@@ -3167,6 +3169,10 @@ async def on_ready():
         print("[on_ready] Slash commands synced")
     except Exception as exc:
         await _log_exception(None, "slash command sync", exc)
+    if not _shop_panel_view_registered:
+        bot.add_view(ShopPanelView())
+        _shop_panel_view_registered = True
+        print("[on_ready] Persistent shop panel view registered")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
     await send_setup_notifications()
@@ -7372,6 +7378,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":help (aliases :guide, :commands, :comandi, :guida)", "Shows the complete multilingual command guide in private messages, organized by permission category.", "No arguments; available to all members.", ":help"),
             (":setup-result", "Sets the channel where final tournament result embeds are published.", "<#channel> text-channel mention; owner access.", ":setup-result #results"),
             (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
+            (":setup-shop (alias :setup_shop)", "Replaces old shop panels in the current channel with one persistent three-embed shop panel.", "No arguments; administrator access.", ":setup-shop"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
             (":set-tw (alias :set_tw)", "Sets the Discord channel for the live Twitch viewer dashboard for piccolofe.", "<#channel> text-channel mention; administrator or owner access.", ":set-tw #twitch-live"),
@@ -7400,7 +7407,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "set-supporter", "giveaway", "setup-result",
-        "setup-scomesse", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
+        "setup-scomesse", "setup-shop", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
@@ -8417,6 +8424,63 @@ def _shop_main_embed(prof: dict) -> discord.Embed:
     return e
 
 
+def _w_items_embed(prof: dict) -> discord.Embed:
+    owned = prof.get("w_owned", [])
+    lines = []
+    for name, data in W_ITEMS.items():
+        tag = " ✅" if name in owned else ""
+        price = f"{data['price'] / 1000:.1f}k"
+        lines.append(f"{data['emoji']} **W {name}** • {price} {E_CRYSTAL}{tag}")
+    e = discord.Embed(
+        title=f"{E_W} W Items Shop",
+        description=(
+            f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
+            + "\n".join(lines)
+            + "\n\n"
+        ),
+        color=discord.Color.blue(),
+    )
+    e.set_image(url=SHOP_EMBED_IMAGE_URL)
+    e.set_footer(text="Choose an item below to purchase a W item!")
+    return e
+
+
+def _gems_shop_embed(prof: dict) -> discord.Embed:
+    lines = [
+        f"• **{gems}** {E_GEMS} — {format_num(price)} {E_CRYSTAL}"
+        for gems, price in GEM_PACKAGES
+    ]
+    e = discord.Embed(
+        title=f"{E_GEMS} Gems Shop",
+        description=(
+            f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
+            + "\n".join(lines)
+            + "\n\n"
+            "⚠️ Gems are transferred to your SG account by our staff."
+        ),
+        color=discord.Color.purple(),
+    )
+    e.set_image(url=SHOP_EMBED_IMAGE_URL)
+    return e
+
+
+def _exchange_embed(prof: dict) -> discord.Embed:
+    e = discord.Embed(
+        title="🔄 Currency Exchange",
+        description=(
+            f"{E_RUBY} **Ruby:** {format_num(prof.get('rubini', 0))}　·　"
+            f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
+            "**Exchange rates:**\n"
+            "🟣 `8.000 Ruby` ➔ 💎 `150 Crystals`\n"
+            "🟣 `16.000 Ruby` ➔ 💎 `500 Crystals`\n\n"
+            "Choose an option below:"
+        ),
+        color=discord.Color.orange(),
+    )
+    e.set_image(url=SHOP_EMBED_IMAGE_URL)
+    return e
+
+
 class ShopMainView(View):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
@@ -8430,65 +8494,30 @@ class ShopMainView(View):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ This isn't your shop!", ephemeral=True)
         prof = get_profile(interaction.user.id, interaction.user.display_name)
-        owned = prof.get("w_owned", [])
-        lines = []
-        for name, data in W_ITEMS.items():
-            tag = " ✅" if name in owned else ""
-            price = f"{data['price'] / 1000:.1f}k"
-            lines.append(f"{data['emoji']} **W {name}** • {price} {E_CRYSTAL}{tag}")
-        e = discord.Embed(
-            title=f"{E_W} W Items Shop",
-            description=(
-                f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
-                + "\n".join(lines)
-                + "\n\n"
-            ),
-            color=discord.Color.blue()
+        await interaction.response.edit_message(
+            embed=_w_items_embed(prof),
+            view=WShopView(self.user_id),
         )
-        e.set_image(url=SHOP_EMBED_IMAGE_URL)
-        e.set_footer(text="Choose an item below to purchase a W item!")
-        await interaction.response.edit_message(embed=e, view=WShopView(self.user_id))
 
     @discord.ui.button(label="Gems", emoji="<:gems:1507509442286190652>", style=discord.ButtonStyle.success)
     async def gems_page(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ This isn't your shop!", ephemeral=True)
         prof = get_profile(interaction.user.id, interaction.user.display_name)
-        lines = [
-            f"• **{gems}** {E_GEMS} — {format_num(price)} {E_CRYSTAL}"
-            for gems, price in GEM_PACKAGES
-        ]
-        e = discord.Embed(
-            title=f"{E_GEMS} Gems Shop",
-            description=(
-                f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
-                + "\n".join(lines) + "\n\n"
-                "⚠️ Gems are transferred to your SG account by our staff."
-            ),
-            color=discord.Color.purple()
+        await interaction.response.edit_message(
+            embed=_gems_shop_embed(prof),
+            view=GemsShopView(self.user_id),
         )
-        e.set_image(url=SHOP_EMBED_IMAGE_URL)
-        await interaction.response.edit_message(embed=e, view=GemsShopView(self.user_id))
 
     @discord.ui.button(label="🔄 Exchange", style=discord.ButtonStyle.secondary)
     async def exchange(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ This isn't your shop!", ephemeral=True)
         prof = get_profile(interaction.user.id, interaction.user.display_name)
-        e = discord.Embed(
-            title="🔄 Currency Exchange",
-            description=(
-                f"{E_RUBY} **Ruby:** {format_num(prof.get('rubini', 0))}　·　"
-                f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
-                "**Exchange rates:**\n"
-                "🟣 `8.000 Ruby` ➔ 💎 `150 Crystals`\n"
-                "🟣 `16.000 Ruby` ➔ 💎 `500 Crystals`\n\n"
-                "Choose an option below:"
-            ),
-            color=discord.Color.orange()
+        await interaction.response.edit_message(
+            embed=_exchange_embed(prof),
+            view=ExchangeView(self.user_id),
         )
-        e.set_image(url=SHOP_EMBED_IMAGE_URL)
-        await interaction.response.edit_message(embed=e, view=ExchangeView(self.user_id))
 
 
 class WShopSelect(discord.ui.Select):
@@ -8735,6 +8764,126 @@ class ExchangeSelect(discord.ui.Select):
             await self.view._do_crystal_to_ruby(interaction, 150, 8000)
         else:
             await self.view._do_crystal_to_ruby(interaction, 500, 16000)
+
+
+class ShopPanelView(View):
+    """Persistent public shop panel; each user gets a private shopping flow."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="W Items",
+        style=discord.ButtonStyle.primary,
+        custom_id="shop_btn_witems",
+    )
+    async def w_items(self, interaction: discord.Interaction, button: Button):
+        prof = get_profile(interaction.user.id, interaction.user.display_name)
+        await interaction.response.send_message(
+            embed=_w_items_embed(prof),
+            view=WShopView(interaction.user.id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Gems",
+        style=discord.ButtonStyle.success,
+        custom_id="shop_btn_gems",
+    )
+    async def gems(self, interaction: discord.Interaction, button: Button):
+        prof = get_profile(interaction.user.id, interaction.user.display_name)
+        await interaction.response.send_message(
+            embed=_gems_shop_embed(prof),
+            view=GemsShopView(interaction.user.id),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Exchange",
+        style=discord.ButtonStyle.secondary,
+        custom_id="shop_btn_exchange",
+    )
+    async def exchange(self, interaction: discord.Interaction, button: Button):
+        prof = get_profile(interaction.user.id, interaction.user.display_name)
+        await interaction.response.send_message(
+            embed=_exchange_embed(prof),
+            view=ExchangeView(interaction.user.id),
+            ephemeral=True,
+        )
+
+
+@bot.command(name="setup-shop", aliases=["setup_shop"])
+@admin_only()
+async def setup_shop(ctx):
+    """Replace shop setup panels in this channel with one persistent panel."""
+    def is_old_shop_panel(message: discord.Message) -> bool:
+        bot_member = ctx.guild.me if ctx.guild else None
+        return bool(
+            bot_member
+            and message.author.id == bot_member.id
+            and any(embed.title == "🛒 STUMBLE SHOP" for embed in message.embeds)
+        )
+
+    try:
+        removed = await ctx.channel.purge(limit=None, check=is_old_shop_panel)
+    except discord.Forbidden:
+        return await ctx.send(
+            "❌ I need **Manage Messages** and **Read Message History** to replace the shop panel.",
+            delete_after=8.0,
+        )
+    except discord.HTTPException as exc:
+        print(f"[setup-shop purge] {exc}")
+        return await ctx.send(
+            "❌ I couldn't remove the old shop panel messages. Please try again.",
+            delete_after=8.0,
+        )
+
+    embed1 = discord.Embed(
+        title="🛒 STUMBLE SHOP",
+        description="*The official server store to exchange resources and unlock exclusive perks.*",
+        color=discord.Color.gold(),
+    )
+    embed1.set_image(url=SHOP_EMBED_IMAGE_URL)
+    embed2 = discord.Embed(
+        title="📖 SHOP GUIDE",
+        description=(
+            "• **What is it:** An automated store where you can convert currency and buy exclusive roles or gems.\n\n"
+            "• **How to use:** Click any of the buttons below to browse a category, view prices, and execute exchanges in real time."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed3 = discord.Embed(
+        title="🏷️ CATEGORIES",
+        description=(
+            "> 🎨 **W Items** — Exclusive colored roles\n"
+            "> 💎 **Gems** — Real SG Gems\n"
+            "> 🔄 **Exchange** — Ruby ↔ Crystals"
+        ),
+        color=discord.Color.green(),
+    )
+
+    try:
+        await ctx.channel.send(
+            embeds=[embed1, embed2, embed3],
+            view=ShopPanelView(),
+        )
+    except discord.Forbidden:
+        return await ctx.send(
+            "❌ I need **Send Messages**, **Embed Links**, and **Use External Emoji** to publish the shop panel.",
+            delete_after=8.0,
+        )
+    except discord.HTTPException as exc:
+        print(f"[setup-shop send] {exc}")
+        return await ctx.send(
+            "❌ I couldn't publish the shop panel. Please try again.",
+            delete_after=8.0,
+        )
+
+    await ctx.send(
+        f"✅ Persistent shop panel published in {ctx.channel.mention}. "
+        f"Removed **{len(removed)}** old panel(s).",
+        delete_after=8.0,
+    )
 
 
 @bot.command(name="test")
