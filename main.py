@@ -3001,7 +3001,7 @@ async def send_setup_notifications():
 @bot.event
 async def on_ready():
     load_db()
-    print(f"🔥 Stumble™ bot ONLINE!")
+    print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
         try:
             await initialize_gemini_model()
@@ -3041,7 +3041,7 @@ async def on_ready():
                 try:
                     await guild.create_role(
                         name=role_name, color=color,
-                        reason="Auto-created by Stumble™ bot")
+                        reason="Auto-created by PCF™ bot")
                     print(f"[on_ready] Created role: {role_name}")
                 except Exception as e:
                     print(f"[on_ready] Could not create role {role_name}: {e}")
@@ -3075,7 +3075,7 @@ async def on_member_join(member: discord.Member):
         ),
         color=discord.Color.green()
     )
-    embed.set_footer(text=f"Member #{guild.member_count} • Stumble™")
+    embed.set_footer(text=f"Member #{guild.member_count} • PCF™")
     embed.set_image(url=STUMBLE_IMG)
     await channel.send(content=member.mention, embed=embed)
 
@@ -3492,7 +3492,7 @@ async def reset_stat(ctx, member: discord.Member, cosa: str):
 async def shop(ctx):
     prof = get_profile(ctx.author.id, ctx.author.display_name)
     embed = _shop_main_embed(prof)
-    embed.set_footer(text="Stumble™ Shop • Choose a category below")
+    embed.set_footer(text="PCF™ Shop • Choose a category below")
     await ctx.send(embed=embed, view=ShopMainView(ctx.author.id))
 
 # ==========================================
@@ -3890,7 +3890,7 @@ class TourModal1(Modal):
         super().__init__(title=f"{prefix}🏆 {modalita} (1/3)"[:45])
         self.modalita = modalita
         self.is_big   = is_big
-        self.nome    = TextInput(label="📛 Tournament Name",       placeholder="e.g. Stumble™ Classic #42", max_length=50)
+        self.nome    = TextInput(label="📛 Tournament Name",       placeholder="e.g. PCF™ Classic #42", max_length=50)
         self.mappa   = TextInput(label="🗺️ Map",             placeholder="e.g. Laser Dash")
         self.abilita = TextInput(label="⚡ Ability / Emote",   placeholder="e.g. Slap, Punch, Banana…")
         self.premio  = TextInput(
@@ -4257,7 +4257,7 @@ async def setup_tour_hub(ctx):
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Stumble™ Tournament System")
+    embed.set_footer(text="PCF™ Tournament System")
     await channel.send(embed=embed, view=TourHubView(is_big=False))
     await ctx.send(f"✅ Hub sent to {channel.mention}!", delete_after=5.0)
 
@@ -4596,7 +4596,7 @@ async def match(ctx, match_num: int, codice: str):
         e.add_field(name="🎁 Prize",      value=_format_prize(t["premio"]), inline=True)
         e.add_field(name="🔑 Room Code",  value=f"```{codice}```",  inline=False)
         e.add_field(name="⏱️ Deadline",   value=f"<t:{end_ts}:R>", inline=False)
-        e.set_footer(text=f"Host: {t['host_name']}  •  Stumble™ Tournaments")
+        e.set_footer(text=f"Host: {t['host_name']}  •  PCF™ Tournaments")
         return e
 
     sent_to = []
@@ -5010,7 +5010,7 @@ async def start_event(ctx):
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
     if event_file:
         embed.set_image(url=EVENT_EMBED_IMAGE_URL)
-    embed.set_footer(text=f"Started by {ctx.author.display_name}  •  Stumble™")
+    embed.set_footer(text=f"Started by {ctx.author.display_name}  •  PCF™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     ping_txt  = (f"<@&{EVENT_PING_ROLE_ID}> @here" if is_big
                  else f"<@&{EVENT_PING_ROLE_ID}>")
@@ -5268,7 +5268,7 @@ async def big_start(ctx):
     embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"**{_format_prize(big.get('prize2','—'))}**", inline=False)
     embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"**{_format_prize(big.get('prize3','—'))}**", inline=False)
     embed.set_image(url=EVENT_EMBED_IMAGE_URL)
-    embed.set_footer(text=f"Started by {ctx.author.display_name} • Stumble™")
+    embed.set_footer(text=f"Started by {ctx.author.display_name} • PCF™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     await start_ch.send(
         content=f"<@&{EVENT_PING_ROLE_ID}> @here 🌟 **THE BIG EVENT HAS STARTED — GET IN THERE!** 🔥",
@@ -5658,7 +5658,7 @@ class TicketMainView(View):
 @admin_only()
 async def add_ticket(ctx):
     embed = discord.Embed(
-        title="🎫 Stumble™ Support",
+        title="🎫 PCF™ Support",
         description=(
             "Need help? Select a category below!\n\n"
             "🆘 **Support** — Chat with our staff via DM\n"
@@ -5668,7 +5668,7 @@ async def add_ticket(ctx):
         color=discord.Color.gold()
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Stumble™ Support System")
+    embed.set_footer(text="PCF™ Support System")
     await ctx.send(embed=embed, view=TicketMainView())
 
 @bot.event
@@ -5833,7 +5833,7 @@ async def on_message(message: discord.Message):
                     description=(
                         "Your application has been sent to our staff team! 📬\n\n"
                         "We'll get back to you as soon as possible. 💙\n\n"
-                        "Thank you for wanting to join the Stumble™ team!"
+                        "Thank you for wanting to join the PCF™ team!"
                     ),
                     color=discord.Color.green()
                 )
@@ -6574,7 +6574,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:add-cristalli @user <n>` · `:add-punti @user <n>` — Add Crystals or Ranked Points.\n"
                 "`:add-gems @user <n>` — Add SG Gems directly to a user's profile.\n"
                 "`:set-rank @user <rank>` — Force-set a user's rank by name (e.g. Gold, Platinum).\n"
-                "`:shop` — Opens the Stumble™ Shop with W Items, Gems packages and Currency Exchange."
+                "`:shop` — Opens the PCF™ Shop with W Items, Gems packages and Currency Exchange."
             ),
             "level_title": "⬆️ LEVEL SYSTEM",
             "level": (
@@ -6599,7 +6599,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:pex` — Checks all staff members' rank roles and promotes/demotes as needed.\n"
                 "`:reset` — Full data reset (profiles, tournament, economy). **Irreversible.**"
             ),
-            "footer": "Stumble™ Bot • prefix: ':'",
+            "footer": "PCF™ Bot • prefix: ':'",
         },
         "it": {
             "title1": "📖 Guida Comandi — Tornei ed Eventi",
@@ -6640,7 +6640,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:add-cristalli @utente <n>` · `:add-punti @utente <n>` — Aggiungi Cristalli o Ranked Points.\n"
                 "`:add-gems @utente <n>` — Aggiungi gemme SG direttamente al profilo di un utente.\n"
                 "`:set-rank @utente <rank>` — Imposta il rank manualmente per nome (es. Gold, Platinum).\n"
-                "`:shop` — Apre lo Stumble™ Shop con W Items, pacchetti Gemme e Cambio Valuta."
+                "`:shop` — Apre lo PCF™ Shop con W Items, pacchetti Gemme e Cambio Valuta."
             ),
             "level_title": "⬆️ SISTEMA LIVELLI",
             "level": (
@@ -6684,7 +6684,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:setup-tour-hub` · `:add-ticket` · `:set-welcome #canal`\n"
                 "`:set-supporter #canal` · `:pex` (Owner) · `:reset` (Owner)"
             ),
-            "footer": "Stumble™ Bot • prefijo: ':'",
+            "footer": "PCF™ Bot • prefijo: ':'",
         },
         "de": {
             "title1": "📖 Befehlsführer — Turniere & Events",
@@ -6742,7 +6742,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:setup-tour-hub` · `:add-ticket` · `:set-welcome #kanal`\n"
                 "`:set-supporter #kanal` · `:pex` (Owner) · `:reset` (Owner)"
             ),
-            "footer": "Stumble™ Bot • Präfix: ':'",
+            "footer": "PCF™ Bot • Präfix: ':'",
         },
         "pt": {
             "title1": "📖 Guia de Comandos — Torneios e Eventos",
@@ -6800,7 +6800,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:setup-tour-hub` · `:add-ticket` · `:set-welcome #canal`\n"
                 "`:set-supporter #canal` · `:pex` (Owner) · `:reset` (Owner)"
             ),
-            "footer": "Stumble™ Bot • prefixo: ':'",
+            "footer": "PCF™ Bot • prefixo: ':'",
         },
         "fr": {
             "title1": "📖 Guide des Commandes — Tournois & Événements",
@@ -6858,7 +6858,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:setup-tour-hub` · `:add-ticket` · `:set-welcome #salon`\n"
                 "`:set-supporter #salon` · `:pex` (Owner) · `:reset` (Owner)"
             ),
-            "footer": "Stumble™ Bot • préfixe: ':'",
+            "footer": "PCF™ Bot • préfixe: ':'",
         },
         "la": {
             "title1": "📖 Index Mandatorum — Certamina et Ludi",
@@ -6901,7 +6901,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             ),
             "admin_title": "🛠️ ADMINISTRATIO",
             "admin": "`:pex` (Dominus) · `:reset` (Dominus) · `:add-ticket`",
-            "footer": "Stumble™ Bot • signum: ':'",
+            "footer": "PCF™ Bot • signum: ':'",
         },
     }
     # The bot communicates exclusively in English.
@@ -7159,7 +7159,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":add-punti (alias :add_punti)", "Adds Ranked Points to a member and updates their rank where applicable.", "<@user> <amount>; admin access.", ":add-punti @Player 250"),
             (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
             (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
-            (":shop", "Opens the Stumble™ Shop with W Items, Gems packages and currency exchange controls.", "No arguments; use the buttons in the shop message.", ":shop"),
+            (":shop", "Opens the PCF™ Shop with W Items, Gems packages and currency exchange controls.", "No arguments; use the buttons in the shop message.", ":shop"),
             (":drop", "Releases a limited prize drop; exactly the requested number of different users can claim it, then it closes automatically.", "<people> <amount> <currency>; currency: Ruby, Crystals, Gems or Ranked Points.", ":drop 5 100 Ruby"),
             (":machine", "Opens the slot-machine activity where a player can spin for a result.", "No arguments; use the controls in the machine message.", ":machine"),
             (":test", "Opens the shop test panel used to check shop interactions.", "No arguments; intended for staff/testing.", ":test"),
@@ -7252,7 +7252,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":add-punti": "Aggiunge Ranked Points al membro e ricalcola il rank quando la nuova soglia lo richiede.",
         ":set-rank": "Imposta manualmente il rank del membro usando il nome del rank specificato.",
         ":reset": "Azzera per il membro indicato la statistica o valuta richiesta, se supportata dal comando.",
-        ":shop": "Apre lo shop Stumble™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
+        ":shop": "Apre lo shop PCF™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
          ":drop": "Pubblica un drop con numero esatto di partecipanti, quantità e valuta; il drop si chiude automaticamente quando terminano i posti. Esempio: `:drop 5 100 Ruby`.",
         ":machine": "Apre la slot machine del bot, dove il giocatore può usare i controlli del messaggio per effettuare un giro.",
         ":test": "Pubblica il pannello di prova dello shop per verificare le interazioni e i relativi acquisti.",
@@ -7260,7 +7260,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
         ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
         ":1v1": "Invia a un altro membro una sfida 1v1 e avvia il flusso di accettazione e puntata del duello.",
-        ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività Stumble™.",
+        ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività PCF™.",
         ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
         ":link": "Mostra il setup per collegare l’account Stumble Guys, ma non collega direttamente l’account. Vai nel canale <#1542227301322719314>, premi il pulsante di collegamento e segui le istruzioni del modal e del DM.",
         ":supporter": "Mostra o avvia la verifica Supporter; quando necessario apre un ticket staff per controllare il link del server nella bio di Discord.",
@@ -7513,7 +7513,7 @@ class HelpLangView(View):
 @bot.command(name="help", aliases=["guide", "commands", "comandi", "guida"])
 async def help_cmd(ctx):
     embed = discord.Embed(
-        title="📖 Stumble™ Command Guide",
+        title="📖 PCF™ Command Guide",
         description=(
             "Choose a language below and the bot will send the **complete command guide "
             "to your DMs** in that language. 🌍\n\n"
@@ -7533,7 +7533,7 @@ async def boost_cmd(ctx):
     embed = discord.Embed(
         title="🚀 Server Boost Benefits",
         description=(
-            "View the benefits awarded to **Stumble™** boosters. 💜\n\n"
+            "View the benefits awarded to **PCF™** boosters. 💜\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=discord.Color.purple()
@@ -7567,7 +7567,7 @@ async def boost_cmd(ctx):
         inline=False
     )
     embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text="Stumble™ Boost System • Rewards assigned automatically")
+    embed.set_footer(text="PCF™ Boost System • Rewards assigned automatically")
     await ctx.send(embed=embed)
 
 # ==========================================
@@ -7610,7 +7610,7 @@ class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
                 color=discord.Color.purple()
             )
             dm.set_image(url=LINK_EMBED_IMAGE_URL)
-            dm.set_footer(text="Stumble™ SG Link System")
+            dm.set_footer(text="PCF™ SG Link System")
             await user.send(embed=dm)
         except discord.Forbidden:
             pass
@@ -7734,7 +7734,7 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
         color=discord.Color.purple()
     )
     embed.set_image(url=LINK_EMBED_IMAGE_URL)
-    embed.set_footer(text="Stumble™ SG Account System")
+    embed.set_footer(text="PCF™ SG Account System")
     view = SGLinkChannelView(guild_id=ctx.guild.id)
     await ctx.send(embed=embed, view=view)
 
@@ -8206,7 +8206,7 @@ SHOP_IMAGE = STUMBLE_SHOP_IMG_PATH
 
 def _shop_main_embed(prof: dict) -> discord.Embed:
     e = discord.Embed(
-        title="🛒 Stumble™ Shop",
+        title="🛒 PCF™ Shop",
         description=(
             f"{E_GEMS} **{format_num(prof.get('gemme', 0))}**\n"
             f"{E_RUBY} **{format_num(prof.get('rubini', 0))}**\n"
@@ -8582,7 +8582,7 @@ def _machine_embed(prof: dict) -> discord.Embed:
         color=discord.Color.gold()
     )
     e.set_image(url=MACHINE_EMBED_IMAGE_URL)
-    e.set_footer(text="Stumble™ Machine • Press a button to play!")
+    e.set_footer(text="PCF™ Machine • Press a button to play!")
     return e
 
 
@@ -9052,7 +9052,7 @@ async def _post_match_bets(channel: discord.TextChannel, t: dict):
             ),
             color=discord.Color.purple()
         )
-        em.set_footer(text="Stumble™ Betting • Bet responsibly!")
+        em.set_footer(text="PCF™ Betting • Bet responsibly!")
         await channel.send(embed=em, view=MatchBettingView(mid_str, p1, p2))
         count += 1
         if count >= 8:  # Cap a 8 embed per non spammare
@@ -9108,7 +9108,7 @@ async def stumble_top(ctx):
         description="\n\n".join(lines) or "No data available yet.",
         color=discord.Color.gold()
     )
-    em.set_footer(text=f"Top per vittorie 1v1 + Stumble Machine · Stumble™")
+    em.set_footer(text=f"Top per vittorie 1v1 + Stumble Machine · PCF™")
     em.set_image(url=STUMBLE_IMG)
     await ctx.send(embed=em)
 

@@ -1,4 +1,4 @@
-# Stumble™ Discord Bot
+# PCF™ Discord Bot
 
 ## Run
 
