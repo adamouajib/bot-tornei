@@ -4181,6 +4181,24 @@ async def clear_messages(ctx, quantity: int):
         delete_after=4.0,
     )
 
+
+def _format_timeout_duration(seconds: int) -> str:
+    """Format a timeout duration in a readable form for the member DM."""
+    units = (
+        (86400, "day", "days"),
+        (3600, "hour", "hours"),
+        (60, "minute", "minutes"),
+        (1, "second", "seconds"),
+    )
+    remaining = seconds
+    parts = []
+    for unit_seconds, singular, plural in units:
+        value, remaining = divmod(remaining, unit_seconds)
+        if value:
+            parts.append(f"{value} {singular if value == 1 else plural}")
+    return ", ".join(parts) or "less than a second"
+
+
 @bot.tree.command(name="warn", description="Issue a formal warning to a member.")
 @app_commands.describe(member="Member to warn", reason="Reason for the warning")
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
@@ -4211,19 +4229,56 @@ async def time_cmd(interaction: discord.Interaction, member: discord.Member, dur
     if not match:
         return await interaction.response.send_message("❌ Invalid duration. Use `30m`, `2h`, or `1d`.", ephemeral=True)
     seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    if seconds <= 0:
+        return await interaction.response.send_message("❌ The timeout duration must be greater than zero.", ephemeral=True)
     if seconds > 28 * 86400:
         return await interaction.response.send_message("❌ Discord timeouts cannot exceed 28 days.", ephemeral=True)
     until = discord.utils.utcnow() + timedelta(seconds=seconds)
     try:
         await member.timeout(until, reason=reason)
-        embed = discord.Embed(title="⏱️ You have been timed out",
-                              description=f"**Durata:** {duration}\n**Motivo:** {reason}",
-                              color=discord.Color.red(), timestamp=discord.utils.utcnow())
-        embed.set_footer(text="Contact staff if you want to appeal this action.")
-        timeout_message = await member.send(embed=embed)
-        asyncio.create_task(delete_message_later(timeout_message, 15))
-        status = "notification sent by DM"
+    except discord.Forbidden:
+        await _log_event(
+            interaction.guild,
+            "TIMEOUT FAILED",
+            f"{member} ({member.id}): insufficient permission — {reason}",
+            actor=interaction.user,
+        )
+        return await interaction.response.send_message(
+            "❌ I couldn't apply the timeout. Check my moderation permissions and the member's role hierarchy.",
+            ephemeral=True,
+        )
     except discord.HTTPException as exc:
+        await _log_event(
+            interaction.guild,
+            "TIMEOUT FAILED",
+            f"{member} ({member.id}): {type(exc).__name__} — {reason}",
+            actor=interaction.user,
+        )
+        return await interaction.response.send_message(
+            "❌ Discord rejected the timeout. Please try again.",
+            ephemeral=True,
+        )
+
+    readable_duration = _format_timeout_duration(seconds)
+    end_timestamp = int(until.timestamp())
+    embed = discord.Embed(
+        title="⏱️ You have been timed out",
+        description=(
+            "You cannot send messages or join voice channels in this server "
+            "during the timeout.\n\n"
+            f"**Motivo:** {reason[:1500]}\n"
+            f"**Durata:** {readable_duration}\n"
+            f"**Termina:** <t:{end_timestamp}:F>\n"
+            f"**Tempo rimanente:** <t:{end_timestamp}:R>"
+        ),
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.set_footer(text="Contact staff if you want to appeal this action.")
+    try:
+        await member.send(embed=embed)
+        status = "notification sent by DM"
+    except (discord.Forbidden, discord.HTTPException) as exc:
         status = f"DM unavailable ({type(exc).__name__})"
     await _log_event(interaction.guild, "TIMEOUT", f"{member} ({member.id}): {duration} — {reason}", actor=interaction.user)
     await interaction.response.send_message(f"✅ Timeout applied to {member.mention}. {status}.", ephemeral=True)

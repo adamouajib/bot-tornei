@@ -20,7 +20,7 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 
 - `/warn`, `/time`, and `/giveaway` are native Discord slash commands. Slash commands are synced when the bot becomes ready.
 - Tournament registration requires the member to have used one of their Discord invites to bring at least one person into this server. The bot needs the **Manage Server** permission to verify invite usage; it does not require members to join another server.
-- `/warn` and `/time` require an Admin role; `/giveaway` requires a Manager role.
+- `/warn` and `/time` require an Admin role; `/time` sends the timed-out member a persistent DM with the reason, readable duration, end time, and live remaining-time indicator. `/giveaway` requires a Manager role.
 - Normal tournament/event commands are available to Host Staff and higher roles. Big tournament/event and economy commands require Admin or higher, or the Discord Administrator permission.
 - Adam (`1338274535325175810`) and Piccolofe (`1012712686770995201`) are the only owners and control system commands such as `:set-log`, `:leaderboard`, `:staff-lb`, and `:machine`.
 - `:machine` is owner-only and publishes the persistent Slot Machine panel. Members use its `🎰 spin!!` button; each spin costs 200 Ruby. The displayed odds are 0.5% jackpot (3x 💎 or 777, paying 5,000 Ruby + 50 Crystals), 14.5% big win (three matching symbols, paying 1,500 Ruby), 35% small win (two matching symbols, paying 400 Ruby), and 50% loss (0 Ruby). A jackpot grants the `🎰 Jackpot Winner` role.
