@@ -362,6 +362,7 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
 OWNER_COMMANDS = {
     "set-log", "set-welcome", "set-lvl", "set-leaderboard", "setup-result",
     "setup-scomesse", "reset-all", "pex", "setup", "big-tour",
+    "chest",
 }
 ADMIN_COMMANDS = {
     "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
@@ -1531,12 +1532,13 @@ CURRENCIES, PROGRESSION, AND REWARDS
   prize and receives the winner role. Placements other than first do not
   automatically receive Ranked Points unless the configured command explicitly
   says so.
-- Ruby earning routes are chat level-ups, tournament and event prizes, Stumble
-  Machine wins, server boosts, supporter rewards, Ruby/Crystal exchanges,
+ - Ruby earning routes are chat level-ups, tournament and event prizes, Stumble
+   Machine and Mystery Chest wins, server boosts, supporter rewards, Ruby/Crystal exchanges,
   limited drops, giveaways and staff awards. Exact tournament, event, drop and
   giveaway amounts come from their current configuration; never invent them.
-- Crystals earning routes are every fifth chat level, tournament and event
-  prizes, triple-cherry Stumble Machine wins, server boosts, limited drops and
+ - Crystals earning routes are every fifth chat level, tournament and event
+   prizes, triple-cherry Stumble Machine wins, Mystery Chest Epic/Legendary
+   rewards, server boosts, limited drops and
   staff awards. Crystals are also obtained by exchanging Ruby and are spent on
   W Items or Gems packages.
 - Flash Event winners receive the configured base Ruby/Crystal amount multiplied
@@ -1639,6 +1641,18 @@ SLOT MACHINE
 - The 100 Ruby cost is deducted before the roll, then the payout is added to
   the member's profile and saved. The Jackpot Winner role is created in the
   server when it is missing. The machine does not award Gems or Ranked Points.
+
+MYSTERY CHEST
+- :chest is an owner-only setup command that publishes a persistent,
+  text-only Mystery Chest panel. Members press its "Open Chest (250 🔴)"
+  button; each opening costs exactly 250 Ruby.
+- The chest uses these fixed odds and prizes: ⚪ Common (60%) pays a random
+  50–150 Ruby; 🔵 Rare (25%) pays a random 300–600 Ruby; 🟣 Epic (12%) pays
+  a random 10–20 Crystals; and 🟡 Legendary (3%) pays 50 Crystals and grants
+  the 📦 Unboxer Supremo role.
+- The 250 Ruby cost is deducted before the roll, then the reward is added to
+  the member's profile and saved. The Unboxer Supremo role is created in the
+  server when it is missing.
 
 SHOP AND EARNING CRYSTALS
 - The persistent shop panel in <#{SHOP_ONLY_CH}> is the only member-facing way
@@ -1761,7 +1775,7 @@ def build_ai_system_instruction() -> str:
         owner_commands = {
             "set-log", "set-welcome", "set-leaderboard", "setup-result",
             "setup-scomesse", "staff-lb", "hoster-lb",
-            "reset-staff-week", "machine", "reset-all", "setup", "big-tour",
+            "reset-staff-week", "machine", "chest", "reset-all", "setup", "big-tour",
         }
         manager_commands = {
             "giveaway", "set-rank", "add-gems", "linked", "leaderboard",
@@ -1937,6 +1951,7 @@ def build_ai_system_instruction() -> str:
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 JACKPOT_ROLE_NAME           = "🎰 Jackpot Winner"
+UNBOXER_ROLE_NAME           = "📦 Unboxer Supremo"
 BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
 SLOT_MACHINE_MIN_BET = 100
 SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
@@ -1949,6 +1964,7 @@ active_bets: dict = {}
 # {match_id_str: {p1, p2, bets: {uid: {choice, amount}}, channel_id}}
 _shop_panel_view_registered = False
 _machine_panel_view_registered = False
+_chest_panel_view_registered = False
 
 def get_profile(user_id, username):
     uid = str(user_id)
@@ -3180,7 +3196,7 @@ async def send_setup_notifications():
 
 @bot.event
 async def on_ready():
-    global _shop_panel_view_registered, _machine_panel_view_registered
+    global _shop_panel_view_registered, _machine_panel_view_registered, _chest_panel_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
@@ -3204,6 +3220,10 @@ async def on_ready():
         bot.add_view(MachinePanelView())
         _machine_panel_view_registered = True
         print("[on_ready] Persistent machine panel view registered")
+    if not _chest_panel_view_registered:
+        bot.add_view(ChestPanelView())
+        _chest_panel_view_registered = True
+        print("[on_ready] Persistent chest panel view registered")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
     await send_setup_notifications()
@@ -7382,6 +7402,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
              (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
             (":drop", "Releases a limited prize drop; exactly the requested number of different users can claim it, then it closes automatically.", "<people> <amount> <currency>; currency: Ruby, Crystals, Gems or Ranked Points.", ":drop 5 100 Ruby"),
             (":machine", "Publishes the owner-only persistent Slot Machine panel; members spin using its 100-Ruby button.", "No arguments; members use the button in the published panel.", ":machine"),
+             (":chest", "Publishes the owner-only persistent Mystery Chest panel; members open it using its 250-Ruby button.", "No arguments; members use the button in the published panel.", ":chest"),
         ],
         [
             (":team", "Creates a tournament team and optionally invites multiple members.", "<@member1> [@member2…]; the author becomes the team leader.", ":team @Alice @Bob"),
@@ -7424,7 +7445,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "big-tour", "big-event", "big-start", "big-event-winner",
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
-        "reset", "drop", "machine", "set-supporter", "giveaway", "setup-result",
+        "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
         "setup-scomesse", "setup-shop", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
@@ -7476,6 +7497,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":shop": "Apre lo shop PCF™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
          ":drop": "Pubblica un drop con numero esatto di partecipanti, quantità e valuta; il drop si chiude automaticamente quando terminano i posti. Esempio: `:drop 5 100 Ruby`.",
          ":machine": "Pubblica il pannello persistente della slot machine; il comando è riservato ai proprietari e i membri usano il pulsante da 100 Ruby.",
+         ":chest": "Pubblica il pannello persistente del Mystery Chest; il comando è riservato ai proprietari e i membri usano il pulsante da 250 Ruby.",
         ":test": "Pubblica il pannello di prova dello shop per verificare le interazioni e i relativi acquisti.",
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
@@ -7534,6 +7556,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":shop": "W Items, Gems और मुद्रा विनिमय वाला shop खोलता है।",
         ":drop": "पुरस्कार गतिविधि शुरू करता है; डिफ़ॉल्ट पुरस्कार 500 Ruby है।",
          ":machine": "मालिक के लिए स्थायी slot machine पैनल खोलता है; सदस्य 100 Ruby वाले बटन से घुमा सकते हैं।",
+         ":chest": "मालिक के लिए स्थायी Mystery Chest पैनल खोलता है; सदस्य 250 Ruby वाले बटन से खोल सकते हैं।",
         ":test": "Shop इंटरैक्शन जाँचने का परीक्षण पैनल खोलता है।",
         ":team": "सदस्यों को आमंत्रित करके टीम बनाता है।",
         ":myteam": "आपकी टीम, उसके नेता और सदस्यों को दिखाता है।",
@@ -9091,6 +9114,155 @@ def _spin_result(bet_amount: int) -> tuple:
 async def machine_cmd(ctx):
     """🎰 Publish the persistent Slot Machine setup panel."""
     await ctx.send(embed=_build_machine_panel_embed(), view=MachinePanelView())
+
+
+# ==========================================
+# 📦 MYSTERY CHEST
+# ==========================================
+
+CHEST_COST = 250
+CHEST_EMOJI_MARKUP = "<:1chest:1542582817161224233>"
+CHEST_EMOJI = discord.PartialEmoji(name="1chest", id=1542582817161224233)
+CHEST_PANEL_DESCRIPTION = (
+    "**Cost:** 250 Rubies per opening\n\n"
+    "**Rarities & Odds:**\n"
+    "⚪ **Common (60%):** 50 – 150 Rubies\n"
+    "🔵 **Rare (25%):** 300 – 600 Rubies\n"
+    "🟣 **Epic (12%):** 10 – 20 Crystals 💎\n"
+    "🟡 **Legendary (3%):** 50 Crystals 💎 + Exclusive Role "
+    "**📦 Unboxer Supremo**"
+)
+CHEST_OPEN_BUTTON_LABEL = "Open Chest (250 🔴)"
+_chest_open_lock = asyncio.Lock()
+
+
+def _build_chest_panel_embed() -> discord.Embed:
+    """Build the text-only Mystery Chest setup panel."""
+    return discord.Embed(
+        title=f"{CHEST_EMOJI_MARKUP} MYSTERY CHEST",
+        description=CHEST_PANEL_DESCRIPTION,
+        color=discord.Color.blurple(),
+    )
+
+
+def _chest_reward() -> tuple[str, int, int]:
+    """Return (rarity, ruby_reward, crystal_reward) for one chest opening."""
+    roll = random.random()
+    if roll < 0.60:
+        return "⚪ Common", random.randint(50, 150), 0
+    if roll < 0.85:
+        return "🔵 Rare", random.randint(300, 600), 0
+    if roll < 0.97:
+        return "🟣 Epic", 0, random.randint(10, 20)
+    return "🟡 Legendary", 0, 50
+
+
+class ChestPanelView(View):
+    """Persistent public view used by every published Mystery Chest panel."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label=CHEST_OPEN_BUTTON_LABEL,
+        emoji=CHEST_EMOJI,
+        style=discord.ButtonStyle.primary,
+        custom_id="chest_open_btn",
+    )
+    async def open_chest(self, interaction: discord.Interaction, button: Button):
+        if interaction.guild is None:
+            return await interaction.response.send_message(
+                "❌ The Mystery Chest can only be used inside a server.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        async with _chest_open_lock:
+            prof = get_profile(
+                interaction.user.id,
+                interaction.user.display_name,
+            )
+            if prof.get("rubini", 0) < CHEST_COST:
+                return await interaction.edit_original_response(
+                    content=(
+                        f"❌ You need at least **{format_num(CHEST_COST)}** "
+                        f"{E_RUBY} to open the chest. Your balance: **"
+                        f"{format_num(prof.get('rubini', 0))}** {E_RUBY}."
+                    )
+                )
+
+            prof["rubini"] -= CHEST_COST
+            rarity, ruby_reward, crystal_reward = _chest_reward()
+            reward_parts = []
+            if ruby_reward:
+                reward_parts.append(f"**{format_num(ruby_reward)}** {E_RUBY}")
+            if crystal_reward:
+                reward_parts.append(f"**{format_num(crystal_reward)}** {E_CRYSTAL}")
+            reward_text = " + ".join(reward_parts)
+
+            prof["rubini"] += ruby_reward
+            prof["cristalli"] = prof.get("cristalli", 0) + crystal_reward
+
+            role_notice = None
+            if rarity == "🟡 Legendary":
+                try:
+                    unboxer_role = discord.utils.get(
+                        interaction.guild.roles,
+                        name=UNBOXER_ROLE_NAME,
+                    )
+                    role_created = unboxer_role is None
+                    if role_created:
+                        unboxer_role = await interaction.guild.create_role(
+                            name=UNBOXER_ROLE_NAME,
+                            color=discord.Color.gold(),
+                            reason="Create Mystery Chest legendary role",
+                        )
+                    if isinstance(interaction.user, discord.Member):
+                        await interaction.user.add_roles(
+                            unboxer_role,
+                            reason="Mystery Chest legendary reward",
+                        )
+                    role_notice = (
+                        f"📦 The **{UNBOXER_ROLE_NAME}** role was "
+                        f"{'created and ' if role_created else ''}granted to you!"
+                    )
+                except discord.Forbidden:
+                    role_notice = (
+                        "⚠️ The legendary role could not be created or assigned. "
+                        "Please give the bot permission to manage roles."
+                    )
+                except discord.HTTPException as exc:
+                    print(f"[CHEST ROLE ERROR] {exc}")
+                    role_notice = "⚠️ The legendary role could not be assigned."
+
+            save_db()
+            result_lines = [
+                f"**Rarity:** {rarity}",
+                f"**Reward:** {reward_text}",
+                "",
+                f"**Updated balances:** {format_num(prof['rubini'])} {E_RUBY} · "
+                f"{format_num(prof.get('cristalli', 0))} {E_CRYSTAL}",
+            ]
+            if role_notice:
+                result_lines.extend(["", role_notice])
+
+            embed = discord.Embed(
+                title=f"{CHEST_EMOJI_MARKUP} Mystery Chest — Opened",
+                description="\n".join(result_lines),
+                color=(
+                    discord.Color.gold()
+                    if rarity == "🟡 Legendary"
+                    else discord.Color.blurple()
+                ),
+            )
+            await interaction.edit_original_response(embed=embed)
+
+
+@bot.command(name="chest")
+@owner_only()
+async def chest_cmd(ctx):
+    """📦 Publish the persistent Mystery Chest setup panel."""
+    await ctx.send(embed=_build_chest_panel_embed(), view=ChestPanelView())
 
 
 # ==========================================
