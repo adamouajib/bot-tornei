@@ -503,9 +503,9 @@ def xp_to_next_level(current_level: int) -> int:
 
 TEAM_MODES = {"2V2", "3V3", "4V4", "5V5", "6V6", "7V7", "8V8"}
 DEFAULT_TOURNAMENT_PRIZES = (
-    "1. 30 Crystals + 300 Ruby, "
-    "2. 15 Crystals + 150 Ruby, "
-    "3. 10 Crystals + 100 Ruby"
+    "1. 100 Crystals + 2000 Rubies, "
+    "2. 50 Crystals + 1000 Rubies, "
+    "3. 25 Crystals + 500 Rubies"
 )
 
 # ── Role IDs ────────────────────────────────────────────────────────────────
@@ -9472,8 +9472,9 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
 # 🛒 :TEST SHOP (hidden from :help)
 # ==========================================
 W_ITEMS = {
-    "Blue":    {"emoji": "<:W_blue:1507411440112238592>",    "price": 2000, "color": 0x5865F2},
-    "Purple":  {"emoji": "<:W_purple:1507411279868854272>",  "price": 3500, "color": 0x9B59B6},
+    "Blue":    {"emoji": "<:W_blue:1507411440112238592>",    "price": 1200, "color": 0x5865F2},
+    "Purple":  {"emoji": "<:W_purple:1507411279868854272>",  "price": 2000, "color": 0x9B59B6},
+    "Twitch Purple": {"emoji": "<:W_purple:1507411279868854272>", "price": 3500, "color": 0x9B59B6},
     "Red":     {"emoji": "<:W_red:1506782119928795217>",     "price": 1200, "color": 0xE74C3C},
     "Pink":    {"emoji": "<:W_pink:1507441578912780432>",    "price": 2000, "color": 0xFF69B4},
     "Yellow":  {"emoji": "<:W_yellow:1507414172583854281>",  "price": 600,  "color": 0xF1C40F},
@@ -9483,9 +9484,9 @@ W_ITEMS = {
 }
 
 GEM_PACKAGES = [
-    (100, 1500),
-    (250, 3500),
-    (800, 9000),
+    (100, 1000),
+    (250, 2200),
+    (800, 6000),
 ]
 
 # Exchange rates: (ruby_cost, crystal_reward)
@@ -9519,7 +9520,7 @@ def _w_items_embed(prof: dict) -> discord.Embed:
     lines = []
     for name, data in W_ITEMS.items():
         tag = " ✅" if name in owned else ""
-        price = f"{data['price'] / 1000:.1f}k"
+        price = format_shop_amount(data["price"])
         lines.append(f"{data['emoji']} **W {name}** • {price} {E_CRYSTAL}{tag}")
     e = discord.Embed(
         title=f"{E_W} W Items Shop",
@@ -9537,7 +9538,7 @@ def _w_items_embed(prof: dict) -> discord.Embed:
 
 def _gems_shop_embed(prof: dict) -> discord.Embed:
     lines = [
-        f"• **{gems}** {E_GEMS} — {format_num(price)} {E_CRYSTAL}"
+        f"• **{gems}** {E_GEMS} — {format_shop_amount(price)} {E_CRYSTAL}"
         for gems, price in GEM_PACKAGES
     ]
     e = discord.Embed(
@@ -9636,7 +9637,7 @@ class WShopSelect(discord.ui.Select):
             m = re.match(r"<:(\w+):(\d+)>", data["emoji"])
             emoji = discord.PartialEmoji(name=m.group(1), id=int(m.group(2))) if m else None
             options.append(discord.SelectOption(
-                label=f"W {name} — {format_num(data['price'])} Crystals",
+                label=f"W {name} — {format_shop_amount(data['price'])} Crystals",
                 value=name, emoji=emoji))
         super().__init__(placeholder="Choose a W item…", min_values=1, max_values=1, options=options, row=0)
 
@@ -9713,7 +9714,7 @@ class GemsShopSelect(discord.ui.Select):
         gems_emoji = discord.PartialEmoji(name=m.group(1), id=int(m.group(2))) if m else None
         options = [
             discord.SelectOption(
-                label=f"{gems} Gems — {format_num(price)} Crystals",
+                label=f"{gems} Gems — {format_shop_amount(price)} Crystals",
                 value=str(i), emoji=gems_emoji)
             for i, (gems, price) in enumerate(GEM_PACKAGES)
         ]
