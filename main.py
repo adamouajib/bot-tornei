@@ -63,6 +63,7 @@ def save_db():
             "big_event": db.get("big_event"),
             "event_history": db.get("event_history", []),
             "event_bans": db.get("event_bans", {}),
+            "perk_cooldowns": db.get("perk_cooldowns", {}),
         }
         if db["tour"]:
             data["tour"] = {k: v for k, v in db["tour"].items() if k != "host"}
@@ -99,6 +100,7 @@ def load_db():
         db["big_event"]            = data.get("big_event")
         db["event_history"]        = data.get("event_history", [])
         db["event_bans"]           = data.get("event_bans", {})
+        db["perk_cooldowns"]       = data.get("perk_cooldowns", {})
         db["teams"] = [
             {"members": [], "names": t["names"], "ids": t["ids"], "leader_id": t["leader_id"]}
             for t in data.get("teams", [])
@@ -123,6 +125,7 @@ def load_db():
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 
 # Keep this explicit next to Bot initialization: prefix commands and on_message
 # both depend on the Message Content intent being enabled.
@@ -161,6 +164,7 @@ XP_COOLDOWN_SECS  = 10
 XP_PER_LEVEL      = 100
 
 SUPPORTER_LINK = "https://discord.gg/ZptqBM8ZC3"
+BIO_SUPPORT_LINK = os.getenv("BIO_SUPPORT_LINK", SUPPORTER_LINK).strip()
 TOURNAMENT_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
 DB_FILE = "db.json"
 
@@ -369,6 +373,7 @@ ADMIN_COMMANDS = {
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
     "linked", "leaderboard", "gems", "stumble-top", "set-tw", "setup-shop",
+    "set-perks",
 }
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
@@ -601,6 +606,7 @@ db = {
     "sg_links": {},   # {user_id_str: sg_name}
     "event_history": [],
     "event_bans": {},
+    "perk_cooldowns": {},
 }
 
 # Global state for supporter weekly verification ticket
@@ -1953,6 +1959,9 @@ def build_ai_system_instruction() -> str:
 JACKPOT_ROLE_NAME           = "🎰 Jackpot Winner"
 UNBOXER_ROLE_NAME           = "📦 Unboxer Supremo"
 BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
+BOOSTER_PERK_ROLE_NAME      = "[W]"
+BIO_SUPPORTER_ROLE_NAME     = "[S]"
+VIP_ROLE_NAME               = "VIP"
 SLOT_MACHINE_MIN_BET = 100
 SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
 
@@ -1965,6 +1974,114 @@ active_bets: dict = {}
 _shop_panel_view_registered = False
 _machine_panel_view_registered = False
 _chest_panel_view_registered = False
+
+
+def _member_has_role_name(member: discord.Member, role_name: str) -> bool:
+    """Check a member's live Discord roles by their exact display name."""
+    return any(
+        getattr(role, "name", "") == role_name
+        for role in getattr(member, "roles", ())
+    )
+
+
+def _member_has_booster_status(member: discord.Member) -> bool:
+    """Return whether a member currently has booster status."""
+    return _member_has_role_name(member, BOOSTER_PERK_ROLE_NAME) or bool(
+        getattr(member, "premium_subscriber", False)
+        or getattr(member, "premium_since", None)
+    )
+
+
+def _has_custom_tournament_access(member: discord.Member) -> bool:
+    """VIPs and server boosters may create one custom tournament per day."""
+    return _member_has_role_name(member, VIP_ROLE_NAME) or _member_has_role_name(
+        member,
+        BOOSTER_PERK_ROLE_NAME,
+    )
+
+
+def _tournament_perk(member: discord.Member) -> tuple[int, str | None]:
+    """Return the highest-priority tournament multiplier and perk label."""
+    if _member_has_role_name(member, VIP_ROLE_NAME):
+        return 5, VIP_ROLE_NAME
+    if _member_has_role_name(member, BOOSTER_PERK_ROLE_NAME):
+        return 3, BOOSTER_PERK_ROLE_NAME
+    if _member_has_role_name(member, BIO_SUPPORTER_ROLE_NAME):
+        return 2, BIO_SUPPORTER_ROLE_NAME
+    return 1, None
+
+
+def _tournament_prize_multiplier(
+    member: discord.Member,
+    currency: str,
+) -> tuple[int, str | None]:
+    """Return the applicable multiplier for one tournament prize currency."""
+    multiplier, perk_name = _tournament_perk(member)
+    if perk_name == BIO_SUPPORTER_ROLE_NAME and currency != "Ruby":
+        return 1, perk_name
+    return multiplier, perk_name
+
+
+def _perk_cooldown_remaining(user_id: int, action: str, duration: int) -> int:
+    """Return remaining seconds for a persisted perk cooldown."""
+    raw = (
+        db.setdefault("perk_cooldowns", {})
+        .setdefault(str(user_id), {})
+        .get(action)
+    )
+    if not raw:
+        return 0
+    try:
+        started = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return 0
+    elapsed = (datetime.utcnow() - started).total_seconds()
+    return max(0, int(duration - elapsed))
+
+
+def _set_perk_cooldown(user_id: int, action: str) -> None:
+    """Persist the current UTC time for a perk action."""
+    db.setdefault("perk_cooldowns", {}).setdefault(str(user_id), {})[action] = (
+        datetime.utcnow().isoformat()
+    )
+
+
+def _format_cooldown(seconds: int) -> str:
+    """Format a cooldown for a concise user-facing message."""
+    days, remainder = divmod(max(seconds, 0), 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{max(minutes, 1)}m"
+
+
+def _perk_role(guild: discord.Guild, role_name: str) -> discord.Role | None:
+    """Find a perk role by its exact name."""
+    return discord.utils.get(guild.roles, name=role_name)
+
+
+async def _ensure_perk_role(
+    guild: discord.Guild,
+    role_name: str,
+    color: discord.Colour,
+) -> discord.Role | None:
+    """Find or create one of the roles used by the perks system."""
+    role = _perk_role(guild, role_name)
+    if role:
+        return role
+    try:
+        return await guild.create_role(
+            name=role_name,
+            color=color,
+            reason="Create perks role",
+        )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[perks role] Could not create {role_name}: {exc}")
+        return None
+
 
 def get_profile(user_id, username):
     uid = str(user_id)
@@ -1997,6 +2114,7 @@ def get_profile(user_id, username):
     prof.setdefault("slot_wins", 0)
     prof.setdefault("slot_ruby_won", 0)
     prof.setdefault("duel_wins", 0)
+    prof.setdefault("boost_count", 0)
     return prof
 
 def parse_orario_timestamp(orario_str: str):
@@ -2103,8 +2221,17 @@ def _record_gems(member: discord.Member, amount: int) -> None:
     row["sg_name"] = db.get("sg_links", {}).get(uid, prof.get("sg_name", "")) or row.get("sg_name", "")
     row["total"] = row.get("total", 0) + amount
 
-def grant_prize(prize_text: str, member: discord.Member):
-    """Parse one or more amount/currency pairs and add them to a profile."""
+def grant_prize(
+    prize_text: str,
+    member: discord.Member,
+    *,
+    tournament_reward: bool = False,
+):
+    """Parse amount/currency pairs and add them to a profile.
+
+    Tournament rewards apply the VIP → booster → bio-supporter priority.
+    Other reward sources keep their configured amounts unchanged.
+    """
     reward_matches = re.finditer(
         r"(\d[\d.,]*)\s*"
         r"(Ruby|Rubies|Rubino|Rubini|Crystal|Crystals|Cristallo|Cristalli|"
@@ -2120,6 +2247,10 @@ def grant_prize(prize_text: str, member: discord.Member):
         except ValueError:
             continue
         currency = _normalise_currency(currency_text)
+        perk_name = None
+        if tournament_reward and currency:
+            multiplier, perk_name = _tournament_prize_multiplier(member, currency)
+            amount *= multiplier
         if currency == "Ruby":
             prof["rubini"] += amount
         elif currency == "Cristalli":
@@ -2128,6 +2259,11 @@ def grant_prize(prize_text: str, member: discord.Member):
             prof["punti"] += amount
         elif currency == "Gems":
             _record_gems(member, amount)
+        if perk_name:
+            print(
+                f"[perks] {member.display_name}: {currency} reward × "
+                f"{amount if not tournament_reward else multiplier}"
+            )
 
 # ==========================================
 # 📊 LEADERBOARD & BRACKET
@@ -4132,11 +4268,17 @@ class _TourStep3View(View):
 
 class TourModal1(Modal):
     """Step 1/3 — Name · Map · Ability · Prize"""
-    def __init__(self, modalita: str, is_big: bool = False):
+    def __init__(
+        self,
+        modalita: str,
+        is_big: bool = False,
+        is_custom: bool = False,
+    ):
         prefix = "🌟 BIG — " if is_big else ""
         super().__init__(title=f"{prefix}🏆 {modalita} (1/3)"[:45])
         self.modalita = modalita
         self.is_big   = is_big
+        self.is_custom = is_custom
         self.nome    = TextInput(label="📛 Tournament Name",       placeholder="e.g. PCF™ Classic #42", max_length=50)
         self.mappa   = TextInput(label="🗺️ Map",             placeholder="e.g. Laser Dash")
         self.abilita = TextInput(label="⚡ Ability / Emote",   placeholder="e.g. Slap, Punch, Banana…")
@@ -4164,6 +4306,7 @@ class TourModal1(Modal):
             "premio":   self.premio.value.strip(),
             "modalita": self.modalita,
             "is_big":   self.is_big,
+            "is_custom": self.is_custom,
         }
         await interaction.response.send_message(
             f"✅ **Step 1 / 3 complete!**\nName: `{self.nome.value.strip()}` · "
@@ -4230,6 +4373,29 @@ class TourModal3(Modal):
 
 async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     """Create the tournament after the three modal steps and publish it."""
+    is_custom = bool(data.get("is_custom"))
+    if is_custom:
+        if not _has_custom_tournament_access(interaction.user):
+            return await interaction.response.send_message(
+                "❌ Only members with the VIP or [W] role can create custom tournaments.",
+                ephemeral=True,
+            )
+        remaining = _perk_cooldown_remaining(
+            interaction.user.id,
+            "create_tourney",
+            86400,
+        )
+        if remaining:
+            return await interaction.response.send_message(
+                f"⏳ You can create another custom tournament in "
+                f"**{_format_cooldown(remaining)}**.",
+                ephemeral=True,
+            )
+        if db.get("tour"):
+            return await interaction.response.send_message(
+                "❌ There is already an active tournament.",
+                ephemeral=True,
+            )
     await interaction.response.defer(ephemeral=True)
     modalita    = data["modalita"]
     is_big      = data["is_big"]
@@ -4273,6 +4439,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         "max":               default_max, "round": 1, "total_rounds": "?",
         "bracket_msg_id":    None, "bracket_channel_id": None,
         "is_big":            is_big,
+        "is_custom":         is_custom,
     }
 
     embed = discord.Embed(title=f"🏆 {'BIG — ' if is_big else ''}{nome}", color=color)
@@ -4299,6 +4466,8 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     prof_host = get_profile(interaction.user.id, interaction.user.display_name)
     prof_host["staff_tours"]      += 1
     prof_host["staff_week_tours"] += 1
+    if is_custom:
+        _set_perk_cooldown(interaction.user.id, "create_tourney")
     save_db()
 
     reg_ch = bot.get_channel(TOUR_REG_CHANNEL_ID)
@@ -4362,9 +4531,14 @@ class TourSelectView(View):
 
 
 class TourHubView(View):
-    def __init__(self, is_big: bool = False):
+    def __init__(
+        self,
+        is_big: bool = False,
+        perk_host_id: int | None = None,
+    ):
         super().__init__(timeout=None)
         self.is_big = is_big
+        self.perk_host_id = perk_host_id
         if is_big:
             # World Cup remains available in the regular tournament hub, but
             # is intentionally not offered for Big Tournaments.
@@ -4376,12 +4550,22 @@ class TourHubView(View):
                 self.remove_item(world_cup_button)
 
     async def _check_staff(self, interaction: discord.Interaction) -> bool:
+        if (
+            self.perk_host_id == interaction.user.id
+            and _has_custom_tournament_access(interaction.user)
+        ):
+            return True
         has = any(r.id in STAFF_ROLE_IDS | {HOSTER_ROLE_ID} | ADMIN_ROLE_IDS for r in interaction.user.roles)
         if not has:
             await interaction.response.send_message("❌ You don't have permission to do this!", ephemeral=True)
         return has
 
     async def _check_admin(self, interaction: discord.Interaction) -> bool:
+        if (
+            self.perk_host_id == interaction.user.id
+            and _has_custom_tournament_access(interaction.user)
+        ):
+            return True
         has = any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in interaction.user.roles)
         if not has:
             await interaction.response.send_message("❌ Only **Admins** can do this!", ephemeral=True)
@@ -4393,17 +4577,35 @@ class TourHubView(View):
             if not await self._check_admin(interaction): return
         else:
             if not await self._check_staff(interaction): return
-        await interaction.response.send_modal(TourModal1("Classic", is_big=self.is_big))
+        await interaction.response.send_modal(
+            TourModal1(
+                "Classic",
+                is_big=self.is_big,
+                is_custom=self.perk_host_id is not None,
+            )
+        )
 
     @discord.ui.button(label="🎯 FFA (1v1v1)", style=discord.ButtonStyle.danger, custom_id="hub_ffa")
     async def ffa(self, interaction: discord.Interaction, button: Button):
         if not await self._check_admin(interaction): return
-        await interaction.response.send_modal(TourModal1("FFA", is_big=self.is_big))
+        await interaction.response.send_modal(
+            TourModal1(
+                "FFA",
+                is_big=self.is_big,
+                is_custom=self.perk_host_id is not None,
+            )
+        )
 
     @discord.ui.button(label="🌍 World Cup", style=discord.ButtonStyle.primary, custom_id="hub_wc")
     async def world_cup(self, interaction: discord.Interaction, button: Button):
         if not await self._check_admin(interaction): return
-        await interaction.response.send_modal(TourModal1("World Cup", is_big=self.is_big))
+        await interaction.response.send_modal(
+            TourModal1(
+                "World Cup",
+                is_big=self.is_big,
+                is_custom=self.perk_host_id is not None,
+            )
+        )
 
 
 @bot.command(name="assign-hosts", aliases=["assign_hosts"])
