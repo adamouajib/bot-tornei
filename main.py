@@ -529,12 +529,17 @@ def get_profile_by_name(name: str):
     return None
 
 def display_with_rank(name: str) -> str:
-    """Return a clean player name for brackets and round results.
-
-    Rank and reward icons belong in profile/leaderboard views, never beside a
-    player's name in a tournament bracket.
-    """
-    return str(name)
+    """Return a bracket player name with any W Items owned by that player."""
+    player_name = str(name)
+    profile = get_profile_by_name(player_name)
+    if not profile:
+        return player_name
+    owned_w_items = [
+        W_ITEMS[item_name]["emoji"]
+        for item_name in profile.get("w_owned", [])
+        if item_name in W_ITEMS
+    ]
+    return f"{''.join(owned_w_items)} {player_name}" if owned_w_items else player_name
 
 db = {
     "profiles": {},
@@ -8470,9 +8475,22 @@ class WShopSelect(discord.ui.Select):
             except Exception as ex:
                 print(f"[w shop add] {ex}")
         save_db()
+        bracket_updated = False
+        active_tournament = db.get("tour")
+        if active_tournament and active_tournament.get("matches"):
+            try:
+                await _update_bracket_messages(active_tournament)
+                bracket_updated = True
+            except Exception as ex:
+                # The purchase remains valid even if Discord temporarily
+                # rejects a bracket refresh; the next bracket update will
+                # render the saved W Item from the player's profile.
+                print(f"[w shop bracket update] {ex}")
+        bracket_note = "\n✅ Bracket updated with your W Item." if bracket_updated else ""
         await interaction.response.send_message(
             f"✅ Purchased **{w_data['emoji']} W {w_name}**! Role added. 🎉\n"
-            f"Crystals remaining: {format_num(prof['cristalli'])} {E_CRYSTAL}", ephemeral=True)
+            f"Crystals remaining: {format_num(prof['cristalli'])} {E_CRYSTAL}"
+            f"{bracket_note}", ephemeral=True)
 
 
 class WShopView(View):
