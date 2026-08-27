@@ -3489,18 +3489,10 @@ async def reset_stat(ctx, member: discord.Member, cosa: str):
 # ==========================================
 @bot.command()
 async def shop(ctx):
-    embed = discord.Embed(
-        title="🛍️ Shop — Stumble™",
-        description=(
-            "⚙️ **We're still working on this!**\n\n"
-            f"All items will cost {E_RUBY} **Ruby** or {E_CRYSTAL} **Crystals**.\n\n"
-            "🔔 Stay tuned for updates — the shop is coming soon!"
-        ),
-        color=discord.Color.orange()
-    )
-    embed.set_footer(text="Stumble™ Shop — Coming Soon")
-    embed.set_image(url=SHOP_EMBED_IMAGE_URL)
-    await ctx.send(embed=embed)
+    prof = get_profile(ctx.author.id, ctx.author.display_name)
+    embed = _shop_main_embed(prof)
+    embed.set_footer(text="Stumble™ Shop • Choose a category below")
+    await ctx.send(embed=embed, view=ShopMainView(ctx.author.id))
 
 # ==========================================
 # 🤝 TEAM SYSTEM
@@ -8193,12 +8185,12 @@ def _shop_main_embed(prof: dict) -> discord.Embed:
     e = discord.Embed(
         title="🛒 Stumble™ Shop",
         description=(
-            f"{E_GEMS} **{format_num(prof.get('gemme', 0))}**　·　"
-            f"{E_RUBY} **{format_num(prof.get('rubini', 0))}**　·　"
+            f"{E_GEMS} **{format_num(prof.get('gemme', 0))}**\n"
+            f"{E_RUBY} **{format_num(prof.get('rubini', 0))}**\n"
             f"{E_CRYSTAL} **{format_num(prof.get('cristalli', 0))}**\n\n"
-            f"{E_W} **W Items** — **Ruoli colorati esclusivi**\n"
-            f"{E_GEMS} **Gems** — **Real SG Gems**\n"
-            f"🔄 **Exchange** — **Ruby ↔ Crystals**"
+            "> 🎨 **W Items** — Ruoli colorati esclusivi\n"
+            "> 💎 **Gems** — Real SG Gems\n"
+            "> 🔄 **Exchange** — Ruby ↔ Crystals"
         ),
         color=discord.Color.gold()
     )
@@ -8223,12 +8215,14 @@ class ShopMainView(View):
         lines = []
         for name, data in W_ITEMS.items():
             tag = " ✅" if name in owned else ""
-            lines.append(f"{data['emoji']} **W {name}** — {format_num(data['price'])} {E_CRYSTAL}{tag}")
+            price = f"{data['price'] / 1000:.1f}k"
+            lines.append(f"{data['emoji']} **W {name}** • {price} {E_CRYSTAL}{tag}")
         e = discord.Embed(
             title=f"{E_W} W Items Shop",
             description=(
                 f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
                 + "\n".join(lines)
+                + "\n\n"
             ),
             color=discord.Color.blue()
         )
@@ -8268,9 +8262,9 @@ class ShopMainView(View):
             description=(
                 f"{E_RUBY} **Ruby:** {format_num(prof.get('rubini', 0))}　·　"
                 f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
-                 f"**Exchange rates:**\n"
-                f"• **8.000** {E_RUBY} → **150** {E_CRYSTAL}\n"
-                f"• **16.000** {E_RUBY} → **500** {E_CRYSTAL}\n\n"
+                "**Exchange rates:**\n"
+                "🟣 `8.000 Ruby` ➔ 💎 `150 Crystals`\n"
+                "🟣 `16.000 Ruby` ➔ 💎 `500 Crystals`\n\n"
                 "Choose an option below:"
             ),
             color=discord.Color.orange()
