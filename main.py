@@ -3005,7 +3005,14 @@ async def auto_delete_invoke(ctx):
         await ctx.message.delete()
     except Exception:
         pass
-    await _log_event(ctx.guild, "COMMAND", f":{ctx.command.qualified_name} {' '.join(ctx.args[2:])}", actor=ctx.author)
+    # ctx.args contains already-converted values (for example ints in
+    # :drop), while ctx.kwargs contains keyword-only values such as currency.
+    # Log the original command text so the audit hook never fails on types and
+    # retains the complete invocation.
+    command_text = str(getattr(ctx.message, "content", "") or "").strip()
+    if not command_text:
+        command_text = f":{ctx.command.qualified_name}"
+    await _log_event(ctx.guild, "COMMAND", command_text, actor=ctx.author)
 
 @bot.event
 async def on_command_error(ctx, error):
