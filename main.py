@@ -2010,8 +2010,9 @@ def format_tournament_prizes(prize_text: str) -> str:
     if not prizes:
         return "—"
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    ordinals = {1: "1st", 2: "2nd", 3: "3rd"}
     return "\n".join(
-        f"{medals.get(position, '🏅')} **{position}° Posto:** {_format_prize(prize)}"
+        f"{medals.get(position, '🏅')} **{ordinals.get(position, f'{position}th')} Place:** {_format_prize(prize)}"
         for position, prize in sorted(prizes.items())
     )
 
@@ -4865,15 +4866,10 @@ async def winner_tour(ctx, *winners: discord.Member):
         if prize_text:
             grant_prize(prize_text, member)
         await update_rank_roles(ctx.guild, member, prof["punti"])
-    # When four members are provided, places 3 and 4 share the third-place
-    # reward and are both displayed as third place.
-    result_rows = []
-    for position, member in enumerate(placements, start=1):
-        shown_position = min(position, 3)
-        reward = prize_map.get(shown_position) or prize_map.get(1, "—")
-        result_rows.append(
-            f"**{shown_position}.** {member.mention} — {_format_prize(reward)}")
-    result_lines = "\n".join(result_rows)
+    # Keep the result-channel announcement focused on the tournament winner.
+    # Other placements are still awarded above, but their names are not
+    # published in the final Winners section.
+    result_lines = f"**1.** {winner.mention}"
     embed = discord.Embed(
         title=f"🏆 {t.get('nome', 'Tournament')} — Results",
         description=f"🎁 **Prizes**\n{format_tournament_prizes(t.get('premio', ''))}\n\n"
@@ -5142,9 +5138,9 @@ async def start_event(ctx):
     elif db.get("big_event"):
         big = db["big_event"]
         embed.add_field(name="🌟 Event",            value=big.get("nome", "—"),                     inline=False)
-        embed.add_field(name=f"{E_GOLD} 1° Posto",  value=_format_prize(big.get("prize1", "—")),   inline=True)
-        embed.add_field(name=f"{E_GOLD} 2° Posto",  value=_format_prize(big.get("prize2", "—")),   inline=True)
-        embed.add_field(name=f"{E_BRONZE} 3° Posto",value=_format_prize(big.get("prize3", "—")),   inline=True)
+        embed.add_field(name=f"{E_GOLD} 1st Place",  value=_format_prize(big.get("prize1", "—")),   inline=True)
+        embed.add_field(name=f"{E_GOLD} 2nd Place",  value=_format_prize(big.get("prize2", "—")),   inline=True)
+        embed.add_field(name=f"{E_BRONZE} 3rd Place",value=_format_prize(big.get("prize3", "—")),   inline=True)
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
     if event_file:
         embed.set_image(url=EVENT_EMBED_IMAGE_URL)
