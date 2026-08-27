@@ -1900,25 +1900,24 @@ FLASH EVENTS
 SLOT MACHINE
 - :machine is an owner-only setup command that publishes a persistent
   Stumble Machine panel. Members press its "🎰 spin!!" button;
-  each spin costs exactly 100 Ruby.
-- The machine uses these fixed odds and prizes: 👑👑👑 Jackpot (0.5%) pays
-  2,000 Ruby + 50 Crystals and grants the 🎰 Jackpot Winner role; 💎💎💎
-  Mega Win (2.5%) pays 500 Ruby + 15 Crystals; 🍒🍒🍒 Win (12%) pays
-  300 Ruby; any two matching symbols (35%) refunds 100 Ruby; and a
-  no-match result (50%) pays 0 Ruby.
-- The 100 Ruby cost is deducted before the roll, then the payout is added to
+  each spin costs exactly 200 Ruby.
+- The machine uses these fixed odds and prizes: a 3x 💎 or 777 Jackpot
+  (0.5%) pays 5,000 Ruby + 50 Crystals and grants the 🎰 Jackpot Winner role;
+  any other three matching symbols (14.5%) pay 1,500 Ruby; two matching
+  symbols (35%) pay 400 Ruby; and a no-match result (50%) pays 0 Ruby.
+- The 200 Ruby cost is deducted before the roll, then the payout is added to
   the member's profile and saved. The Jackpot Winner role is created in the
   server when it is missing. The machine does not award Gems or Ranked Points.
 
 MYSTERY CHEST
 - :chest is an owner-only setup command that publishes a persistent,
   text-only Mystery Chest panel. Members press its "📦 Apri Cassa"
-  button; each opening costs exactly 250 Ruby.
+  button; each opening costs exactly 500 Ruby.
 - The chest uses these fixed odds and prizes: ⚪ Common (60%) pays a random
-  50–150 Ruby; 🔵 Rare (25%) pays a random 300–600 Ruby; 🟣 Epic (12%) pays
-  a random 10–20 Crystals; and 🟡 Legendary (3%) pays 50 Crystals and grants
-  the 📦 Unboxer Supremo role.
-- The 250 Ruby cost is deducted before the roll, then the reward is added to
+  300–800 Ruby; 🔵 Rare (30%) pays a random 1,200–2,500 Ruby; and
+  🟡 Legendary (10%) pays a random 20–50 Crystals and grants the
+  📦 Unboxer Supremo role.
+- The 500 Ruby cost is deducted before the roll, then the reward is added to
   the member's profile and saved. The Unboxer Supremo role is created in the
   server when it is missing.
 
@@ -2224,7 +2223,7 @@ BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
 BOOSTER_PERK_ROLE_NAME      = "[W]"
 BIO_SUPPORTER_ROLE_NAME     = "[S]"
 VIP_ROLE_NAME               = "VIP"
-SLOT_MACHINE_MIN_BET = 100
+SLOT_MACHINE_MIN_BET = 200
 SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
 
 # ── In-memory: duels & match bets ──────────────────────────────────────────
@@ -8509,8 +8508,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":reset": "Azzera per il membro indicato la statistica o valuta richiesta, se supportata dal comando.",
         ":shop": "Apre lo shop PCF™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
          ":drop": "Pubblica un drop con numero esatto di partecipanti, quantità e valuta; il drop si chiude automaticamente quando terminano i posti. Esempio: `:drop 5 100 Ruby`.",
-         ":machine": "Pubblica il pannello persistente della slot machine; il comando è riservato ai proprietari e i membri usano il pulsante da 100 Ruby.",
-         ":chest": "Pubblica il pannello persistente del Mystery Chest; il comando è riservato ai proprietari e i membri usano il pulsante da 250 Ruby.",
+         ":machine": "Pubblica il pannello persistente della slot machine; il comando è riservato ai proprietari e i membri usano il pulsante da 200 Ruby.",
+         ":chest": "Pubblica il pannello persistente del Mystery Chest; il comando è riservato ai proprietari e i membri usano il pulsante da 500 Ruby.",
         ":test": "Pubblica il pannello di prova dello shop per verificare le interazioni e i relativi acquisti.",
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
@@ -8568,8 +8567,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":reset": "सदस्य की चुनी हुई मुद्रा या आँकड़ा शून्य करता है।",
         ":shop": "W Items, Gems और मुद्रा विनिमय वाला shop खोलता है।",
         ":drop": "पुरस्कार गतिविधि शुरू करता है; डिफ़ॉल्ट पुरस्कार 500 Ruby है।",
-         ":machine": "मालिक के लिए स्थायी slot machine पैनल खोलता है; सदस्य 100 Ruby वाले बटन से घुमा सकते हैं।",
-         ":chest": "मालिक के लिए स्थायी Mystery Chest पैनल खोलता है; सदस्य 250 Ruby वाले बटन से खोल सकते हैं।",
+         ":machine": "मालिक के लिए स्थायी slot machine पैनल खोलता है; सदस्य 200 Ruby वाले बटन से घुमा सकते हैं।",
+         ":chest": "मालिक के लिए स्थायी Mystery Chest पैनल खोलता है; सदस्य 500 Ruby वाले बटन से खोल सकते हैं।",
         ":test": "Shop इंटरैक्शन जाँचने का परीक्षण पैनल खोलता है।",
         ":team": "सदस्यों को आमंत्रित करके टीम बनाता है।",
         ":myteam": "आपकी टीम, उसके नेता और सदस्यों को दिखाता है।",
@@ -10011,20 +10010,19 @@ async def setup_shop(ctx):
 # ==========================================
 
 MACHINE_PANEL_DESCRIPTION = (
-    "**Cost per Spin:** 100 Rubies\n\n"
+    "**Cost per Spin:** 200 Rubies\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     "**🏆 PRIZES & ODDS**\n\n"
-    "👑 👑 👑 **Jackpot (0.5%)**\n"
-    "╰ 20x Bet + 50 Crystals 💎\n"
+    "💎 💎 💎 **Jackpot (0.5%)**\n"
+    "╰ 5,000 Rubies + 50 Crystals 💎\n"
+    "╰ Or hit **777** for the same jackpot!\n"
     "╰ Exclusive Role: **🎰 Jackpot Winner**\n\n"
-    "💎 💎 💎 **Mega Win (2.5%)**\n"
-    "╰ 5x Bet + 15 Crystals 💎\n\n"
-    "🍒 🍒 🍒 **Win (12%)**\n"
-    "╰ 3x Bet (300 Rubies)\n\n"
-    "🍋 🍋 ❓ **Two Match (35%)**\n"
-    "╰ Bet Refunded (100 Rubies)\n\n"
-    "❌ **No Match (50%)**\n"
-    "╰ No Winnings\n\n"
+    "🍒 🍒 🍒 **Big Win (14.5%)**\n"
+    "╰ 3 matching symbols = 1,500 Rubies\n\n"
+    "🍋 🍋 ❓ **Small Win (35%)**\n"
+    "╰ 2 matching symbols = 400 Rubies\n\n"
+    "❌ **Loss (50%)**\n"
+    "╰ 0 Rubies\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━"
 )
 
@@ -10151,28 +10149,25 @@ def _spin_result(bet_amount: int) -> tuple:
     """Return (reels, outcome, ruby_payout, crystal_payout, flavor_text)."""
     roll = random.random()
     if roll < 0.005:
-        return (
-            ["👑", "👑", "👑"],
-            "jackpot",
-            bet_amount * 20,
-            50,
-            "👑 **JACKPOT!** You hit the 20x Ruby prize!",
-        )
-    if roll < 0.03:
-        return (
+        jackpot_reels = random.choice((
             ["💎", "💎", "💎"],
-            "diamond",
-            bet_amount * 5,
-            15,
-            "💎 **TRIPLE DIAMOND!** You won 5x Ruby and 15 Crystals!",
+            ["7️⃣", "7️⃣", "7️⃣"],
+        ))
+        return (
+            jackpot_reels,
+            "jackpot",
+            5000,
+            50,
+            f"{'💎' if jackpot_reels[0] == '💎' else '7️⃣'} "
+            "**JACKPOT!** You won 5,000 Rubies + 50 Crystals!",
         )
     if roll < 0.15:
         return (
             ["🍒", "🍒", "🍒"],
-            "cherries",
-            bet_amount * 3,
+            "big_win",
+            1500,
             0,
-            "🍒 **TRIPLE CHERRIES!** You won 3x Ruby!",
+            "🍒 **BIG WIN!** Three matching symbols paid 1,500 Rubies!",
         )
     if roll < 0.50:
         pair_symbol = random.choice(SLOT_EMOJIS)
@@ -10183,15 +10178,15 @@ def _spin_result(bet_amount: int) -> tuple:
         random.shuffle(reels)
         return (
             reels,
-            "pair",
-            bet_amount,
+            "small_win",
+            400,
             0,
-            f"**Pair of {pair_symbol}!** Your bet was refunded.",
+            f"**Small Win!** Pair of {pair_symbol} paid 400 Rubies.",
         )
 
     # Three distinct symbols represent the no-match outcome.
     reels = random.sample(SLOT_EMOJIS, 3)
-    return reels, "loss", 0, 0, "No match. You lost the bet."
+    return reels, "loss", 0, 0, "No match. You lost the 200 Ruby spin cost."
 
 
 @bot.command(name="machine")
@@ -10205,20 +10200,18 @@ async def machine_cmd(ctx):
 # 📦 MYSTERY CHEST
 # ==========================================
 
-CHEST_COST = 250
+CHEST_COST = 500
 CHEST_EMOJI_MARKUP = "<:1chest:1542582817161224233>"
 CHEST_PANEL_DESCRIPTION = (
-    "**Cost per Opening:** 250 Rubies\n\n"
+    "**Cost per Opening:** 500 Rubies\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
     "**🎁 RARITIES & ODDS**\n\n"
     "⚪ **Common (60%)**\n"
-    "╰ Prizes: 50 – 150 Rubies\n\n"
-    "🔵 **Rare (25%)**\n"
-    "╰ Prizes: 300 – 600 Rubies\n\n"
-    "🟣 **Epic (12%)**\n"
-    "╰ Prizes: 10 – 20 Crystals 💎\n\n"
-    "🟡 **Legendary (3%)**\n"
-    "╰ Prizes: 50 Crystals 💎\n"
+    "╰ Prizes: 300 – 800 Rubies\n\n"
+    "🔵 **Rare (30%)**\n"
+    "╰ Prizes: 1,200 – 2,500 Rubies\n\n"
+    "🟡 **Legendary (10%)**\n"
+    "╰ Prizes: 20 – 50 Crystals 💎\n"
     "╰ Exclusive Role: **📦 Supreme Unboxer**\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━"
 )
@@ -10239,12 +10232,10 @@ def _chest_reward() -> tuple[str, int, int]:
     """Return (rarity, ruby_reward, crystal_reward) for one chest opening."""
     roll = random.random()
     if roll < 0.60:
-        return "⚪ Common", random.randint(50, 150), 0
-    if roll < 0.85:
-        return "🔵 Rare", random.randint(300, 600), 0
-    if roll < 0.97:
-        return "🟣 Epic", 0, random.randint(10, 20)
-    return "🟡 Legendary", 0, 50
+        return "⚪ Common", random.randint(300, 800), 0
+    if roll < 0.90:
+        return "🔵 Rare", random.randint(1200, 2500), 0
+    return "🟡 Legendary", 0, random.randint(20, 50)
 
 
 class ChestPanelView(View):
