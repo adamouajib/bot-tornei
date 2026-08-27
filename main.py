@@ -236,6 +236,11 @@ def xp_to_next_level(current_level: int) -> int:
     return (current_level + 1) * 100
 
 TEAM_MODES = {"2V2", "3V3", "4V4", "5V5", "6V6", "7V7", "8V8"}
+DEFAULT_TOURNAMENT_PRIZES = (
+    "1. 30 Crystals + 300 Ruby, "
+    "2. 15 Crystals + 150 Ruby, "
+    "3. 10 Crystals + 100 Ruby"
+)
 
 # ── Role IDs ────────────────────────────────────────────────────────────────
 HOSTER_ROLE_ID       = 1410695924879196231   # event/tour/bracket/qual/match/winner
@@ -1989,6 +1994,10 @@ def format_num(n: int) -> str:
         return f"{n/1000:.1f}k".rstrip("0").rstrip(".")
     return str(n)
 
+def format_shop_amount(n: int) -> str:
+    """Format shop prices with dotted thousands separators."""
+    return f"{n:,}".replace(",", ".")
+
 def parse_member_id(text: str):
     """Extract a user ID from text such as '<@123456>' or '123456'."""
     m = re.search(r"<@!?(\d+)>", text.strip())
@@ -2070,21 +2079,30 @@ def _record_gems(member: discord.Member, amount: int) -> None:
     row["total"] = row.get("total", 0) + amount
 
 def grant_prize(prize_text: str, member: discord.Member):
-    """Parse '5000 Ruby' / '3000 Crystals' / '500 Gems' and add them to a profile."""
-    m = re.search(r"(\d+)", prize_text)
-    if not m:
-        return
-    amount = int(m.group(1))
-    lower  = prize_text.lower()
-    prof   = get_profile(member.id, member.display_name)
-    if any(w in lower for w in ("ruby", "rubi")):
-        prof["rubini"] += amount
-    elif any(w in lower for w in ("crystal", "cristal")):
-        prof["cristalli"] += amount
-    elif any(w in lower for w in ("punt", "point", "xp")):
-        prof["punti"] += amount
-    elif any(w in lower for w in ("gem",)):
-        _record_gems(member, amount)
+    """Parse one or more amount/currency pairs and add them to a profile."""
+    reward_matches = re.finditer(
+        r"(\d[\d.,]*)\s*"
+        r"(Ruby|Rubies|Rubino|Rubini|Crystal|Crystals|Cristallo|Cristalli|"
+        r"Gem|Gems|Punti|Point|Points|XP)\b",
+        prize_text or "",
+        flags=re.IGNORECASE,
+    )
+    prof = get_profile(member.id, member.display_name)
+    for match in reward_matches:
+        amount_text, currency_text = match.groups()
+        try:
+            amount = int(amount_text.replace(",", "").replace(".", ""))
+        except ValueError:
+            continue
+        currency = _normalise_currency(currency_text)
+        if currency == "Ruby":
+            prof["rubini"] += amount
+        elif currency == "Cristalli":
+            prof["cristalli"] += amount
+        elif currency == "Punti":
+            prof["punti"] += amount
+        elif currency == "Gems":
+            _record_gems(member, amount)
 
 # ==========================================
 # 📊 LEADERBOARD & BRACKET
@@ -4101,7 +4119,8 @@ class TourModal1(Modal):
         self.abilita = TextInput(label="⚡ Ability / Emote",   placeholder="e.g. Slap, Punch, Banana…")
         self.premio  = TextInput(
             label="🎁 Top 3 prizes",
-            placeholder="1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby",
+            placeholder=DEFAULT_TOURNAMENT_PRIZES,
+            default=DEFAULT_TOURNAMENT_PRIZES,
             max_length=200)
         self.add_item(self.nome)
         self.add_item(self.mappa)
@@ -4111,7 +4130,7 @@ class TourModal1(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         if not _validate_tournament_prize_input(self.premio.value):
             return await interaction.response.send_message(
-                "❌ Invalid prize format. Use `1. 500 Ruby, 2. 200 Ruby, 3. 100 Ruby` "
+                f"❌ Invalid prize format. Use `{DEFAULT_TOURNAMENT_PRIZES}` "
                 "or Crystals.",
                 ephemeral=True)
         uid = str(interaction.user.id)
@@ -8382,26 +8401,26 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
 # 🛒 :TEST SHOP (hidden from :help)
 # ==========================================
 W_ITEMS = {
-    "Blue":    {"emoji": "<:W_blue:1507411440112238592>",    "price": 3000, "color": 0x5865F2},
+    "Blue":    {"emoji": "<:W_blue:1507411440112238592>",    "price": 2000, "color": 0x5865F2},
     "Purple":  {"emoji": "<:W_purple:1507411279868854272>",  "price": 3500, "color": 0x9B59B6},
-    "Red":     {"emoji": "<:W_red:1506782119928795217>",     "price": 2800, "color": 0xE74C3C},
-    "Pink":    {"emoji": "<:W_pink:1507441578912780432>",    "price": 3200, "color": 0xFF69B4},
-    "Yellow":  {"emoji": "<:W_yellow:1507414172583854281>",  "price": 2500, "color": 0xF1C40F},
-    "Azzurro": {"emoji": "<:Wa:1507442128693760202>",        "price": 3000, "color": 0x5DADE2},
-    "Green":   {"emoji": "<:w_green:1507408630906093638>",   "price": 2000, "color": 0x2ECC71},
-    "Orange":  {"emoji": "<:W_orang:1507442976517918770>",   "price": 2800, "color": 0xE67E22},
+    "Red":     {"emoji": "<:W_red:1506782119928795217>",     "price": 1200, "color": 0xE74C3C},
+    "Pink":    {"emoji": "<:W_pink:1507441578912780432>",    "price": 2000, "color": 0xFF69B4},
+    "Yellow":  {"emoji": "<:W_yellow:1507414172583854281>",  "price": 600,  "color": 0xF1C40F},
+    "Azzurro": {"emoji": "<:Wa:1507442128693760202>",        "price": 1200, "color": 0x5DADE2},
+    "Green":   {"emoji": "<:w_green:1507408630906093638>",   "price": 600,  "color": 0x2ECC71},
+    "Orange":  {"emoji": "<:W_orang:1507442976517918770>",   "price": 1200, "color": 0xE67E22},
 }
 
 GEM_PACKAGES = [
-    (200,   3000),
-    (500,   5000),
-    (1000, 10000),
+    (100, 1500),
+    (250, 3500),
+    (800, 9000),
 ]
 
 # Exchange rates: (ruby_cost, crystal_reward)
 EXCHANGE_RATES = [
-    (8000,  150),
-    (16000, 500),
+    (10000, 100),
+    (25000, 300),
 ]
 
 SHOP_IMAGE = STUMBLE_SHOP_IMG_PATH
@@ -8465,14 +8484,18 @@ def _gems_shop_embed(prof: dict) -> discord.Embed:
 
 
 def _exchange_embed(prof: dict) -> discord.Embed:
+    exchange_lines = "\n".join(
+        f"🟣 `{format_shop_amount(ruby_cost)} Ruby` ➔ 💎 "
+        f"`{format_shop_amount(crystal_amount)} Crystals`"
+        for ruby_cost, crystal_amount in EXCHANGE_RATES
+    )
     e = discord.Embed(
         title="🔄 Currency Exchange",
         description=(
             f"{E_RUBY} **Ruby:** {format_num(prof.get('rubini', 0))}　·　"
             f"{E_CRYSTAL} **Crystals:** {format_num(prof.get('cristalli', 0))}\n\n"
             "**Exchange rates:**\n"
-            "🟣 `8.000 Ruby` ➔ 💎 `150 Crystals`\n"
-            "🟣 `16.000 Ruby` ➔ 💎 `500 Crystals`\n\n"
+            f"{exchange_lines}\n\n"
             "Choose an option below:"
         ),
         color=discord.Color.orange(),
@@ -8722,28 +8745,26 @@ class ExchangeView(View):
 class ExchangeSelect(discord.ui.Select):
     def __init__(self, user_id: int):
         self.user_id = user_id
+        ruby_emoji = discord.PartialEmoji(name="ruby", id=1507420532402819093)
+        crystal_emoji = discord.PartialEmoji(name="crystal", id=1507440029323100301)
         options = [
             discord.SelectOption(
-                label="8k Ruby → 150 Crystals",
-                value="ruby_8k",
-                emoji=discord.PartialEmoji(name="ruby", id=1507420532402819093),
-            ),
-            discord.SelectOption(
-                label="16k Ruby → 500 Crystals",
-                value="ruby_16k",
-                emoji=discord.PartialEmoji(name="ruby", id=1507420532402819093),
-            ),
-            discord.SelectOption(
-                label="150 Crystals → 8k Ruby",
-                value="crystal_150",
-                emoji=discord.PartialEmoji(name="crystal", id=1507440029323100301),
-            ),
-            discord.SelectOption(
-                label="500 Crystals → 16k Ruby",
-                value="crystal_500",
-                emoji=discord.PartialEmoji(name="crystal", id=1507440029323100301),
-            ),
+                label=f"{format_shop_amount(ruby_cost)} Ruby → "
+                      f"{format_shop_amount(crystal_amount)} Crystals",
+                value=f"ruby_{index}",
+                emoji=ruby_emoji,
+            )
+            for index, (ruby_cost, crystal_amount) in enumerate(EXCHANGE_RATES)
         ]
+        options.extend(
+            discord.SelectOption(
+                label=f"{format_shop_amount(crystal_amount)} Crystals → "
+                      f"{format_shop_amount(ruby_cost)} Ruby",
+                value=f"crystal_{index}",
+                emoji=crystal_emoji,
+            )
+            for index, (ruby_cost, crystal_amount) in enumerate(EXCHANGE_RATES)
+        )
         super().__init__(
             placeholder="Choose an exchange…",
             min_values=1,
@@ -8756,14 +8777,12 @@ class ExchangeSelect(discord.ui.Select):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)
         exchange = self.values[0]
-        if exchange == "ruby_8k":
-            await self.view._do_ruby_to_crystal(interaction, 8000, 150)
-        elif exchange == "ruby_16k":
-            await self.view._do_ruby_to_crystal(interaction, 16000, 500)
-        elif exchange == "crystal_150":
-            await self.view._do_crystal_to_ruby(interaction, 150, 8000)
+        direction, index_text = exchange.split("_", 1)
+        ruby_cost, crystal_amount = EXCHANGE_RATES[int(index_text)]
+        if direction == "ruby":
+            await self.view._do_ruby_to_crystal(interaction, ruby_cost, crystal_amount)
         else:
-            await self.view._do_crystal_to_ruby(interaction, 500, 16000)
+            await self.view._do_crystal_to_ruby(interaction, crystal_amount, ruby_cost)
 
 
 class ShopPanelView(View):
