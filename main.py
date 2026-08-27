@@ -1517,8 +1517,8 @@ TOURNAMENTS
 
 BIG TOURNAMENTS AND BIG EVENTS
 - :big-tour is the setup entry point for a Big Tournament. It supports
-  Classic, FFA, and World Cup, announces the registration, and requires every
-  registrant to have a Verified SG account. The administrator configures the
+  Classic and FFA, announces the registration, and requires every registrant
+  to have a Verified SG account. The administrator configures the
   schedule, prizes, and capacity just like a tournament.
 - A Big Tournament is not the same as a Big Event. A Big Tournament is a
   player bracket with registration and verified-account gating. A Big Event is
@@ -4116,6 +4116,15 @@ class TourHubView(View):
     def __init__(self, is_big: bool = False):
         super().__init__(timeout=None)
         self.is_big = is_big
+        if is_big:
+            # World Cup remains available in the regular tournament hub, but
+            # is intentionally not offered for Big Tournaments.
+            world_cup_button = next(
+                (child for child in self.children if getattr(child, "custom_id", None) == "hub_wc"),
+                None,
+            )
+            if world_cup_button:
+                self.remove_item(world_cup_button)
 
     async def _check_staff(self, interaction: discord.Interaction) -> bool:
         has = any(r.id in STAFF_ROLE_IDS | {HOSTER_ROLE_ID} | ADMIN_ROLE_IDS for r in interaction.user.roles)
@@ -4259,7 +4268,7 @@ async def big_tour(ctx):
         title="🌟 BIG TOURNAMENT",
         description=(
             "Select the Big Tournament type!\n\n"
-            "🏆 **Classic** · 🎯 **FFA** · 🌍 **World Cup**\n\n"
+            "🏆 **Classic** · 🎯 **FFA**\n\n"
             "⚠️ This is a **Big Tournament** — **@everyone** will be pinged!\n"
             "Only players with a **Verified SG account** can register."
         ),
