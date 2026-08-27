@@ -1644,7 +1644,7 @@ SLOT MACHINE
 
 MYSTERY CHEST
 - :chest is an owner-only setup command that publishes a persistent,
-  text-only Mystery Chest panel. Members press its "Open Chest (250)"
+  text-only Mystery Chest panel. Members press its "📦 Apri Cassa"
   button; each opening costs exactly 250 Ruby.
 - The chest uses these fixed odds and prizes: ⚪ Common (60%) pays a random
   50–150 Ruby; 🔵 Rare (25%) pays a random 300–600 Ruby; 🟣 Epic (12%) pays
@@ -9128,17 +9128,22 @@ async def machine_cmd(ctx):
 
 CHEST_COST = 250
 CHEST_EMOJI_MARKUP = "<:1chest:1542582817161224233>"
-CHEST_EMOJI = discord.PartialEmoji(name="1chest", id=1542582817161224233)
 CHEST_PANEL_DESCRIPTION = (
-    "**Cost:** 250 Rubies per opening\n\n"
-    "**Rarities & Odds:**\n"
-    "⚪ **Common (60%):** 50 – 150 Rubies\n"
-    "🔵 **Rare (25%):** 300 – 600 Rubies\n"
-    "🟣 **Epic (12%):** 10 – 20 Crystals 💎\n"
-    "🟡 **Legendary (3%):** 50 Crystals 💎 + Exclusive Role "
-    "**📦 Unboxer Supremo**"
+    "**Costo per Apertura:** 250 Rubini\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "**🎁 RARITÀ & PROBABILITÀ**\n\n"
+    "⚪ **Comune (60%)**\n"
+    "╰ Premi: 50 – 150 Rubini\n\n"
+    "🔵 **Rara (25%)**\n"
+    "╰ Premi: 300 – 600 Rubini\n\n"
+    "🟣 **Epica (12%)**\n"
+    "╰ Premi: 10 – 20 Cristalli 💎\n\n"
+    "🟡 **Leggendaria (3%)**\n"
+    "╰ Premi: 50 Cristalli 💎\n"
+    "╰ Ruolo Esclusivo: **📦 Unboxer Supremo**\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━"
 )
-CHEST_OPEN_BUTTON_LABEL = "Open Chest (250)"
+CHEST_OPEN_BUTTON_LABEL = "📦 Apri Cassa"
 _chest_open_lock = asyncio.Lock()
 
 
@@ -9171,7 +9176,6 @@ class ChestPanelView(View):
 
     @discord.ui.button(
         label=CHEST_OPEN_BUTTON_LABEL,
-        emoji=CHEST_EMOJI,
         style=discord.ButtonStyle.primary,
         custom_id="chest_open_btn",
     )
