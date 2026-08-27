@@ -844,7 +844,7 @@ class PrivateAIChatView(View):
         self.user_id = user_id
 
     @discord.ui.button(
-        label="🔴 🗑️ Close and Delete Chat",
+        label="🗑️ Close and Delete Chat",
         style=discord.ButtonStyle.danger,
         custom_id="private_ai_close",
     )
@@ -1631,7 +1631,7 @@ FLASH EVENTS
 
 SLOT MACHINE
 - :machine is an owner-only setup command that publishes a persistent
-  Stumble Machine panel. Members press its "Spin Machine (100 🔴)" button;
+  Stumble Machine panel. Members press its "🎰 spin!!" button;
   each spin costs exactly 100 Ruby.
 - The machine uses these fixed odds and prizes: 👑👑👑 Jackpot (0.5%) pays
   2,000 Ruby + 50 Crystals and grants the 🎰 Jackpot Winner role; 💎💎💎
@@ -1644,7 +1644,7 @@ SLOT MACHINE
 
 MYSTERY CHEST
 - :chest is an owner-only setup command that publishes a persistent,
-  text-only Mystery Chest panel. Members press its "Open Chest (250 🔴)"
+  text-only Mystery Chest panel. Members press its "Open Chest (250)"
   button; each opening costs exactly 250 Ruby.
 - The chest uses these fixed odds and prizes: ⚪ Common (60%) pays a random
   50–150 Ruby; 🔵 Rare (25%) pays a random 300–600 Ruby; 🟣 Epic (12%) pays
@@ -2491,7 +2491,7 @@ async def _auto_assign_hosts_dm(guild: discord.Guild, t: dict):
             print(f"[auto_assign_hosts_dm] {e}")
 
 # ==========================================
-# 🔴 TWITCH LIVE DASHBOARD
+# TWITCH LIVE DASHBOARD
 # ==========================================
 def _new_twitch_live_state() -> dict:
     return {
@@ -2796,7 +2796,7 @@ def _build_twitch_embed(
         )
     else:
         embed = discord.Embed(
-            title="🔴 LIVE NOW - Stats",
+            title="LIVE NOW - Stats",
             description=(
                 "Only viewers currently present in Twitch chat are shown below.\n"
                 "Watch time is updated every 3 minutes."
@@ -8932,17 +8932,24 @@ async def setup_shop(ctx):
 # ==========================================
 
 MACHINE_PANEL_DESCRIPTION = (
-    "**Cost per Spin:** 100 Rubies 🔴\n\n"
-    "**Payouts & Odds:**\n"
-    "👑 👑 👑 **Jackpot (0.5%):** 20x Bet (2,000 Rubies) + 50 Crystals 💎 "
-    "+ Exclusive **🎰 Jackpot Winner** Role\n"
-    "💎 💎 💎 **Mega Win (2.5%):** 5x Bet (500 Rubies) + 15 Crystals 💎\n"
-    "🍒 🍒 🍒 **Win (12%):** 3x Bet (300 Rubies)\n"
-    "🍋 🍋 ❓ **Two Match (35%):** Bet Refund (100 Rubies)\n"
-    "❌ **No Match (50%):** Loss (0 Rubies)"
+    "**Costo per Giocata:** 100 Rubini\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "**🏆 PREMI & PROBABILITÀ**\n\n"
+    "👑 👑 👑 **Jackpot (0.5%)**\n"
+    "╰ 20x Puntata + 50 Cristalli 💎\n"
+    "╰ Ruolo Esclusivo: **🎰 Jackpot Winner**\n\n"
+    "💎 💎 💎 **Mega Win (2.5%)**\n"
+    "╰ 5x Puntata + 15 Cristalli 💎\n\n"
+    "🍒 🍒 🍒 **Win (12%)**\n"
+    "╰ 3x Puntata (300 Rubini)\n\n"
+    "🍋 🍋 ❓ **Two Match (35%)**\n"
+    "╰ Rimborso Puntata (100 Rubini)\n\n"
+    "❌ **No Match (50%)**\n"
+    "╰ Nessuna Vincita\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━"
 )
 
-MACHINE_SPIN_BUTTON_LABEL = "Spin Machine (100 🔴)"
+MACHINE_SPIN_BUTTON_LABEL = "🎰 spin!!"
 _machine_spin_lock = asyncio.Lock()
 
 
@@ -8965,7 +8972,6 @@ class MachinePanelView(View):
 
     @discord.ui.button(
         label=MACHINE_SPIN_BUTTON_LABEL,
-        emoji="🎰",
         style=discord.ButtonStyle.success,
         custom_id="machine_spin_btn",
     )
@@ -9132,7 +9138,7 @@ CHEST_PANEL_DESCRIPTION = (
     "🟡 **Legendary (3%):** 50 Crystals 💎 + Exclusive Role "
     "**📦 Unboxer Supremo**"
 )
-CHEST_OPEN_BUTTON_LABEL = "Open Chest (250 🔴)"
+CHEST_OPEN_BUTTON_LABEL = "Open Chest (250)"
 _chest_open_lock = asyncio.Lock()
 
 

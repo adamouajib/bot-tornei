@@ -23,7 +23,7 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 - `/warn` and `/time` require an Admin role; `/giveaway` requires a Manager role.
 - Normal tournament/event commands are available to Host Staff and higher roles. Big tournament/event and economy commands require Admin or higher, or the Discord Administrator permission.
 - Adam (`1338274535325175810`) and Piccolofe (`1012712686770995201`) are the only owners and control system commands such as `:set-log`, `:leaderboard`, `:staff-lb`, and `:machine`.
-- `:machine` is owner-only and publishes the persistent Slot Machine panel. Members use its `Spin Machine (100 🔴)` button; each spin costs 100 Ruby and follows the displayed 0.5% / 2.5% / 12% / 35% / 50% odds. A jackpot pays 2,000 Ruby + 50 Crystals and grants the `🎰 Jackpot Winner` role.
+- `:machine` is owner-only and publishes the persistent Slot Machine panel. Members use its `🎰 spin!!` button; each spin costs 100 Ruby and follows the displayed 0.5% / 2.5% / 12% / 35% / 50% odds. A jackpot pays 2,000 Ruby + 50 Crystals and grants the `🎰 Jackpot Winner` role.
 - `:give` supports Ruby, Crystals, Ranked Points, and Gems; only Managers/owners can distribute Gems.
 - The legacy `:add-rubini`, `:remove-rubini`, and `:add-cristalli` commands are removed.
 - `GEMINI_API_KEY` must be present for the private AI channel created by `:start`. The assistant calls the configured AI service asynchronously through `aiohttp`, using bounded HTTP connections, per-user serialization, a persistent Discord typing indicator and automatic 429 retries after 2 seconds, up to three total attempts. Rate-limit details are never shown to users.
