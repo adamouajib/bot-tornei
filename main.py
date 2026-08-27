@@ -1,5 +1,6 @@
 import os
 import threading
+import sqlite3
 from flask import Flask
 
 app = Flask('')
@@ -33,91 +34,329 @@ from datetime import datetime, timedelta
 import random
 import traceback
 import aiohttp
+from collections.abc import MutableMapping
 
+SQLITE_DB_FILE = "pcf.sqlite3"
+LEGACY_DB_FILE = "db.json"
+_sqlite_connection: sqlite3.Connection | None = None
+_sqlite_lock = threading.RLock()
+
+
+def _sqlite_conn() -> sqlite3.Connection:
+    global _sqlite_connection
+    with _sqlite_lock:
+        if _sqlite_connection is None:
+            _sqlite_connection = sqlite3.connect(
+                SQLITE_DB_FILE,
+                timeout=30,
+                check_same_thread=False,
+            )
+            _sqlite_connection.execute("PRAGMA journal_mode=WAL")
+            _sqlite_connection.execute("PRAGMA synchronous=NORMAL")
+            _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS profiles "
+                "(user_id TEXT PRIMARY KEY, data_json TEXT NOT NULL)"
+            )
+            _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS state "
+                "(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)"
+            )
+            _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS cooldowns "
+                "(user_id TEXT NOT NULL, action TEXT NOT NULL, "
+                "updated_at REAL NOT NULL, PRIMARY KEY (user_id, action))"
+            )
+            _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS metadata "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            _sqlite_connection.commit()
+        return _sqlite_connection
+
+
+def _profile_exists(user_id: str) -> bool:
+    with _sqlite_lock:
+        return _sqlite_conn().execute(
+            "SELECT 1 FROM profiles WHERE user_id = ?", (user_id,)
+        ).fetchone() is not None
+
+
+def _read_profile(user_id: str) -> dict:
+    with _sqlite_lock:
+        row = _sqlite_conn().execute(
+            "SELECT data_json FROM profiles WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    if row is None:
+        raise KeyError(user_id)
+    return json.loads(row[0])
+
+
+def _write_profile(user_id: str, profile: dict) -> None:
+    payload = json.dumps(dict(profile), ensure_ascii=False)
+    with _sqlite_lock:
+        _sqlite_conn().execute(
+            "INSERT INTO profiles(user_id, data_json) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET data_json=excluded.data_json",
+            (user_id, payload),
+        )
+        _sqlite_conn().commit()
+
+
+def _delete_profile(user_id: str) -> None:
+    with _sqlite_lock:
+        _sqlite_conn().execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
+        _sqlite_conn().commit()
+
+
+class SQLiteProfile(MutableMapping):
+    """A dict-compatible profile whose reads and writes go to SQLite."""
+
+    def __init__(self, user_id: str):
+        self.user_id = str(user_id)
+
+    def __getitem__(self, key):
+        return _read_profile(self.user_id)[key]
+
+    def __setitem__(self, key, value):
+        profile = _read_profile(self.user_id)
+        profile[key] = value
+        _write_profile(self.user_id, profile)
+
+    def __delitem__(self, key):
+        profile = _read_profile(self.user_id)
+        del profile[key]
+        _write_profile(self.user_id, profile)
+
+    def __iter__(self):
+        return iter(_read_profile(self.user_id))
+
+    def __len__(self):
+        return len(_read_profile(self.user_id))
+
+    def copy(self):
+        return _read_profile(self.user_id)
+
+
+class SQLiteProfileStore(MutableMapping):
+    """Lazy profile collection; the database remains the source of truth."""
+
+    def __getitem__(self, user_id):
+        uid = str(user_id)
+        if not _profile_exists(uid):
+            raise KeyError(uid)
+        return SQLiteProfile(uid)
+
+    def __setitem__(self, user_id, profile):
+        _write_profile(str(user_id), dict(profile))
+
+    def __delitem__(self, user_id):
+        uid = str(user_id)
+        if not _profile_exists(uid):
+            raise KeyError(uid)
+        _delete_profile(uid)
+
+    def __iter__(self):
+        with _sqlite_lock:
+            rows = _sqlite_conn().execute(
+                "SELECT user_id FROM profiles ORDER BY user_id"
+            ).fetchall()
+        return (row[0] for row in rows)
+
+    def __len__(self):
+        with _sqlite_lock:
+            return _sqlite_conn().execute(
+                "SELECT COUNT(*) FROM profiles"
+            ).fetchone()[0]
+
+    def __contains__(self, user_id):
+        return _profile_exists(str(user_id))
+
+    def clear(self):
+        with _sqlite_lock:
+            _sqlite_conn().execute("DELETE FROM profiles")
+            _sqlite_conn().commit()
+
+
+def _normalise_legacy_profile(profile: dict, username: str) -> dict:
+    normalized = dict(profile or {})
+    normalized.setdefault("name", username)
+    for key in (
+        "punti", "tornei_v", "eventi_v", "gemme", "rubini", "cristalli",
+        "xp_msg", "level_msg", "staff_tours", "staff_matches", "staff_rounds",
+        "staff_week_tours", "staff_week_matches", "staff_week_rounds",
+        "slot_wins", "slot_ruby_won", "duel_wins", "boost_count",
+    ):
+        try:
+            normalized[key] = int(normalized.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            normalized[key] = 0
+    normalized.setdefault("sg_name", "")
+    normalized.setdefault("w_owned", [])
+    return normalized
+
+
+def _legacy_state(data: dict) -> dict:
+    state = {
+        "leaderboard_channel_id": data.get("leaderboard_channel_id"),
+        "leaderboard_msg_ids": data.get("leaderboard_msg_ids", []),
+        "welcome_channel_id": data.get("welcome_channel_id"),
+        "level_channel_id": data.get("level_channel_id"),
+        "supporter_channel_id": data.get("supporter_channel_id"),
+        "supporter_msg_id": data.get("supporter_msg_id"),
+        "result_channel_id": data.get("result_channel_id"),
+        "betting_channel_id": data.get("betting_channel_id"),
+        "log_channel_id": data.get("log_channel_id"),
+        "canale_dashboard_twitch": data.get("canale_dashboard_twitch"),
+        "twitch_live": data.get("twitch_live", {}),
+        "supporters": data.get("supporters", {}),
+        "gems": data.get("gems", {}),
+        "sg_links": data.get("sg_links", {}),
+        "teams": [
+            {"names": t.get("names", []), "ids": t.get("ids", []),
+             "leader_id": t.get("leader_id"), "members": []}
+            for t in data.get("teams", [])
+        ],
+        "tour": data.get("tour"),
+        "event": data.get("event"),
+        "big_event": data.get("big_event"),
+        "event_history": data.get("event_history", []),
+        "event_bans": data.get("event_bans", {}),
+    }
+    if state["tour"]:
+        state["tour"] = dict(state["tour"])
+        state["tour"]["host"] = None
+        if "matches" in state["tour"]:
+            state["tour"]["matches"] = {
+                int(key): value for key, value in state["tour"]["matches"].items()
+            }
+    if state["event"]:
+        state["event"] = dict(state["event"])
+        state["event"]["winners"] = []
+    return state
+
+
+def _migrate_legacy_db(conn: sqlite3.Connection) -> None:
+    if conn.execute("SELECT 1 FROM metadata WHERE key = 'schema'").fetchone():
+        return
+    legacy = {}
+    if os.path.exists(LEGACY_DB_FILE):
+        try:
+            with open(LEGACY_DB_FILE, "r", encoding="utf-8") as file:
+                legacy = json.load(file)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"[sqlite migration] Could not read legacy db.json: {exc}")
+    with _sqlite_lock:
+        try:
+            conn.execute("BEGIN")
+            for uid, profile in legacy.get("profiles", {}).items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO profiles(user_id, data_json) VALUES (?, ?)",
+                    (str(uid), json.dumps(
+                        _normalise_legacy_profile(profile, str(profile.get("name", uid))),
+                        ensure_ascii=False,
+                    )),
+                )
+            for key, value in _legacy_state(legacy).items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO state(key, value_json) VALUES (?, ?)",
+                    (key, json.dumps(value, ensure_ascii=False)),
+                )
+            for uid, actions in legacy.get("perk_cooldowns", {}).items():
+                for action, raw in actions.items():
+                    try:
+                        timestamp = datetime.fromisoformat(raw).timestamp()
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    conn.execute(
+                        "INSERT OR REPLACE INTO cooldowns(user_id, action, updated_at) "
+                        "VALUES (?, ?, ?)",
+                        (str(uid), action, timestamp),
+                    )
+            conn.execute(
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES ('schema', '2')"
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _persist_state() -> None:
+    state = {
+        key: db.get(key)
+        for key in (
+            "leaderboard_channel_id", "leaderboard_msg_ids", "welcome_channel_id",
+            "level_channel_id", "supporter_channel_id", "supporter_msg_id",
+            "result_channel_id", "betting_channel_id", "log_channel_id",
+            "canale_dashboard_twitch", "twitch_live", "supporters", "gems",
+            "sg_links", "big_event", "event_history", "event_bans",
+        )
+    }
+    state["teams"] = [
+        {"names": t.get("names", []), "ids": t.get("ids", []),
+         "leader_id": t.get("leader_id"), "members": []}
+        for t in db.get("teams", [])
+    ]
+    tour = db.get("tour")
+    state["tour"] = None if not tour else {
+        key: value for key, value in tour.items() if key != "host"
+    }
+    event = db.get("event")
+    if event:
+        event = dict(event)
+        event["winners"] = [
+            str(getattr(winner, "id", winner))
+            for winner in event.get("winners", [])
+        ]
+    state["event"] = event
+    conn = _sqlite_conn()
+    with _sqlite_lock:
+        try:
+            conn.execute("BEGIN")
+            for key, value in state.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO state(key, value_json) VALUES (?, ?)",
+                    (key, json.dumps(value, ensure_ascii=False)),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def save_db():
-    try:
-        data = {
-            "profiles": db["profiles"],
-            "leaderboard_channel_id": db["leaderboard_channel_id"],
-            "leaderboard_msg_ids": db["leaderboard_msg_ids"],
-            "welcome_channel_id": db.get("welcome_channel_id"),
-            "level_channel_id": db.get("level_channel_id"),
-            "supporter_channel_id": db.get("supporter_channel_id"),
-            "supporter_msg_id": db.get("supporter_msg_id"),
-            "result_channel_id": db.get("result_channel_id"),
-            "betting_channel_id": db.get("betting_channel_id"),
-            "log_channel_id": db.get("log_channel_id"),
-            "canale_dashboard_twitch": db.get("canale_dashboard_twitch"),
-            "twitch_live": db.get("twitch_live", {}),
-            "supporters": db.get("supporters", {}),
-            "gems":     db.get("gems",     {}),
-            "sg_links": db.get("sg_links", {}),
-            "teams": [
-                {"names": t["names"], "ids": t["ids"], "leader_id": t["leader_id"]}
-                for t in db["teams"]
-            ],
-            "tour": None,
-            "event": None,
-            "big_event": db.get("big_event"),
-            "event_history": db.get("event_history", []),
-            "event_bans": db.get("event_bans", {}),
-            "perk_cooldowns": db.get("perk_cooldowns", {}),
-        }
-        if db["tour"]:
-            data["tour"] = {k: v for k, v in db["tour"].items() if k != "host"}
-        if db["event"]:
-            ev = dict(db["event"])
-            ev["winners"] = [str(getattr(w, "id", w)) for w in ev.get("winners", [])]
-            data["event"] = ev
-        with open(DB_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[save_db] {e}")
+    """Persist non-profile state; profiles and cooldowns commit on each write."""
+    _persist_state()
+
 
 def load_db():
-    if not os.path.exists(DB_FILE):
-        return
-    try:
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        db["profiles"] = data.get("profiles", {})
-        db["leaderboard_channel_id"] = data.get("leaderboard_channel_id")
-        db["leaderboard_msg_ids"] = data.get("leaderboard_msg_ids", [])
-        db["welcome_channel_id"]    = data.get("welcome_channel_id")
-        db["level_channel_id"]      = data.get("level_channel_id")
-        db["supporter_channel_id"] = data.get("supporter_channel_id")
-        db["supporter_msg_id"]     = data.get("supporter_msg_id")
-        db["result_channel_id"]    = data.get("result_channel_id")
-        db["betting_channel_id"]   = data.get("betting_channel_id")
-        db["log_channel_id"]       = data.get("log_channel_id")
-        db["canale_dashboard_twitch"] = data.get("canale_dashboard_twitch")
-        db["twitch_live"]          = data.get("twitch_live", {})
-        db["supporters"]           = data.get("supporters", {})
-        db["gems"]                 = data.get("gems",     {})
-        db["sg_links"]             = data.get("sg_links", {})
-        db["big_event"]            = data.get("big_event")
-        db["event_history"]        = data.get("event_history", [])
-        db["event_bans"]           = data.get("event_bans", {})
-        db["perk_cooldowns"]       = data.get("perk_cooldowns", {})
-        db["teams"] = [
-            {"members": [], "names": t["names"], "ids": t["ids"], "leader_id": t["leader_id"]}
-            for t in data.get("teams", [])
-        ]
-        if data.get("tour"):
-            tour = data["tour"]
-            tour["host"] = None
-            if "matches" in tour:
-                tour["matches"] = {int(k): v for k, v in tour["matches"].items()}
-            db["tour"] = tour
-        if data.get("event"):
-            ev = data["event"]
-            ev["winners"] = []
-            db["event"] = ev
-        print(f"[load_db] Dati caricati — {len(db['profiles'])} profili")
-    except Exception as e:
-        print(f"[load_db] {e}")
+    conn = _sqlite_conn()
+    _migrate_legacy_db(conn)
+    with _sqlite_lock:
+        rows = conn.execute("SELECT key, value_json FROM state").fetchall()
+    for key, value_json in rows:
+        db[key] = json.loads(value_json)
+    db["profiles"] = SQLiteProfileStore()
+    print(f"[load_db] SQLite loaded — {len(db['profiles'])} profiles")
+
+
+def _cooldown_timestamp(user_id: int, action: str) -> float | None:
+    with _sqlite_lock:
+        row = _sqlite_conn().execute(
+            "SELECT updated_at FROM cooldowns WHERE user_id = ? AND action = ?",
+            (str(user_id), action),
+        ).fetchone()
+    return float(row[0]) if row else None
+
+
+def _set_cooldown_timestamp(user_id: int, action: str, timestamp: float | None = None) -> None:
+    timestamp = datetime.now().timestamp() if timestamp is None else timestamp
+    with _sqlite_lock:
+        _sqlite_conn().execute(
+            "INSERT OR REPLACE INTO cooldowns(user_id, action, updated_at) VALUES (?, ?, ?)",
+            (str(user_id), action, timestamp),
+        )
+        _sqlite_conn().commit()
 
 # ==========================================
 # ⚙️ CONFIG E EMOJI
@@ -154,8 +393,6 @@ HIGH_STAFF_ROLE_NAME = "High staff"
 
 # In-memory: {user_id_str: {"channel_id": int, "type": str, "claimed_by": int|None}}
 active_tickets: dict = {}
-# XP cooldown: {user_id: last_xp_timestamp}
-xp_cooldown: dict = {}
 # Discord can redeliver an event while reconnecting.  Keep a short-lived
 # in-process guard so one user message can never execute a command repeatedly.
 processed_message_ids: set[int] = set()
@@ -167,7 +404,6 @@ SUPPORTER_LINK = "https://discord.gg/ZptqBM8ZC3"
 BIO_SUPPORT_LINK = os.getenv("BIO_SUPPORT_LINK", SUPPORTER_LINK).strip()
 BIO_PERK_LINK = os.getenv("BIO_PERK_LINK", "discord.gg/YOURSERVER").strip()
 TOURNAMENT_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
-DB_FILE = "db.json"
 
 # ── Twitch live dashboard ───────────────────────────────────────────────────
 TWITCH_CHANNEL_LOGIN = "piccolofe"
@@ -1975,6 +2211,9 @@ active_bets: dict = {}
 _shop_panel_view_registered = False
 _machine_panel_view_registered = False
 _chest_panel_view_registered = False
+_ticket_main_view_registered = False
+_supporter_weekly_view_registered = False
+_sg_link_channel_view_registered = False
 
 
 def _member_has_role_name(member: discord.Member, role_name: str) -> bool:
@@ -2046,27 +2285,17 @@ def _tournament_prize_multiplier(
 
 
 def _perk_cooldown_remaining(user_id: int, action: str, duration: int) -> int:
-    """Return remaining seconds for a persisted perk cooldown."""
-    raw = (
-        db.setdefault("perk_cooldowns", {})
-        .setdefault(str(user_id), {})
-        .get(action)
-    )
-    if not raw:
+    """Return remaining seconds for a cooldown stored in SQLite."""
+    started = _cooldown_timestamp(user_id, action)
+    if started is None:
         return 0
-    try:
-        started = datetime.fromisoformat(raw)
-    except (TypeError, ValueError):
-        return 0
-    elapsed = (datetime.utcnow() - started).total_seconds()
+    elapsed = datetime.now().timestamp() - started
     return max(0, int(duration - elapsed))
 
 
 def _set_perk_cooldown(user_id: int, action: str) -> None:
-    """Persist the current UTC time for a perk action."""
-    db.setdefault("perk_cooldowns", {}).setdefault(str(user_id), {})[action] = (
-        datetime.utcnow().isoformat()
-    )
+    """Persist the current time for a perk action in SQLite."""
+    _set_cooldown_timestamp(user_id, action)
 
 
 def _format_cooldown(seconds: int) -> str:
@@ -2108,8 +2337,9 @@ async def _ensure_perk_role(
 
 def get_profile(user_id, username):
     uid = str(user_id)
-    if uid not in db["profiles"]:
-        db["profiles"][uid] = {
+    profiles = db["profiles"]
+    if uid not in profiles:
+        profiles[uid] = {
             "name": username,
             "punti": 0,
             "tornei_v": 0,
@@ -2123,21 +2353,28 @@ def get_profile(user_id, username):
             "staff_matches": 0,
             "sg_name": "",
         }
-    prof = db["profiles"][uid]
-    prof.setdefault("xp_msg", 0)
-    prof.setdefault("level_msg", 0)
-    prof.setdefault("staff_tours", 0)
-    prof.setdefault("staff_matches", 0)
-    prof.setdefault("staff_rounds", 0)
-    prof.setdefault("staff_week_tours", 0)
-    prof.setdefault("staff_week_matches", 0)
-    prof.setdefault("staff_week_rounds", 0)
-    prof.setdefault("sg_name", "")
-    prof.setdefault("w_owned", [])
-    prof.setdefault("slot_wins", 0)
-    prof.setdefault("slot_ruby_won", 0)
-    prof.setdefault("duel_wins", 0)
-    prof.setdefault("boost_count", 0)
+    prof = profiles[uid]
+    defaults = {
+        "xp_msg": 0,
+        "level_msg": 0,
+        "staff_tours": 0,
+        "staff_matches": 0,
+        "staff_rounds": 0,
+        "staff_week_tours": 0,
+        "staff_week_matches": 0,
+        "staff_week_rounds": 0,
+        "sg_name": "",
+        "w_owned": [],
+        "slot_wins": 0,
+        "slot_ruby_won": 0,
+        "duel_wins": 0,
+        "boost_count": 0,
+    }
+    for key, default in defaults.items():
+        if key not in prof:
+            prof[key] = default
+    if prof.get("name") != username:
+        prof["name"] = username
     return prof
 
 def parse_orario_timestamp(orario_str: str):
@@ -3355,7 +3592,9 @@ async def send_setup_notifications():
 
 @bot.event
 async def on_ready():
-    global _shop_panel_view_registered, _machine_panel_view_registered, _chest_panel_view_registered
+    global _shop_panel_view_registered, _machine_panel_view_registered
+    global _chest_panel_view_registered, _ticket_main_view_registered
+    global _supporter_weekly_view_registered, _sg_link_channel_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
@@ -3383,6 +3622,18 @@ async def on_ready():
         bot.add_view(ChestPanelView())
         _chest_panel_view_registered = True
         print("[on_ready] Persistent chest panel view registered")
+    if not _ticket_main_view_registered:
+        bot.add_view(TicketMainView())
+        _ticket_main_view_registered = True
+        print("[on_ready] Persistent ticket panel view registered")
+    if not _supporter_weekly_view_registered:
+        bot.add_view(SupporterWeeklyCheckView())
+        _supporter_weekly_view_registered = True
+        print("[on_ready] Persistent supporter weekly view registered")
+    if not _sg_link_channel_view_registered:
+        bot.add_view(SGLinkChannelView())
+        _sg_link_channel_view_registered = True
+        print("[on_ready] Persistent SG link panel view registered")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
     await send_setup_notifications()
@@ -6005,7 +6256,9 @@ class ResetConfirmView(View):
     async def confirm(self, interaction: discord.Interaction, button: Button):
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Admins only.", ephemeral=True)
-        db["profiles"] = {}; db["tour"] = None; db["event"] = None
+        db["profiles"].clear()
+        db["tour"] = None
+        db["event"] = None
         db["teams"] = []; db["leaderboard_msg_ids"] = []
         save_db()
         for child in self.children:
@@ -6687,9 +6940,9 @@ async def on_message(message: discord.Message):
         return
     now = datetime.now().timestamp()
     uid = message.author.id
-    last = xp_cooldown.get(uid, 0)
+    last = _cooldown_timestamp(uid, "xp_chat") or 0
     if now - last >= XP_COOLDOWN_SECS and len(message.content) >= 3:
-        xp_cooldown[uid] = now
+        _set_cooldown_timestamp(uid, "xp_chat", now)
         prof      = get_profile(uid, message.author.display_name)
         old_level = prof["level_msg"]
         prof["xp_msg"] += XP_PER_MSG
@@ -8409,13 +8662,12 @@ class SGLinkVerifyView(View):
 
 class SGLinkChannelView(View):
     """Persistent view posted in the SG-link channel — anyone can click."""
-    def __init__(self, guild_id: int):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.guild_id = guild_id
 
     @discord.ui.button(label="🔗 Link my SG Account", style=discord.ButtonStyle.primary, custom_id="sg_link_channel_btn")
     async def link_btn(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(SGLinkModal(guild_id=self.guild_id))
+        await interaction.response.send_modal(SGLinkModal(guild_id=interaction.guild_id))
 
 
 @bot.command(name="link")
