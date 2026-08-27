@@ -383,6 +383,12 @@ RANK_DATA = [
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
 STUMBLE_IMG          = "https://cdn.cloudflare.steamstatic.com/steam/apps/1677740/header.jpg"
+EVENT_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542323844042330133/1787701511707.png?ex=6a90d083&is=6a8f7f03&hm=bda40bb743ae136eb186df4277911e38e89dab2955cb5e9dbe14eb0d90af1f3a&"
+PROFILE_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542324547267862649/d7a47641-09f5-4433-ac0e-09ec24c82fdb.png?ex=6a90d12b&is=6a8f7fab&hm=905efef5a416227b5ba51d35617cc87034420288fee7e3c4222563f38a13dbf1&"
+HELP_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542324554427531274/a22750ce-ecb7-485c-9f80-af46421b3602.png?ex=6a90d12c&is=6a8f7fac&hm=4b7aa817171a784cd7b8f5e855e56bf8dbceaa26e05f3f920dc6eab1fa105682&"
+SHOP_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542324568503361656/7e7eb06b-ca5a-40ba-8ab1-d51cb4d4fec4.png?ex=6a90d130&is=6a8f7fb0&hm=341c39d601fdf854ecdfa97ff40f8a36edb90bec2832f71680bbcccb5c401b89&"
+LINK_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542327295765782558/af292c6b-b8a3-4aa6-b509-150ec5b826bb.png?ex=6a90d3ba&is=6a8f823a&hm=13052c374e57a854fc28bf015515e6ead781c089d1f0e88dede8697293506c8b&"
+MACHINE_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1541420251055521862/1542327799216476170/10ea3e2e-f1bb-4c4f-b81c-be902dd26528.png?ex=6a90d432&is=6a8f82b2&hm=be17b7a2dcac936293fb3b0070d0f739a099eedbe353f069ebcead7b7e43b877&"
 STUMBLE_TOUR_IMG_PATH = "attached_assets/1787674944744_1787676961548.png"
 STUMBLE_SHOP_IMG_PATH = "attached_assets/1787675538770_1787677059518.png"
 TOURNAMENT_IMAGE_FILENAME = "stumble_tournament.png"
@@ -3351,12 +3357,8 @@ async def profile(ctx, member: discord.Member = None):
         inline=True)
     embed.set_footer(text="PCF™ · Player profile")
     embed.set_thumbnail(url=target.display_avatar.url)
-    profile_file = banner_file(PROFILE_BANNER_PATH, PROFILE_BANNER_FILENAME)
-    if profile_file:
-        embed.set_image(url=f"attachment://{PROFILE_BANNER_FILENAME}")
-    else:
-        embed.set_image(url=STUMBLE_IMG)
-    await ctx.send(embed=embed, file=profile_file)
+    embed.set_image(url=PROFILE_EMBED_IMAGE_URL)
+    await ctx.send(embed=embed)
 
 GIVE_KEYS  = {
     "punti":"punti","xp":"punti","points":"punti",
@@ -3497,13 +3499,8 @@ async def shop(ctx):
         color=discord.Color.orange()
     )
     embed.set_footer(text="Stumble™ Shop — Coming Soon")
-    shop_file = banner_file(SHOP_BANNER_PATH, SHOP_BANNER_FILENAME)
-    if shop_file:
-        embed.set_image(url=f"attachment://{SHOP_BANNER_FILENAME}")
-        await ctx.send(file=shop_file, embed=embed)
-    else:
-        embed.set_image(url=STUMBLE_IMG)
-        await ctx.send(embed=embed)
+    embed.set_image(url=SHOP_EMBED_IMAGE_URL)
+    await ctx.send(embed=embed)
 
 # ==========================================
 # 🤝 TEAM SYSTEM
@@ -4939,7 +4936,7 @@ class EventModal(Modal, title="⚡ Create Flash Event"):
             target  = info_ch if info_ch else self.target_channel
             event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
             if event_file:
-                embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
+                embed.set_image(url=EVENT_EMBED_IMAGE_URL)
             published = False
             await target.send(
                 content=f"<@&{EVENT_PING_ROLE_ID}> 📢 **New flash event created!**",
@@ -4979,10 +4976,10 @@ async def event(ctx):
     embed.set_footer(text=f"Setup by {ctx.author.display_name}")
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
     if event_file:
-        embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
+        embed.set_image(url=EVENT_EMBED_IMAGE_URL)
         await ctx.send(embed=embed, view=view, file=event_file)
         return
-    embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     await ctx.send(embed=embed, view=view)
 
 @bot.command(name="start-event", aliases=["start_event"])
@@ -5010,7 +5007,7 @@ async def start_event(ctx):
         embed.add_field(name=f"{E_BRONZE} 3° Posto",value=_format_prize(big.get("prize3", "—")),   inline=True)
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
     if event_file:
-        embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
+        embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     embed.set_footer(text=f"Started by {ctx.author.display_name}  •  Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     ping_txt  = (f"<@&{EVENT_PING_ROLE_ID}> @here" if is_big
@@ -5039,7 +5036,7 @@ async def cod_event(ctx, emote: str, mappa: str, codice: str):
     embed.add_field(name="🔑 Room Code", value=f"```{codice}```", inline=False)
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
     if event_file:
-        embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
+        embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     prof_staff = get_profile(ctx.author.id, ctx.author.display_name)
     prof_staff["staff_matches"]      += 1
     prof_staff["staff_week_matches"] += 1
@@ -5066,6 +5063,7 @@ async def set_winner(ctx, winner: discord.Member):
         f"**Estimate:** {_format_prize(db['event'].get('premio','?'))} × {vittorie}"
     )
     embed.set_thumbnail(url=winner.display_avatar.url)
+    embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     await ctx.send(embed=embed)
 
 @bot.command(name="end-event", aliases=["end_event"])
@@ -5102,8 +5100,7 @@ async def end_event(ctx, base_premio: int, valuta: str):
     save_db()
     embed = discord.Embed(title="🏁 FLASH EVENT ENDED", description=desc, color=discord.Color.red())
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
-    if event_file:
-        embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
+    embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     embed.set_footer(text=f"Closed by {ctx.author.display_name}")
     await ctx.send(embed=embed, file=event_file)
 
@@ -5145,13 +5142,13 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
         embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"**{_format_prize(self.prize3.value)}**", inline=False)
         embed.add_field(name=f"{E_RULES} Rules",     value=DEFAULT_EVENT_RULES,                  inline=False)
         embed.set_footer(text=f"Announced by {interaction.user.display_name} • {datetime.now().strftime('%d/%m/%Y')}")
-        embed.set_image(url=STUMBLE_IMG)
+        embed.set_image(url=EVENT_EMBED_IMAGE_URL)
         try:
             info_ch = bot.get_channel(EVENT_INFO_CHANNEL_ID)
             target  = info_ch if info_ch else self.target_channel
             event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
             if event_file:
-                embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
+                embed.set_image(url=EVENT_EMBED_IMAGE_URL)
             published = False
             await target.send(
                 content=f"<@&{EVENT_PING_ROLE_ID}> 🌟 **New Big Event created!**",
@@ -5191,10 +5188,7 @@ async def big_event(ctx):
     )
     embed.set_footer(text=f"Setup by {ctx.author.display_name}")
     event_file = banner_file(EVENT_BANNER_PATH, EVENT_BANNER_FILENAME)
-    if event_file:
-        embed.set_image(url=f"attachment://{EVENT_BANNER_FILENAME}")
-    else:
-        embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     await ctx.send(embed=embed, view=view, file=event_file)
 
 class BigEventWinnerModal(Modal, title="🏆 Big Event — Final Rankings"):
@@ -5235,7 +5229,7 @@ class BigEventWinnerModal(Modal, title="🏆 Big Event — Final Rankings"):
         embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"{d2}\n🎁 **{_format_prize(p2_prize)}**", inline=False)
         embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"{d3}\n🎁 **{_format_prize(p3_prize)}**", inline=False)
         embed.set_footer(text=f"By {interaction.user.display_name} • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        embed.set_image(url=STUMBLE_IMG)
+        embed.set_image(url=EVENT_EMBED_IMAGE_URL)
 
         try:
             await self.target_channel.send(embed=embed)
@@ -5271,7 +5265,7 @@ async def big_start(ctx):
     embed.add_field(name=f"{E_GOLD} 1st Place",  value=f"**{_format_prize(big.get('prize1','—'))}**", inline=False)
     embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"**{_format_prize(big.get('prize2','—'))}**", inline=False)
     embed.add_field(name=f"{E_BRONZE} 3rd Place",value=f"**{_format_prize(big.get('prize3','—'))}**", inline=False)
-    embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     embed.set_footer(text=f"Started by {ctx.author.display_name} • Stumble™")
     start_ch = bot.get_channel(EVENT_START_CHANNEL_ID) or ctx.channel
     await start_ch.send(
@@ -6907,18 +6901,18 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
     e1 = discord.Embed(title=t["title1"], color=discord.Color.gold())
     e1.add_field(name=t["tours_title"],  value=t["tours"],  inline=False)
     e1.add_field(name=t["events_title"], value=t["events"], inline=False)
-    e1.set_image(url=HELP_BANNER_URL)
+    e1.set_image(url=HELP_EMBED_IMAGE_URL)
 
     e2 = discord.Embed(title=t["title2"], color=discord.Color.green())
     e2.add_field(name=t["profile_title"],  value=t["profile"],  inline=False)
     e2.add_field(name=t["economy_title"],  value=t["economy"],  inline=False)
     e2.add_field(name=t["level_title"],    value=t["level"],    inline=False)
-    e2.set_image(url=HELP_BANNER_URL)
+    e2.set_image(url=HELP_EMBED_IMAGE_URL)
 
     e3 = discord.Embed(title=t["title3"], color=discord.Color.blurple())
     e3.add_field(name=t["community_title"], value=t["community"], inline=False)
     e3.add_field(name=t["admin_title"],     value=t["admin"],     inline=False)
-    e3.set_image(url=HELP_BANNER_URL)
+    e3.set_image(url=HELP_EMBED_IMAGE_URL)
     e3.set_footer(text=t["footer"])
 
     return [e1, e2, e3]
@@ -7398,9 +7392,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
                 )
             embed.description = f"{card_description}\n\n" + "\n".join(command_lines)
             if is_first_category_card:
-                embed.set_image(url=STUMBLE_IMG)
+                embed.set_image(url=HELP_EMBED_IMAGE_URL)
             else:
-                embed.set_thumbnail(url=STUMBLE_IMG)
+                embed.set_thumbnail(url=HELP_EMBED_IMAGE_URL)
             embed.set_footer(text=t["footer"])
             embeds.append(embed)
     return embeds
@@ -7518,13 +7512,9 @@ async def help_cmd(ctx):
         ),
         color=discord.Color.gold()
     )
-    help_file = banner_file(HELP_BANNER_PATH, HELP_BANNER_FILENAME)
-    if help_file:
-        embed.set_image(url=f"attachment://{HELP_BANNER_FILENAME}")
-    else:
-        embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=HELP_EMBED_IMAGE_URL)
     embed.set_footer(text="PCF™ Bot • prefix: ':'")
-    await ctx.send(embed=embed, view=HelpLangView(), file=help_file)
+    await ctx.send(embed=embed, view=HelpLangView())
 
 # ==========================================
 # 🚀 BOOST INFO
@@ -7608,7 +7598,7 @@ class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
                 ),
                 color=discord.Color.purple()
             )
-            dm.set_image(url=STUMBLE_IMG)
+            dm.set_image(url=LINK_EMBED_IMAGE_URL)
             dm.set_footer(text="Stumble™ SG Link System")
             await user.send(embed=dm)
         except discord.Forbidden:
@@ -7652,7 +7642,7 @@ class SGLinkVerifyView(View):
                 ),
                 color=discord.Color.green()
             )
-            embed.set_image(url=STUMBLE_IMG)
+            embed.set_image(url=LINK_EMBED_IMAGE_URL)
             await member.send(embed=embed)
         except Exception:
             pass
@@ -7686,7 +7676,7 @@ class SGLinkVerifyView(View):
                     ),
                     color=discord.Color.red()
                 )
-                embed.set_image(url=STUMBLE_IMG)
+                embed.set_image(url=LINK_EMBED_IMAGE_URL)
                 await member.send(embed=embed)
             except Exception:
                 pass
@@ -7732,7 +7722,7 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
         ),
         color=discord.Color.purple()
     )
-    embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=LINK_EMBED_IMAGE_URL)
     embed.set_footer(text="Stumble™ SG Account System")
     view = SGLinkChannelView(guild_id=ctx.guild.id)
     await ctx.send(embed=embed, view=view)
@@ -7755,6 +7745,7 @@ async def linked_cmd(ctx):
     )
     if len(lines) > 50:
         embed.set_footer(text=f"Showing 50 accounts out of {len(lines)}")
+    embed.set_image(url=LINK_EMBED_IMAGE_URL)
     await ctx.send(embed=embed)
 
 
@@ -8211,6 +8202,7 @@ def _shop_main_embed(prof: dict) -> discord.Embed:
         ),
         color=discord.Color.gold()
     )
+    e.set_image(url=SHOP_EMBED_IMAGE_URL)
     return e
 
 
@@ -8240,6 +8232,7 @@ class ShopMainView(View):
             ),
             color=discord.Color.blue()
         )
+        e.set_image(url=SHOP_EMBED_IMAGE_URL)
         e.set_footer(text="Choose an item below to purchase a W item!")
         await interaction.response.edit_message(embed=e, view=WShopView(self.user_id))
 
@@ -8261,6 +8254,7 @@ class ShopMainView(View):
             ),
             color=discord.Color.purple()
         )
+        e.set_image(url=SHOP_EMBED_IMAGE_URL)
         e.set_footer(text="Link your SG account with :link before buying Gems!")
         await interaction.response.edit_message(embed=e, view=GemsShopView(self.user_id))
 
@@ -8281,6 +8275,7 @@ class ShopMainView(View):
             ),
             color=discord.Color.orange()
         )
+        e.set_image(url=SHOP_EMBED_IMAGE_URL)
         await interaction.response.edit_message(embed=e, view=ExchangeView(self.user_id))
 
 
@@ -8395,6 +8390,7 @@ class GemsShopSelect(discord.ui.Select):
                 ),
                 color=discord.Color.purple()
             )
+            e2.set_image(url=SHOP_EMBED_IMAGE_URL)
             e2.set_footer(text=f"User ID: {interaction.user.id}")
             ping = f"<@&{OWNER_ROLE_ID}>" if owner_role else ""
             await ch.send(content=ping, embed=e2)
@@ -8489,13 +8485,7 @@ async def test_shop(ctx):
     """Hidden shop command (available in shop channel only)."""
     prof = get_profile(ctx.author.id, ctx.author.display_name)
     embed = _shop_main_embed(prof)
-    if os.path.exists(SHOP_IMAGE):
-        f = discord.File(SHOP_IMAGE, filename=SHOP_IMAGE_FILENAME)
-        embed.set_image(url=f"attachment://{SHOP_IMAGE_FILENAME}")
-        await ctx.send(file=f, embed=embed, view=ShopMainView(ctx.author.id))
-    else:
-        embed.set_image(url=STUMBLE_IMG)
-        await ctx.send(embed=embed, view=ShopMainView(ctx.author.id))
+    await ctx.send(embed=embed, view=ShopMainView(ctx.author.id))
 
 
 # ==========================================
@@ -8543,7 +8533,7 @@ def _machine_embed(prof: dict) -> discord.Embed:
         ),
         color=discord.Color.gold()
     )
-    e.set_image(url=STUMBLE_IMG)
+    e.set_image(url=MACHINE_EMBED_IMAGE_URL)
     e.set_footer(text="Stumble™ Machine • Press a button to play!")
     return e
 
@@ -8625,6 +8615,7 @@ class SlotMachineView(View):
             description="\n".join(result_lines),
             color=color
         )
+        em.set_image(url=MACHINE_EMBED_IMAGE_URL)
         em.set_footer(text=f"Balance: {format_num(prof['rubini'])} Ruby · {format_num(prof.get('cristalli', 0))} Crystals")
         # Keep the public machine panel intact; only the player sees the result.
         await interaction.response.send_message(embed=em, ephemeral=True)
