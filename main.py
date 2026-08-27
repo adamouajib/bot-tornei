@@ -1536,7 +1536,7 @@ CURRENCIES, PROGRESSION, AND REWARDS
   limited drops, giveaways and staff awards. Exact tournament, event, drop and
   giveaway amounts come from their current configuration; never invent them.
 - Crystals earning routes are every fifth chat level, tournament and event
-  prizes, triple-red Stumble Machine wins, server boosts, limited drops and
+  prizes, triple-cherry Stumble Machine wins, server boosts, limited drops and
   staff awards. Crystals are also obtained by exchanging Ruby and are spent on
   W Items or Gems packages.
 - Flash Event winners receive the configured base Ruby/Crystal amount multiplied
@@ -1628,20 +1628,17 @@ FLASH EVENTS
   per recorded win and closes the event.
 
 SLOT MACHINE
-- :machine is an owner-controlled panel for the Stumble Machine. Each spin
-  costs 500 Ruby, or a selected wager from 500 to 5,000 Ruby in multiples of
-  500 (up to x10).
-- Three crowns award a random 5,000–10,000 Ruby multiplied by the wager
-  multiplier and the Stumble Gambler role. Three diamonds award 2,000–8,000
-  Ruby multiplied by the multiplier. Three red symbols award 500–2,000
-  Crystals multiplied by the multiplier. A pair of a non-chicken symbol awards
-  100–2,000 Ruby multiplied by the multiplier. Three chickens lose the wager;
-  any other non-winning combination loses the wager.
-- The wager is deducted before the spin. A win returns only the prize shown by
-  the result; a loss does not refund the wager. Crown jackpots also assign the
-  Stumble Gambler role. The multiplier scales both the wager and the listed
-  reward range, so x10 means a 5,000 Ruby wager and up to ten times the
-  base reward. The machine never awards Gems or Ranked Points.
+- :machine is an owner-only setup command that publishes a persistent
+  Stumble Machine panel. Members press its "Spin Machine (100 🔴)" button;
+  each spin costs exactly 100 Ruby.
+- The machine uses these fixed odds and prizes: 👑👑👑 Jackpot (0.5%) pays
+  2,000 Ruby + 50 Crystals and grants the 🎰 Jackpot Winner role; 💎💎💎
+  Mega Win (2.5%) pays 500 Ruby + 15 Crystals; 🍒🍒🍒 Win (12%) pays
+  300 Ruby; any two matching symbols (35%) refunds 100 Ruby; and a
+  no-match result (50%) pays 0 Ruby.
+- The 100 Ruby cost is deducted before the roll, then the payout is added to
+  the member's profile and saved. The Jackpot Winner role is created in the
+  server when it is missing. The machine does not award Gems or Ranked Points.
 
 SHOP AND EARNING CRYSTALS
 - The persistent shop panel in <#{SHOP_ONLY_CH}> is the only member-facing way
@@ -1657,7 +1654,7 @@ SHOP AND EARNING CRYSTALS
 - Exchange rates work in both directions:
 {exchange_lines}
 - Members can earn Crystals from every fifth chat level, tournament/event
-  prizes, three-red slot wins, server boosts, limited drops, and staff awards.
+  prizes, triple-cherry slot wins, server boosts, limited drops, and staff awards.
   Members can earn Ruby from level-ups, tournament/event prizes, slot wins,
   server boosts, supporter rewards, exchanges, limited drops, and staff awards.
 - Tournament, Big Tournament, Big Event, Flash Event, giveaway, drop, slot-machine,
@@ -1951,6 +1948,7 @@ active_duels: dict = {}
 active_bets: dict = {}
 # {match_id_str: {p1, p2, bets: {uid: {choice, amount}}, channel_id}}
 _shop_panel_view_registered = False
+_machine_panel_view_registered = False
 
 def get_profile(user_id, username):
     uid = str(user_id)
@@ -3182,7 +3180,7 @@ async def send_setup_notifications():
 
 @bot.event
 async def on_ready():
-    global _shop_panel_view_registered
+    global _shop_panel_view_registered, _machine_panel_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
@@ -3202,6 +3200,10 @@ async def on_ready():
         bot.add_view(ShopPanelView())
         _shop_panel_view_registered = True
         print("[on_ready] Persistent shop panel view registered")
+    if not _machine_panel_view_registered:
+        bot.add_view(MachinePanelView())
+        _machine_panel_view_registered = True
+        print("[on_ready] Persistent machine panel view registered")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
     await send_setup_notifications()
@@ -3220,7 +3222,7 @@ async def on_ready():
     # Auto-create special roles if they don't exist
     for guild in bot.guilds:
         for role_name, color in [
-            (STUMBLE_GAMBLER_ROLE_NAME,   discord.Color.gold()),
+            (JACKPOT_ROLE_NAME,           discord.Color.gold()),
             (BLOCK_DASH_LEGEND_ROLE_NAME, discord.Color.purple()),
             ("W", discord.Color.gold()),
         ]:
@@ -7379,7 +7381,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
              (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
              (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
             (":drop", "Releases a limited prize drop; exactly the requested number of different users can claim it, then it closes automatically.", "<people> <amount> <currency>; currency: Ruby, Crystals, Gems or Ranked Points.", ":drop 5 100 Ruby"),
-            (":machine", "Opens the slot-machine activity where a player can spin for a result.", "No arguments; use the controls in the machine message.", ":machine"),
+            (":machine", "Publishes the owner-only persistent Slot Machine panel; members spin using its 100-Ruby button.", "No arguments; members use the button in the published panel.", ":machine"),
         ],
         [
             (":team", "Creates a tournament team and optionally invites multiple members.", "<@member1> [@member2…]; the author becomes the team leader.", ":team @Alice @Bob"),
@@ -7473,7 +7475,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":reset": "Azzera per il membro indicato la statistica o valuta richiesta, se supportata dal comando.",
         ":shop": "Apre lo shop PCF™ con acquisto di W Item, pacchetti Gemme e cambio tra le valute disponibili.",
          ":drop": "Pubblica un drop con numero esatto di partecipanti, quantità e valuta; il drop si chiude automaticamente quando terminano i posti. Esempio: `:drop 5 100 Ruby`.",
-        ":machine": "Apre la slot machine del bot, dove il giocatore può usare i controlli del messaggio per effettuare un giro.",
+         ":machine": "Pubblica il pannello persistente della slot machine; il comando è riservato ai proprietari e i membri usano il pulsante da 100 Ruby.",
         ":test": "Pubblica il pannello di prova dello shop per verificare le interazioni e i relativi acquisti.",
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
@@ -7531,7 +7533,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":reset": "सदस्य की चुनी हुई मुद्रा या आँकड़ा शून्य करता है।",
         ":shop": "W Items, Gems और मुद्रा विनिमय वाला shop खोलता है।",
         ":drop": "पुरस्कार गतिविधि शुरू करता है; डिफ़ॉल्ट पुरस्कार 500 Ruby है।",
-        ":machine": "गोल चलाने के लिए slot machine खोलता है।",
+         ":machine": "मालिक के लिए स्थायी slot machine पैनल खोलता है; सदस्य 100 Ruby वाले बटन से घुमा सकते हैं।",
         ":test": "Shop इंटरैक्शन जाँचने का परीक्षण पैनल खोलता है।",
         ":team": "सदस्यों को आमंत्रित करके टीम बनाता है।",
         ":myteam": "आपकी टीम, उसके नेता और सदस्यों को दिखाता है।",
@@ -8906,6 +8908,137 @@ async def setup_shop(ctx):
 # 🎰 STUMBLE MACHINE
 # ==========================================
 
+MACHINE_PANEL_DESCRIPTION = (
+    "**Cost per Spin:** 100 Rubies 🔴\n\n"
+    "**Payouts & Odds:**\n"
+    "👑 👑 👑 **Jackpot (0.5%):** 20x Bet (2,000 Rubies) + 50 Crystals 💎 "
+    "+ Exclusive **🎰 Jackpot Winner** Role\n"
+    "💎 💎 💎 **Mega Win (2.5%):** 5x Bet (500 Rubies) + 15 Crystals 💎\n"
+    "🍒 🍒 🍒 **Win (12%):** 3x Bet (300 Rubies)\n"
+    "🍋 🍋 ❓ **Two Match (35%):** Bet Refund (100 Rubies)\n"
+    "❌ **No Match (50%):** Loss (0 Rubies)"
+)
+
+MACHINE_SPIN_BUTTON_LABEL = "Spin Machine (100 🔴)"
+_machine_spin_lock = asyncio.Lock()
+
+
+def _build_machine_panel_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🎰 SLOT MACHINE",
+        description=MACHINE_PANEL_DESCRIPTION,
+        color=discord.Color.gold(),
+    )
+    embed.set_image(url=MACHINE_EMBED_IMAGE_URL)
+    embed.set_footer(text="PCF™ Slot Machine • Press the button below to spin")
+    return embed
+
+
+class MachinePanelView(View):
+    """Persistent public view used by every published slot-machine panel."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label=MACHINE_SPIN_BUTTON_LABEL,
+        emoji="🎰",
+        style=discord.ButtonStyle.success,
+        custom_id="machine_spin_btn",
+    )
+    async def spin(self, interaction: discord.Interaction, button: Button):
+        if interaction.guild is None:
+            return await interaction.response.send_message(
+                "❌ The Slot Machine can only be used inside a server.",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        async with _machine_spin_lock:
+            prof = get_profile(
+                interaction.user.id,
+                interaction.user.display_name,
+            )
+            if prof.get("rubini", 0) < SLOT_MACHINE_MIN_BET:
+                return await interaction.edit_original_response(
+                    content=(
+                        f"❌ You need at least **{format_num(SLOT_MACHINE_MIN_BET)}** "
+                        f"{E_RUBY} to spin. Your balance: **"
+                        f"{format_num(prof.get('rubini', 0))}** {E_RUBY}."
+                    )
+                )
+
+            prof["rubini"] -= SLOT_MACHINE_MIN_BET
+            reels, outcome, ruby_payout, crystal_payout, flavor = _spin_result(
+                SLOT_MACHINE_MIN_BET
+            )
+            prof["rubini"] += ruby_payout
+            prof["cristalli"] = prof.get("cristalli", 0) + crystal_payout
+            if ruby_payout:
+                prof["slot_ruby_won"] = prof.get("slot_ruby_won", 0) + ruby_payout
+            if outcome != "loss":
+                prof["slot_wins"] = prof.get("slot_wins", 0) + 1
+
+            role_notice = None
+            if outcome == "jackpot":
+                try:
+                    jackpot_role = discord.utils.get(
+                        interaction.guild.roles,
+                        name=JACKPOT_ROLE_NAME,
+                    )
+                    role_created = jackpot_role is None
+                    if role_created:
+                        jackpot_role = await interaction.guild.create_role(
+                            name=JACKPOT_ROLE_NAME,
+                            color=discord.Color.gold(),
+                            reason="Create Slot Machine jackpot role",
+                        )
+                    if isinstance(interaction.user, discord.Member):
+                        await interaction.user.add_roles(
+                            jackpot_role,
+                            reason="Slot Machine jackpot",
+                        )
+                    role_notice = (
+                        f"🎰 The **{JACKPOT_ROLE_NAME}** role was "
+                        f"{'created and ' if role_created else ''}granted to you!"
+                    )
+                except discord.Forbidden:
+                    role_notice = (
+                        "⚠️ The jackpot role could not be created or assigned. "
+                        "Please give the bot permission to manage roles."
+                    )
+                except discord.HTTPException as exc:
+                    print(f"[MACHINE ROLE ERROR] {exc}")
+                    role_notice = "⚠️ The jackpot role could not be assigned."
+
+            save_db()
+
+            payout_parts = [
+                f"**{format_num(ruby_payout)}** {E_RUBY}",
+                f"**{format_num(crystal_payout)}** {E_CRYSTAL}",
+            ]
+            result_lines = [
+                f"**Rolled:** {'  '.join(reels)}",
+                f"**Outcome:** {flavor}",
+                f"**Payout:** {' + '.join(payout_parts)}",
+                "",
+                f"**Updated balances:** {format_num(prof['rubini'])} {E_RUBY} · "
+                f"{format_num(prof.get('cristalli', 0))} {E_CRYSTAL}",
+            ]
+            if role_notice:
+                result_lines.extend(["", role_notice])
+            color = discord.Color.gold() if outcome == "jackpot" else (
+                discord.Color.green() if outcome != "loss" else discord.Color.red()
+            )
+            embed = discord.Embed(
+                title="🎰 Slot Machine — Result",
+                description="\n".join(result_lines),
+                color=color,
+            )
+            embed.set_image(url=MACHINE_EMBED_IMAGE_URL)
+            await interaction.edit_original_response(embed=embed)
+
+
 def _spin_result(bet_amount: int) -> tuple:
     """Return (reels, outcome, ruby_payout, crystal_payout, flavor_text)."""
     roll = random.random()
@@ -8955,90 +9088,9 @@ def _spin_result(bet_amount: int) -> tuple:
 
 @bot.command(name="machine")
 @owner_only()
-async def machine_cmd(ctx, bet_amount: int = SLOT_MACHINE_MIN_BET):
-    """🎰 Stumble Machine — spin with an optional Ruby bet."""
-    if bet_amount < SLOT_MACHINE_MIN_BET:
-        return await ctx.send(
-            f"❌ The minimum bet is **{format_num(SLOT_MACHINE_MIN_BET)}** {E_RUBY}.",
-            delete_after=6.0,
-        )
-    prof = get_profile(ctx.author.id, ctx.author.display_name)
-    if prof.get("rubini", 0) < bet_amount:
-        return await ctx.send(
-            f"❌ You need at least **{format_num(bet_amount)}** {E_RUBY} to play. "
-            f"Your balance: **{format_num(prof.get('rubini', 0))}** {E_RUBY}.",
-            delete_after=6.0,
-        )
-
-    prof["rubini"] -= bet_amount
-    reels, outcome, ruby_payout, crystal_payout, flavor = _spin_result(bet_amount)
-    prof["rubini"] += ruby_payout
-    prof["cristalli"] = prof.get("cristalli", 0) + crystal_payout
-    if ruby_payout:
-        prof["slot_ruby_won"] = prof.get("slot_ruby_won", 0) + ruby_payout
-    if outcome != "loss":
-        prof["slot_wins"] = prof.get("slot_wins", 0) + 1
-
-    role_notice = None
-    if outcome == "jackpot":
-        guild = ctx.guild
-        if guild:
-            try:
-                jackpot_role = discord.utils.get(guild.roles, name=JACKPOT_ROLE_NAME)
-                role_created = jackpot_role is None
-                if role_created:
-                    jackpot_role = await guild.create_role(
-                        name=JACKPOT_ROLE_NAME,
-                        color=discord.Color.gold(),
-                        reason="Create Stumble Machine jackpot role",
-                    )
-                await ctx.author.add_roles(jackpot_role, reason="Stumble Machine jackpot")
-                role_notice = (
-                    f"🎰 The **{JACKPOT_ROLE_NAME}** role was "
-                    f"{'created and ' if role_created else ''}granted to you!"
-                )
-            except discord.Forbidden:
-                role_notice = (
-                    f"⚠️ Jackpot role creation or assignment failed. "
-                    f"Please give the bot permission to manage roles."
-                )
-            except discord.HTTPException as exc:
-                print(f"[MACHINE ROLE ERROR] {exc}")
-                role_notice = "⚠️ The jackpot role could not be assigned."
-
-    save_db()
-    reel_str = "  ".join(reels)
-    payout_parts = []
-    if ruby_payout:
-        payout_parts.append(f"**{format_num(ruby_payout)}** {E_RUBY}")
-    if crystal_payout:
-        payout_parts.append(f"**{format_num(crystal_payout)}** {E_CRYSTAL}")
-    total_payout = " + ".join(payout_parts) if payout_parts else "**0**"
-    result_lines = [
-        f"**Rolled:** {reel_str}",
-        f"**Bet:** {format_num(bet_amount)} {E_RUBY}",
-        f"**Total payout:** {total_payout}",
-        "",
-        flavor,
-    ]
-    if role_notice:
-        result_lines.extend(["", role_notice])
-    color = discord.Color.gold() if outcome == "jackpot" else (
-        discord.Color.green() if outcome != "loss" else discord.Color.red()
-    )
-    embed = discord.Embed(
-        title="🎰 Stumble Machine — Result",
-        description="\n".join(result_lines),
-        color=color,
-    )
-    embed.set_image(url=MACHINE_EMBED_IMAGE_URL)
-    embed.set_footer(
-        text=(
-            f"Balance: {format_num(prof['rubini'])} Ruby · "
-            f"{format_num(prof.get('cristalli', 0))} Crystals"
-        )
-    )
-    await ctx.send(embed=embed)
+async def machine_cmd(ctx):
+    """🎰 Publish the persistent Slot Machine setup panel."""
+    await ctx.send(embed=_build_machine_panel_embed(), view=MachinePanelView())
 
 
 # ==========================================

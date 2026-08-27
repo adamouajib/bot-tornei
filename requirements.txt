@@ -2,7 +2,3 @@ discord.py
 flask
 requests
 aiohttp
-aiohttp
-discord.py
-flask
-requests
