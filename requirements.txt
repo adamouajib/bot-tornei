@@ -3,3 +3,7 @@ flask
 requests
 aiohttp
 requests
+aiohttp
+discord.py
+flask
+requests

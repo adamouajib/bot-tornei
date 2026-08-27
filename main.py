@@ -147,6 +147,7 @@ TICKET_SUPPORT_CAT  = 1410695991660908604
 TICKET_STAFF_CAT    = 1410695994114310247
 TICKET_GEMS_CAT     = 1410695992998756352
 SUPPORTER_ROLE_ID   = 1410695946588913684
+HIGH_STAFF_ROLE_NAME = "High staff"
 
 # In-memory: {user_id_str: {"channel_id": int, "type": str, "claimed_by": int|None}}
 active_tickets: dict = {}
@@ -5541,7 +5542,15 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"User ID: {user.id}")
-    ping_content = f"<@&{STUMBLE_STAFF_ROLE_ID}>"
+    high_staff_role = discord.utils.find(
+        lambda role: role.name.casefold() == HIGH_STAFF_ROLE_NAME.casefold(),
+        guild.roles,
+    )
+    if high_staff_role:
+        ping_content = high_staff_role.mention
+    else:
+        ping_content = ""
+        print(f"[staff ticket] Role not found: {HIGH_STAFF_ROLE_NAME}")
     await ch.send(content=ping_content, embed=embed, view=StaffRequestControlView(user_id=user.id))
 
 class TicketMainView(View):
