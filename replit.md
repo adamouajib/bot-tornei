@@ -32,6 +32,9 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 - `:set-log #channel` records command activity, slash/component interactions, sanctions, DM AI traffic, and uncaught errors for the configured server.
 - `:set-tw #channel` is Admin-only and stores the single Discord channel used for the `piccolofe` Twitch dashboard. The dashboard polls every 3 minutes, records chatters' total minutes in `db.json`, and changes to `⚪ LIVE ENDED` when the stream finishes.
 - Twitch tracking uses the `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` Replit Secrets for the Twitch OAuth client-credentials flow. `:claim-tw <twitch_name>` awards 50 Gems after a completed stream when the viewer has at least 30 tracked minutes.
+- The shop uses dropdowns for W items, Gems packages, and Ruby/Crystal exchanges. The Gems page no longer displays the small `:link` footer; the account check remains enforced when a Gems purchase is submitted.
+- Giveaway participant counts are updated in the original embed. When a giveaway ends, the result embed stays clean and the winners are pinged in a separate message.
+- Drops use `:drop <people> <amount> <currency>` (Ruby, Crystals, Gems, or Ranked Points), remove the drop image, and update the embed with everyone who claimed the reward.
 - The AI handbook treats the Twitch live as a Gems-only earning route: visible Twitch chatters accumulate time every 3 minutes, and after the live ends each viewer can claim 50 recorded Gems once with `:claim-tw <twitch_name>` after reaching 30 minutes. It does not award Ruby, Crystals, XP, or Ranked Points automatically.
 - The supplied PCF Tournament and Shop artwork is included in `bot.zip`; Discord embeds currently use a valid HTTPS fallback because Discord rejects local filesystem paths as image URLs.
 

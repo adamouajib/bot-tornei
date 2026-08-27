@@ -1933,7 +1933,7 @@ def _normalise_currency(value: str) -> str | None:
         return "Cristalli"
     if E_GEMS.lower() in value or "gem" in value:
         return "Gems"
-    if any(x in value for x in ("punt", "xp")):
+    if any(x in value for x in ("punt", "point", "xp")):
         return "Punti"
     return None
 
@@ -6427,8 +6427,8 @@ class GiveawayJoinView(View):
         if interaction.message and interaction.message.embeds:
             embed = interaction.message.embeds[0]
             embed.description = re.sub(
-                r"\*\*Partecipanti:\*\* \d+",
-                f"**Partecipanti:** {len(self.entrants)}",
+                r"(\*\*(?:Participants|Partecipanti):\*\*) \d+",
+                rf"\1 {len(self.entrants)}",
                 embed.description or "",
             )
             await interaction.message.edit(embed=embed, view=self)
@@ -6476,6 +6476,7 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
         entrants = view.entrants
         for child in view.children:
             child.disabled = True
+        winner_mentions = None
         if not entrants:
             result_embed = discord.Embed(
                 title="🎉 Giveaway ended",
@@ -6495,18 +6496,24 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
                 title="🎉 Giveaway ended!",
                 description=(
                     f"**Prize:** {_format_prize(prize)}\n"
-                    f"**Winners:** {winner_mentions} 🎊\n"
                     f"**Total participants:** {len(entrants)}\n\n"
-                    f"The prize was added to the winners' profiles."
+                    "The prize was added to the winners' profiles.\n"
+                    "Winners have been announced in a separate message below."
                 ),
                 color=discord.Color.gold()
             )
+            save_db()
         result_embed.set_footer(text=f"Hosted by {interaction.user.display_name}")
         result_embed.set_image(url=STUMBLE_IMG)
         try:
             await msg.edit(embed=result_embed, view=view)
         except Exception:
             await interaction.channel.send(embed=result_embed)
+        if winner_mentions:
+            await interaction.channel.send(
+                content=f"🎊 **Giveaway winner(s):** {winner_mentions}",
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
 
     asyncio.create_task(end_giveaway())
 
@@ -8084,6 +8091,27 @@ async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
     _active_drops[drop_id] = {"prize": prize, "amount": amount, "currency": currency_key,
                               "claimed_ids": [], "max_claims": max_people}
 
+    def build_drop_embed(drop: dict, ended: bool = False) -> discord.Embed:
+        claimed_ids = drop.get("claimed_ids", [])
+        winners = " ".join(f"<@{uid}>" for uid in claimed_ids) or "Nessuno ancora"
+        status = "✅ Drop concluso" if ended else "🎁 Claim disponibili"
+        embed = discord.Embed(
+            title=f"{status} — {display_currency}",
+            description=(
+                f"**Premio:** {amount} {display_currency}\n"
+                f"**Claim disponibili:** {max(0, max_people - len(claimed_ids))}/{max_people}\n\n"
+                f"Premi il pulsante **CLAIM** per partecipare."
+            ),
+            color=discord.Color.dark_grey() if ended else discord.Color.green(),
+        )
+        embed.add_field(
+            name=f"🏆 Vincitori del drop ({len(claimed_ids)}/{max_people})",
+            value=winners,
+            inline=False,
+        )
+        embed.set_footer(text=f"Rilasciato da {ctx.author.display_name} • Claim limitati")
+        return embed
+
     class DropView(View):
         def __init__(self):
             super().__init__(timeout=120)
@@ -8099,7 +8127,7 @@ async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
                 drop_message = self.message
                 if drop_message:
                     await drop_message.edit(
-                        content="⏰ **This drop has ended because the claim window expired.**",
+                        embed=build_drop_embed(drop, ended=True),
                         view=self,
                     )
             except (discord.NotFound, discord.HTTPException):
@@ -8113,7 +8141,6 @@ async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
             if interaction.user.id in drop["claimed_ids"]:
                 return await interaction.response.send_message("❌ You have already claimed this drop.", ephemeral=True)
             drop["claimed_ids"].append(interaction.user.id)
-            prof = get_profile(interaction.user.id, interaction.user.display_name)
             grant_prize(prize, interaction.user)
             save_db()
             remaining = drop["max_claims"] - len(drop["claimed_ids"])
@@ -8123,31 +8150,15 @@ async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
                 button.disabled = True
                 button.label = "✅ Drop ended"
             await interaction.response.edit_message(
-                content=(
-                    f"🎉 **{interaction.user.mention}** claimed **{prize}**! "
-                    f"{'The drop is now finished.' if remaining == 0 else f'{remaining} claim(s) remaining.'}"
-                ),
+                embed=build_drop_embed(drop, ended=remaining == 0),
                 view=self)
-            # Ping in chat
-            try:
-                await interaction.channel.send(
-                    f"🏆 <@{interaction.user.id}> claimed the **{prize}** drop! Congrats! 🎉",
-                    allowed_mentions=discord.AllowedMentions(users=True))
-            except Exception:
-                pass
+            await interaction.followup.send(
+                f"✅ Hai reclamato **{prize}**! "
+                f"{'Il drop è terminato.' if remaining == 0 else f'Restano {remaining} posti.'}",
+                ephemeral=True,
+            )
 
-    embed = discord.Embed(
-        title="🎁 Drop Released! Claim before it runs out!",
-        description=(
-            f"**Prize:** {amount} {display_currency}\n"
-            f"**Available claims:** {max_people}\n\n"
-            "Click **CLAIM** below before the drop runs out!"
-        ),
-        color=discord.Color.green()
-    )
-    embed.set_image(url=STUMBLE_IMG)
-    embed.set_footer(text=f"Released by {ctx.author.display_name} • Limited claims")
-    sent = await ctx.send(embed=embed, view=DropView())
+    sent = await ctx.send(embed=build_drop_embed(_active_drops[drop_id]), view=DropView())
     _active_drops[drop_id]["message_id"] = sent.id
     await _log_event(ctx.guild, "DROP", f"{max_people} × {prize}", actor=ctx.author)
 
@@ -8249,7 +8260,6 @@ class ShopMainView(View):
             color=discord.Color.purple()
         )
         e.set_image(url=SHOP_EMBED_IMAGE_URL)
-        e.set_footer(text="Link your SG account with :link before buying Gems!")
         await interaction.response.edit_message(embed=e, view=GemsShopView(self.user_id))
 
     @discord.ui.button(label="🔄 Exchange", style=discord.ButtonStyle.secondary)
@@ -8414,6 +8424,15 @@ class ExchangeView(View):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
+        self.add_item(ExchangeSelect(user_id))
+        back_btn = Button(label="◀️ Back", style=discord.ButtonStyle.danger, row=1)
+        async def back_cb(interaction: discord.Interaction):
+            if interaction.user.id != user_id:
+                return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)
+            prof = get_profile(interaction.user.id, interaction.user.display_name)
+            await interaction.response.edit_message(embed=_shop_main_embed(prof), view=ShopMainView(user_id))
+        back_btn.callback = back_cb
+        self.add_item(back_btn)
 
     def _check(self, interaction):
         return interaction.user.id == self.user_id
@@ -8450,28 +8469,51 @@ class ExchangeView(View):
             f"Balance: {format_num(prof['rubini'])} {E_RUBY} · {format_num(prof['cristalli'])} {E_CRYSTAL}",
             ephemeral=True)
 
-    @discord.ui.button(label="8k Ruby → 150 Crystals", style=discord.ButtonStyle.primary, row=0)
-    async def rate1_to_crystal(self, interaction: discord.Interaction, button: Button):
-        await self._do_ruby_to_crystal(interaction, 8000, 150)
+class ExchangeSelect(discord.ui.Select):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        options = [
+            discord.SelectOption(
+                label="8k Ruby → 150 Crystals",
+                value="ruby_8k",
+                emoji=discord.PartialEmoji(name="ruby", id=1507420532402819093),
+            ),
+            discord.SelectOption(
+                label="16k Ruby → 500 Crystals",
+                value="ruby_16k",
+                emoji=discord.PartialEmoji(name="ruby", id=1507420532402819093),
+            ),
+            discord.SelectOption(
+                label="150 Crystals → 8k Ruby",
+                value="crystal_150",
+                emoji=discord.PartialEmoji(name="crystal", id=1507440029323100301),
+            ),
+            discord.SelectOption(
+                label="500 Crystals → 16k Ruby",
+                value="crystal_500",
+                emoji=discord.PartialEmoji(name="crystal", id=1507440029323100301),
+            ),
+        ]
+        super().__init__(
+            placeholder="Choose an exchange…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
 
-    @discord.ui.button(label="16k Ruby → 500 Crystals", style=discord.ButtonStyle.primary, row=0)
-    async def rate2_to_crystal(self, interaction: discord.Interaction, button: Button):
-        await self._do_ruby_to_crystal(interaction, 16000, 500)
-
-    @discord.ui.button(label="150 Crystals → 8k Ruby", style=discord.ButtonStyle.secondary, row=1)
-    async def rate1_to_ruby(self, interaction: discord.Interaction, button: Button):
-        await self._do_crystal_to_ruby(interaction, 150, 8000)
-
-    @discord.ui.button(label="500 Crystals → 16k Ruby", style=discord.ButtonStyle.secondary, row=1)
-    async def rate2_to_ruby(self, interaction: discord.Interaction, button: Button):
-        await self._do_crystal_to_ruby(interaction, 500, 16000)
-
-    @discord.ui.button(label="◀️ Back", style=discord.ButtonStyle.danger, row=2)
-    async def back(self, interaction: discord.Interaction, button: Button):
-        if not self._check(interaction):
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)
-        prof = get_profile(interaction.user.id, interaction.user.display_name)
-        await interaction.response.edit_message(embed=_shop_main_embed(prof), view=ShopMainView(self.user_id))
+        exchange = self.values[0]
+        if exchange == "ruby_8k":
+            await self.view._do_ruby_to_crystal(interaction, 8000, 150)
+        elif exchange == "ruby_16k":
+            await self.view._do_ruby_to_crystal(interaction, 16000, 500)
+        elif exchange == "crystal_150":
+            await self.view._do_crystal_to_ruby(interaction, 150, 8000)
+        else:
+            await self.view._do_crystal_to_ruby(interaction, 500, 16000)
 
 
 @bot.command(name="test")
