@@ -258,7 +258,7 @@ STUMBLE_STAFF_ROLE_ID = 1410695925927645277  # given to accepted staff applicant
 
 # ── Channel restrictions ─────────────────────────────────────────────────────
 SOCIAL_ONLY_CH  = 1410696034232963273   # supporter / team / boost / link / gems only
-SHOP_ONLY_CH    = 1410696028419788891   # :shop / :test only — all other msgs deleted
+SHOP_ONLY_CH    = 1410696028419788891   # persistent shop panel only — all other msgs deleted
 PROFILE_ONLY_CH = 1410696056857170110   # :profile only
 SUPPORTER_VERIFY_CAT = 1410695995951546368   # category for supporter verify tickets
 EVENT_PING_ROLE_ID   = 1410695964783673486   # role pinged when event starts
@@ -372,7 +372,7 @@ ADMIN_COMMANDS = {
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
-    "set-winner", "end-event", "ban-event", "test", "clear", "purge",
+    "set-winner", "end-event", "ban-event", "clear", "purge",
 }
 
 def _prefix_access_allowed(ctx) -> bool:
@@ -456,8 +456,8 @@ def format_ai_error(exc: Exception) -> str:
             "Prova a fare una domanda più specifica."
         )
     return (
-        "⚠️ **Non riesco a rispondere in questo momento.**\n\n"
-        "Riprova tra poco. Se il problema continua, avvisa lo staff."
+        "⚠️ **The assistant couldn't complete this request.**\n\n"
+        "Please try again later."
     )
 
 def get_rank_info(punti: int):
@@ -908,19 +908,20 @@ async def _run_debounced_private_ai_batch(
         if messages:
             response_handled = await _process_private_ai_batch(messages, channel)
             # _process_private_ai_batch sends its own user-facing messages for
-            # expected failures. Do not append a generic error after one of
-            # those messages, or after a partial multi-message response.
+            # expected failures. Never append a generic error here: a Discord
+            # send can succeed remotely while its acknowledgement times out,
+            # which would otherwise produce a duplicate after a valid reply.
             if not response_handled:
-                await channel.send(format_ai_error(RuntimeError("AI response was not delivered")))
+                print("[AI QUEUE] Response was not confirmed; no duplicate fallback sent.")
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         traceback.print_exc()
         print(f"[AI QUEUE ERROR] Errore gestione messaggi in coda: {exc}")
-        try:
-            await channel.send(format_ai_error(exc))
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        # The processing function handles expected failures itself. Keep
+        # unexpected queue failures in the logs instead of sending a generic
+        # message that can appear after a valid response was delivered.
+        await _safe_log_ai_exception(channel.guild, "Private AI queue", exc)
     finally:
         if ai_debounce_tasks.get(user_id) is current_task:
             ai_debounce_tasks.pop(user_id, None)
@@ -1643,9 +1644,10 @@ SLOT MACHINE
   base reward. The machine never awards Gems or Ranked Points.
 
 SHOP AND EARNING CRYSTALS
-- :shop is the public legacy notice. :test opens the interactive shop in the
-  designated shop channel. The shop has W Items, Gems, and Ruby/Crystal
-  exchange pages.
+- The persistent shop panel in <#{SHOP_ONLY_CH}> is the only member-facing way
+  to buy Gems packages or use the Ruby/Crystal exchange. Members must open that
+  channel and use its buttons; `:shop` and `:test` are no longer available
+  commands and must never be recommended.
 - W Items are exclusive colored roles purchased once with Crystals:
 {w_item_lines}
 - Gems packages are:
@@ -1658,6 +1660,15 @@ SHOP AND EARNING CRYSTALS
   prizes, three-red slot wins, server boosts, limited drops, and staff awards.
   Members can earn Ruby from level-ups, tournament/event prizes, slot wins,
   server boosts, supporter rewards, exchanges, limited drops, and staff awards.
+- Tournament, Big Tournament, Big Event, Flash Event, giveaway, drop, slot-machine,
+  boost, supporter and Twitch rewards must always follow the currently configured
+  prize and eligibility rules. Never invent an amount or promise a reward that is
+  not configured.
+- When a member asks how to buy Gems or exchange Ruby, direct them to the
+  persistent shop panel in <#{SHOP_ONLY_CH}> and tell them to use its buttons.
+  Gems purchases require the linked Stumble Guys account. Ruby is not purchased
+  through a command; it can be earned through the documented reward routes or
+  exchanged in the shop when the configured rate allows it.
 
 STAFF, SUPPORT, ACCOUNT LINKING, AND TICKETS
 - Staff applications do not require Supporter status. A member should be
@@ -3688,16 +3699,6 @@ async def reset_stat(ctx, member: discord.Member, cosa: str):
     embed = discord.Embed(title="🔄 Reset completed",
         description=f"{member.mention} — {desc}", color=discord.Color.orange())
     await ctx.send(embed=embed, delete_after=8.0)
-
-# ==========================================
-# 🛍️ SHOP
-# ==========================================
-@bot.command()
-async def shop(ctx):
-    prof = get_profile(ctx.author.id, ctx.author.display_name)
-    embed = _shop_main_embed(prof)
-    embed.set_footer(text="PCF™ Shop • Choose a category below")
-    await ctx.send(embed=embed, view=ShopMainView(ctx.author.id))
 
 # ==========================================
 # 🤝 TEAM SYSTEM
@@ -6120,7 +6121,7 @@ async def on_message(message: discord.Message):
         cmd_root = content_stripped.split()[0].lstrip(prefix).split()[0].lower() if content_stripped.startswith(prefix) else None
 
         if ch_id == SHOP_ONLY_CH:
-            allowed_cmds = {"shop", "test"}
+            allowed_cmds = set()
             if message.author.bot:
                 pass
             elif cmd_root in allowed_cmds:
@@ -6791,10 +6792,9 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy": (
                 "`:give @user ruby/cristalli/punti <n>` — Give any currency to a user.\n"
                 "`:add-rubini @user <n>` · `:remove-rubini @user <n>` — Add or remove Ruby.\n"
-                "`:add-cristalli @user <n>` · `:add-punti @user <n>` — Add Crystals or Ranked Points.\n"
-                "`:add-gems @user <n>` — Add SG Gems directly to a user's profile.\n"
-                "`:set-rank @user <rank>` — Force-set a user's rank by name (e.g. Gold, Platinum).\n"
-                "`:shop` — Opens the PCF™ Shop with W Items, Gems packages and Currency Exchange."
+                 "`:add-cristalli @user <n>` · `:add-punti @user <n>` — Add Crystals or Ranked Points.\n"
+                 "`:add-gems @user <n>` — Add SG Gems directly to a user's profile.\n"
+                 "`:set-rank @user <rank>` — Force-set a user's rank by name (e.g. Gold, Platinum)."
             ),
             "level_title": "⬆️ LEVEL SYSTEM",
             "level": (
@@ -6857,10 +6857,9 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy": (
                 "`:give @utente ruby/cristalli/punti <n>` — Dai qualsiasi valuta a un utente.\n"
                 "`:add-rubini @utente <n>` · `:remove-rubini @utente <n>` — Aggiungi o rimuovi Ruby.\n"
-                "`:add-cristalli @utente <n>` · `:add-punti @utente <n>` — Aggiungi Cristalli o Ranked Points.\n"
-                "`:add-gems @utente <n>` — Aggiungi gemme SG direttamente al profilo di un utente.\n"
-                "`:set-rank @utente <rank>` — Imposta il rank manualmente per nome (es. Gold, Platinum).\n"
-                "`:shop` — Apre lo PCF™ Shop con W Items, pacchetti Gemme e Cambio Valuta."
+                 "`:add-cristalli @utente <n>` · `:add-punti @utente <n>` — Aggiungi Cristalli o Ranked Points.\n"
+                 "`:add-gems @utente <n>` — Aggiungi gemme SG direttamente al profilo di un utente.\n"
+                 "`:set-rank @utente <rank>` — Imposta il rank manualmente per nome (es. Gold, Platinum)."
             ),
             "level_title": "⬆️ SISTEMA LIVELLI",
             "level": (
@@ -7377,12 +7376,10 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":add-cristalli (alias :add_cristalli)", "Adds Crystals to a member’s profile.", "<@user> <amount>; admin access.", ":add-cristalli @Player 100"),
             (":add-gems (alias :add_gems)", "Adds Stumble Guys Gems directly to a member’s profile.", "<@user> <amount>; admin access.", ":add-gems @Player 50"),
             (":add-punti (alias :add_punti)", "Adds Ranked Points to a member and updates their rank where applicable.", "<@user> <amount>; admin access.", ":add-punti @Player 250"),
-            (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
-            (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
-            (":shop", "Opens the PCF™ Shop with W Items, Gems packages and currency exchange controls.", "No arguments; use the buttons in the shop message.", ":shop"),
+             (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
+             (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
             (":drop", "Releases a limited prize drop; exactly the requested number of different users can claim it, then it closes automatically.", "<people> <amount> <currency>; currency: Ruby, Crystals, Gems or Ranked Points.", ":drop 5 100 Ruby"),
             (":machine", "Opens the slot-machine activity where a player can spin for a result.", "No arguments; use the controls in the machine message.", ":machine"),
-            (":test", "Opens the shop test panel used to check shop interactions.", "No arguments; intended for staff/testing.", ":test"),
         ],
         [
             (":team", "Creates a tournament team and optionally invites multiple members.", "<@member1> [@member2…]; the author becomes the team leader.", ":team @Alice @Bob"),
@@ -7413,13 +7410,13 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # The official guide is permission-first: members see community tools
     # together, while privileged commands are grouped by the role they need.
     community_names = {
-        "profile", "shop", "team", "myteam", "teamleave", "1v1", "link", "supporter",
+        "profile", "team", "myteam", "teamleave", "1v1", "link", "supporter",
         "help", "claim-tw",
     }
     staff_names = {
         "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
         "team-winner", "close-tour", "event", "start-event", "cod-event",
-        "set-winner", "end-event", "ban-event", "reset-staff-week", "test", "boost", "clear",
+        "set-winner", "end-event", "ban-event", "reset-staff-week", "boost", "clear",
     }
     admin_names = {
         "big-tour", "big-event", "big-start", "big-event-winner",
@@ -8903,14 +8900,6 @@ async def setup_shop(ctx):
         f"Removed **{len(removed)}** old panel(s).",
         delete_after=8.0,
     )
-
-
-@bot.command(name="test")
-async def test_shop(ctx):
-    """Hidden shop command (available in shop channel only)."""
-    prof = get_profile(ctx.author.id, ctx.author.display_name)
-    embed = _shop_main_embed(prof)
-    await ctx.send(embed=embed, view=ShopMainView(ctx.author.id))
 
 
 # ==========================================
