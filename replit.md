@@ -19,6 +19,7 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 ## Commands and permissions
 
 - `/warn`, `/time`, and `/giveaway` are native Discord slash commands. Slash commands are synced when the bot becomes ready.
+- Tournament registration requires the member to have used one of their Discord invites to bring at least one person into this server. The bot needs the **Manage Server** permission to verify invite usage; it does not require members to join another server.
 - `/warn` and `/time` require an Admin role; `/giveaway` requires a Manager role.
 - Normal tournament/event commands are available to Host Staff and higher roles. Big tournament/event and economy commands require Admin or higher, or the Discord Administrator permission.
 - Adam (`1338274535325175810`) and Piccolofe (`1012712686770995201`) are the only owners and control system commands such as `:set-log`, `:leaderboard`, `:staff-lb`, and `:machine`.

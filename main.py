@@ -161,6 +161,7 @@ XP_COOLDOWN_SECS  = 10
 XP_PER_LEVEL      = 100
 
 SUPPORTER_LINK = "https://discord.gg/ZptqBM8ZC3"
+TOURNAMENT_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
 DB_FILE = "db.json"
 
 # ── Twitch live dashboard ───────────────────────────────────────────────────
@@ -529,17 +530,48 @@ def get_profile_by_name(name: str):
     return None
 
 def display_with_rank(name: str) -> str:
-    """Return a bracket player name with any W Items owned by that player."""
+    """Return a bracket name as rank emoji, username, then purchased W items."""
     player_name = str(name)
+    if " × " in player_name:
+        return " × ".join(
+            display_with_rank(part.strip())
+            for part in player_name.split(" × ")
+        )
     profile = get_profile_by_name(player_name)
     if not profile:
-        return player_name
+        return f"{E_NO_RANK} {player_name}"
+    rank_emoji = get_rank_emoji(profile.get("punti", 0))
     owned_w_items = [
         W_ITEMS[item_name]["emoji"]
         for item_name in profile.get("w_owned", [])
         if item_name in W_ITEMS
     ]
-    return f"{''.join(owned_w_items)} {player_name}" if owned_w_items else player_name
+    purchased_w = f" {''.join(owned_w_items)}" if owned_w_items else ""
+    return f"{rank_emoji} {player_name}{purchased_w}"
+
+
+async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | None:
+    """Check whether a member has used one of their invites in this server.
+
+    ``None`` means Discord did not allow the bot to verify the invite list.
+    Registration must be denied in that case rather than silently bypassing
+    the tournament requirement.
+    """
+    try:
+        invites = await guild.invites()
+    except discord.Forbidden:
+        print(f"[tournament invites] Missing Manage Server permission in guild {guild.id}")
+        return None
+    except discord.HTTPException as exc:
+        print(f"[tournament invites] Could not fetch invites for guild {guild.id}: {exc}")
+        return None
+
+    return any(
+        invite.inviter is not None
+        and invite.inviter.id == member_id
+        and (invite.uses or 0) > 0
+        for invite in invites
+    )
 
 db = {
     "profiles": {},
@@ -1543,6 +1575,10 @@ TOURNAMENTS
   optional maximum players, region, notes, and embed color. The default maximum
   is 30 for FFA and 32 for other formats. The registration panel has Register,
   Unregister, Players, and Host controls.
+- To register for any tournament, a member must have invited at least one person
+  into this server. They do not need to join another server; the invite can be
+  created and used here. The official server invite is
+  https://discord.gg/pcf-cup-community-1046154910368014417.
 - Team formats require a team before registration. :team accepts mentioned
   players or Bot slots, supports 2 to 8 total players, and creates modes from
   2V2 through 8V8. Real invitees have 2 minutes to accept. A team can then
@@ -3914,6 +3950,23 @@ class TourRegisterView(View):
             return await interaction.response.send_message("❌ No active tournament.", ephemeral=True)
         modalita = t.get("modalita", "1V1")
         uid      = str(interaction.user.id)
+        if uid not in t["players"]:
+            invited = await _has_invited_member(interaction.guild, interaction.user.id)
+            if invited is None:
+                return await interaction.response.send_message(
+                    "❌ Non posso verificare i tuoi inviti in questo momento. "
+                    "Lo staff deve concedere al bot il permesso **Manage Server** "
+                    "per permettere l'iscrizione ai tornei.",
+                    ephemeral=True,
+                )
+            if not invited:
+                return await interaction.response.send_message(
+                    "❌ Per entrare in un torneo devi prima aver invitato almeno "
+                    f"una persona in questo server.\n"
+                    f"Non devi entrare in un altro server: crea un invito qui e "
+                    f"fallo usare a una persona. {TOURNAMENT_INVITE_URL}",
+                    ephemeral=True,
+                )
         if modalita in TEAM_MODES:
             user_team = next((tm for tm in db["teams"] if uid in tm["ids"]), None)
             if not user_team:
@@ -3935,6 +3988,9 @@ class TourRegisterView(View):
                         f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
                         f"Connect your account directly in the {destination} channel.",
                         ephemeral=True)
+            get_profile(interaction.user.id, interaction.user.display_name)["name"] = (
+                interaction.user.display_name
+            )
             t["players"].append(uid)
             t["player_names"].append(interaction.user.display_name)
         count = len(t["players"])
