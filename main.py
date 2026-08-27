@@ -451,6 +451,8 @@ TWITCH_REWARD_CURRENCY_NAMES = {
 TOUR_HUB_CHANNEL_ID    = 1510038159751254047
 TOUR_REG_CHANNEL_ID    = 1410696022463877320
 TOUR_PING_ROLE_ID      = 1508572231326896269
+# Temporary campaign setting: notify everyone for every newly published tournament.
+TOURNAMENT_EVERYONE_PING_ENABLED = True
 EVENT_INFO_CHANNEL_ID  = 1410696018231824508
 EVENT_START_CHANNEL_ID = 1410696026830143559
 
@@ -5007,10 +5009,21 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     reg_ch = bot.get_channel(TOUR_REG_CHANNEL_ID)
     view   = TourRegisterView(count=0, max_p=default_max, host_count=0)
     if reg_ch:
+        announcement_ping = (
+            "@everyone"
+            if TOURNAMENT_EVERYONE_PING_ENABLED
+            else ("@here" if is_big else "")
+        )
         if is_big:
-            content = f"<@&{TOUR_PING_ROLE_ID}> @here 🌟 **BIG TOURNAMENT** annunciato!"
+            content = (
+                f"{announcement_ping} <@&{TOUR_PING_ROLE_ID}> "
+                "🌟 **BIG TOURNAMENT** annunciato!"
+            ).strip()
         else:
-            content = f"<@&{TOUR_PING_ROLE_ID}> 🏆 New tournament open — register now!"
+            content = (
+                f"{announcement_ping} <@&{TOUR_PING_ROLE_ID}> "
+                "🏆 New tournament open — register now!"
+            ).strip()
         if os.path.exists(STUMBLE_TOUR_IMG_PATH):
             tournament_file = discord.File(
                 STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME
@@ -5018,13 +5031,17 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
             embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
             reg_msg = await reg_ch.send(
                 content=content, file=tournament_file, embed=embed, view=view,
-                allowed_mentions=discord.AllowedMentions(roles=True, everyone=is_big))
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True, everyone=TOURNAMENT_EVERYONE_PING_ENABLED
+                ))
         else:
             print(f"[tournament] Missing image asset: {STUMBLE_TOUR_IMG_PATH}")
             embed.set_image(url=STUMBLE_IMG)
             reg_msg = await reg_ch.send(
                 content=content, embed=embed, view=view,
-                allowed_mentions=discord.AllowedMentions(roles=True, everyone=is_big))
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True, everyone=TOURNAMENT_EVERYONE_PING_ENABLED
+                ))
         db["tour"]["register_msg_id"]     = reg_msg.id
         db["tour"]["register_channel_id"] = reg_ch.id
         save_db()
@@ -5296,7 +5313,7 @@ async def big_tour(ctx):
         description=(
             "Select the Big Tournament type!\n\n"
             "🏆 **Classic** · 🎯 **FFA**\n\n"
-            "⚠️ This is a **Big Tournament** — **@everyone** will be pinged!\n"
+            "⚠️ Tournament announcements currently ping **@everyone**!\n"
             "Only players with a **Verified SG account** can register."
         ),
         color=discord.Color.from_rgb(255, 215, 0)

@@ -57,3 +57,7 @@ All buttons have explicit custom IDs. Persistent public panels and ticket /
 verification controls are registered with `bot.add_view(...)` during
 `on_ready()`, and ticket routing context is restored from SQLite so existing
 ticket buttons continue working after a bot restart.
+
+Tournament registration announcements currently ping `@everyone` for every
+tournament type. This is controlled by the temporary
+`TOURNAMENT_EVERYONE_PING_ENABLED` setting in `main.py`.
