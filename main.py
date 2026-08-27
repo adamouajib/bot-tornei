@@ -1579,11 +1579,11 @@ STAFF, SUPPORT, ACCOUNT LINKING, AND TICKETS
   and using :supporter. Staff verify the bio; approved Supporters receive the
   Supporter role and a weekly reward starting at 1,000 Ruby that increases
   each week while the link remains present.
-- :link only displays the account-link setup (or updates the saved SG name
-  when a new name is supplied). For the actual flow, go to
-  <#{SG_LINK_CHANNEL_ID}>, press its account-link button, enter the in-game
-  name, and follow the screenshot instructions. Staff verify and assign
-  Verified SG. Never ask for passwords or private credentials.
+ - :link displays the account-link setup. To link or change a Stumble Guys
+   name, go to <#{SG_LINK_CHANNEL_ID}>, press its account-link button, enter
+   the name again, and send a new screenshot from the in-game menu showing
+   the equipped skin. Staff verify and assign Verified SG. Never ask for
+   passwords or private credentials.
 - Support, reports, staff applications, and Gems-transfer help use the buttons
   in <#{TICKET_PANEL_CHANNEL_ID}>. :add-ticket is only an admin maintenance
   command and must not be recommended to ordinary members.
@@ -6576,7 +6576,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "community": (
                 "`:link` — Shows the setup for linking your Stumble Guys account. To start, go to <#1542227301322719314>, press the account-link button, enter your SG name and follow the DM screenshot instructions. Staff verify and assign the Verified SG role.\n"
                 "`:boost` — Shows the server boost rewards (Ruby + Crystals, auto-assigned on boost).\n"
-                "`:supporter [@user]` — Become a Supporter by adding the server link to your SG bio. The bot opens a ticket for staff to verify.\n"
+                 "`:supporter [@user]` — Become a Supporter by adding the server link to your Discord bio. The bot opens a ticket for staff to verify.\n"
                 "`:team @p1 [@p2…]` — Form a team for team-format tournaments. `:myteam` shows your team, `:teamleave` removes you.\n"
                 "`:giveaway <time> <winners> <prize>` — Starts a timed giveaway. E.g. `:giveaway 30m 1 5000 Ruby`."
             ),
@@ -6642,7 +6642,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "community": (
                 "`:link` — Mostra il setup per collegare l'account SG, ma non lo collega direttamente. Vai nel canale <#1542227301322719314>, premi il pulsante di collegamento, inserisci il nome SG e segui le istruzioni del modal e del DM. Lo staff verifica e assegna il ruolo Verified SG.\n"
                 "`:boost` — Mostra i premi del boost al server (Ruby + Cristalli, assegnati automaticamente).\n"
-                "`:supporter [@utente]` — Diventa Supporter aggiungendo il link del server alla bio SG. Il bot apre un ticket per la verifica staff.\n"
+                 "`:supporter [@utente]` — Diventa Supporter aggiungendo il link del server alla bio di Discord. Il bot apre un ticket per la verifica staff.\n"
                 "`:team @g1 [@g2…]` — Crea un team per tornei a squadre. `:myteam` mostra il tuo team, `:teamleave` ti rimuove.\n"
                 "`:giveaway <durata> <vincitori> <premio>` — Avvia un giveaway a tempo. Es. `:giveaway 30m 1 5000 Ruby`."
             ),
@@ -6665,7 +6665,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "community": (
                 "`:link` — Collega il tuo account SG (necessario per le gemme)\n"
                 "`:boost` — Mostra i premi del boost al server\n"
-                "`:supporter [@utente]` — Diventa Supporter aggiungendo il link del server alla bio SG\n"
+                 "`:supporter [@utente]` — Diventa Supporter aggiungendo il link del server alla bio di Discord\n"
                 "`:team @g1 [@g2]` — Crea un team · `:myteam` · `:teamleave`\n"
                 "`:giveaway <durata> <vincitori> <premio>` — Avvia un giveaway"
             ),
@@ -7253,7 +7253,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività Stumble™.",
         ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
         ":link": "Mostra il setup per collegare l’account Stumble Guys, ma non collega direttamente l’account. Vai nel canale <#1542227301322719314>, premi il pulsante di collegamento e segui le istruzioni del modal e del DM.",
-        ":supporter": "Mostra o avvia la verifica Supporter; quando necessario apre un ticket staff per controllare il link del server nella bio SG.",
+        ":supporter": "Mostra o avvia la verifica Supporter; quando necessario apre un ticket staff per controllare il link del server nella bio di Discord.",
         ":set-supporter": "Imposta il canale dedicato ai controlli degli account Supporter.",
         ":giveaway": "Avvia un giveaway temporizzato, raccoglie le partecipazioni e assegna casualmente il premio ai vincitori estratti.",
          ":help": "Mostra il menu delle lingue e invia in DM la guida completa dei 54 comandi, divisa tra Community, Staff/Eventi e Admin/Manager.",
@@ -7586,13 +7586,15 @@ class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
                 title="🔗 Step 2 — Send Your Screenshot",
                 description=(
                     f"Hey **{user.display_name}**! 🎮\n\n"
-                    f"Username registered: **{self.sg_name.value}**\n\n"
+                    f"Username submitted for verification: **{self.sg_name.value}**\n\n"
                     "**To complete verification, send a screenshot RIGHT HERE in this DM:**\n\n"
                     "1. Open Stumble Guys\n"
-                    "2. Equip the **Mr. Stumble** skin\n"
-                    "3. Go to a lobby → **vote** on any map\n"
-                    "4. 📸 Take a screenshot of the **voting screen**\n"
+                    "2. Open the in-game menu where your equipped skin is visible\n"
+                    "3. Make sure your Stumble Guys name and the skin are visible\n"
+                    "4. 📸 Take a screenshot of that menu with the skin visible\n"
                     "5. **Send it here!** ⬇️\n\n"
+                    "If you changed your in-game name, enter the new name here and "
+                    "send a new screenshot so staff can verify the change.\n\n"
                     "⏳ Staff will verify it and give you the **Verified SG** role!"
                 ),
                 color=discord.Color.purple()
@@ -7669,8 +7671,8 @@ class SGLinkVerifyView(View):
                     title="❌ Verification Failed",
                     description=(
                         f"We're sorry {member.mention}, but we couldn't verify your identity. 😔\n\n"
-                        "Please try again using your **full Stumble Guys username** and make sure "
-                        "your screenshot clearly shows the **Mr. Stumble skin** and the **voting screen**.\n\n"
+                         "Please try again using your **full Stumble Guys username** and make sure "
+                         "your screenshot is from the in-game menu with your equipped skin visible.\n\n"
                         "Use `:link` to try again anytime."
                     ),
                     color=discord.Color.red()
@@ -7700,12 +7702,11 @@ class SGLinkChannelView(View):
 @bot.command(name="link")
 async def link_cmd(ctx, nome_personalizzato: str = None):
     if nome_personalizzato:
-        prof = get_profile(ctx.author.id, ctx.author.display_name)
-        prof["sg_name"] = nome_personalizzato[:30]
-        db.setdefault("sg_links", {})[str(ctx.author.id)] = nome_personalizzato[:30]
-        save_db()
         return await ctx.send(
-                f"✅ Stumble Guys name updated to **{nome_personalizzato[:30]}**.",
+                "🔁 Per cambiare il nome Stumble Guys devi usare il pulsante "
+                "nel canale link, inserire di nuovo il nome e inviare una nuova "
+                "foto del menu di gioco con la skin visibile. Lo staff dovrà "
+                "verificare nuovamente l'account.",
             delete_after=8.0,
         )
     embed = discord.Embed(
@@ -7717,7 +7718,8 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
             "② Enter your in-game name\n"
             "③ You will receive a DM to send your screenshot\n"
             "④ Staff verifies it and assigns the **Verified SG** role ✅\n\n"
-            "You can change the saved name with `:link <new_name>`."
+            "If you change your in-game name, press the button again, enter the "
+            "new name, and send a new screenshot for verification."
         ),
         color=discord.Color.purple()
     )
