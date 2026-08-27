@@ -5418,14 +5418,6 @@ class StaffRequestControlView(View):
                     roles_given.append(hoster_role.name)
                 except Exception as e:
                     print(f"[accept hoster_role] {e}")
-            stumble_staff_role = guild.get_role(STUMBLE_STAFF_ROLE_ID)
-            if stumble_staff_role:
-                try:
-                    await member.add_roles(stumble_staff_role, reason="Staff Application accepted")
-                    if stumble_staff_role.name not in roles_given:
-                        roles_given.append(stumble_staff_role.name)
-                except Exception as e:
-                    print(f"[accept stumble_staff_role hoster] {e}")
         role_str = " · ".join(f"**{r}**" for r in roles_given) if roles_given else "roles (check bot permissions)"
         try:
             embed = discord.Embed(
