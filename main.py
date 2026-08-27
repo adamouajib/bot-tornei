@@ -2223,6 +2223,7 @@ BOOSTER_PERK_ROLE_NAME      = "[W]"
 BIO_SUPPORTER_ROLE_NAME     = "[S]"
 VIP_ROLE_NAME               = "VIP"
 SLOT_MACHINE_MIN_BET = 200
+DUEL_MIN_WAGER = 100
 SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
 
 # ── In-memory: duels & match bets ──────────────────────────────────────────
@@ -10352,7 +10353,7 @@ class _DuelWagerModal(Modal):
         super().__init__(title=f"💰 What do you want to wager, {dueler_role}?")
         self.amount = TextInput(
             label="How much Ruby do you want to wager?",
-            placeholder="e.g. 500",
+            placeholder=f"Minimum {DUEL_MIN_WAGER} Ruby (e.g. 500)",
             min_length=1, max_length=10)
         self.add_item(self.amount)
         self.dueler_role = dueler_role  # "sfidante" | "sfidato"
@@ -10361,11 +10362,14 @@ class _DuelWagerModal(Modal):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             val = int(self.amount.value.strip())
-            if val <= 0:
+            if val < DUEL_MIN_WAGER:
                 raise ValueError
             self._result = val
         except ValueError:
-            await interaction.response.send_message("❌ Enter a positive Ruby amount.", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ The minimum duel wager is **{DUEL_MIN_WAGER} Ruby**.",
+                ephemeral=True,
+            )
             return
         # Signal to the view via a stored future
         await interaction.response.defer()
@@ -10412,7 +10416,7 @@ class DuelView(View):
             self.add_item(b)
 
     async def _create_duel_thread(self, interaction: discord.Interaction) -> discord.Thread:
-        """Create a private thread where the two players coordinate their match."""
+        """Create a private thread where the two players run their match."""
         channel = interaction.channel
         parent_channel = (
             channel.parent if isinstance(channel, discord.Thread) else channel
@@ -10434,12 +10438,6 @@ class DuelView(View):
         try:
             await thread.add_user(self.challenger)
             await thread.add_user(self.challenged)
-            await thread.send(
-                f"⚔️ **1v1 thread:** {self.challenger.mention} vs "
-                f"{self.challenged.mention}\n\n"
-                "Choose any Stumble Guys map together. The bot does not choose "
-                "the map, and no role is awarded for winning this duel."
-            )
         except Exception:
             try:
                 await thread.delete(reason="Duel thread setup failed")
@@ -10454,6 +10452,10 @@ class DuelView(View):
     async def accept(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.challenged.id:
             return await interaction.response.send_message("❌ Only the challenged player can accept!", ephemeral=True)
+        if self.state != "pending":
+            return await interaction.response.send_message(
+                "❌ This duel is no longer awaiting acceptance.", ephemeral=True
+            )
         try:
             self.duel_thread = await self._create_duel_thread(interaction)
         except discord.Forbidden:
@@ -10479,15 +10481,37 @@ class DuelView(View):
         self.add_item(bet_a_btn)
         self.add_item(bet_b_btn)
         em = self._duel_embed(
-            "⚔️ Challenge Accepted!",
-            f"{self.challenged.mention} accepted the challenge!\n\n"
-            f"🔒 Private duel thread: {self.duel_thread.mention}\n"
-            f"Choose any Stumble Guys map together in that thread; the bot "
-            f"does not choose the map.\n\n"
-            f"**Phase 2:** Each player enters their wager using their button.",
+            "⚔️ 1v1 Ready!",
+            f"{self.challenger.mention} and {self.challenged.mention}, this private "
+            f"thread is your match room.\n\n"
+            "Choose the map and match rules together. The bot will not choose "
+            "them.\n\n"
+            f"**Prize:** each player chooses their own wager below "
+            f"(minimum **{DUEL_MIN_WAGER} Ruby**). The winner receives the total.",
             discord.Color.orange()
         )
-        await interaction.response.edit_message(embed=em, view=self)
+        try:
+            self._msg = await self.duel_thread.send(embed=em, view=self)
+            accepted_em = self._duel_embed(
+                "✅ Challenge Accepted",
+                f"{self.challenged.mention} accepted the challenge.\n\n"
+                f"🔒 The private match room is ready: {self.duel_thread.mention}",
+                discord.Color.green(),
+            )
+            await interaction.response.edit_message(embed=accepted_em, view=None)
+        except (discord.Forbidden, discord.HTTPException, RuntimeError) as exc:
+            print(f"[1v1 control message error] {exc}")
+            try:
+                await self.duel_thread.delete(reason="Duel control message setup failed")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            self.duel_thread = None
+            self.state = "pending"
+            return await interaction.response.send_message(
+                "❌ I couldn't set up the controls in the private duel thread. "
+                "Please try again or ask staff to check the channel permissions.",
+                ephemeral=True,
+            )
 
     @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id="duel_refuse")
     async def refuse(self, interaction: discord.Interaction, button: Button):
