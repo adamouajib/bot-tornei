@@ -9447,19 +9447,19 @@ class MachinePanelView(View):
                 ephemeral=True,
             )
 
-        await interaction.response.defer(ephemeral=True)
         async with _machine_spin_lock:
             prof = get_profile(
                 interaction.user.id,
                 interaction.user.display_name,
             )
             if prof.get("rubini", 0) < SLOT_MACHINE_MIN_BET:
-                return await interaction.edit_original_response(
+                return await interaction.response.send_message(
                     content=(
                         f"❌ You need at least **{format_num(SLOT_MACHINE_MIN_BET)}** "
                         f"{E_RUBY} to spin. Your balance: **"
                         f"{format_num(prof.get('rubini', 0))}** {E_RUBY}."
-                    )
+                    ),
+                    ephemeral=True,
                 )
 
             prof["rubini"] -= SLOT_MACHINE_MIN_BET
@@ -9530,7 +9530,7 @@ class MachinePanelView(View):
                 color=color,
             )
             embed.set_image(url=MACHINE_EMBED_IMAGE_URL)
-            await interaction.edit_original_response(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 def _spin_result(bet_amount: int) -> tuple:
@@ -9651,19 +9651,19 @@ class ChestPanelView(View):
                 ephemeral=True,
             )
 
-        await interaction.response.defer(ephemeral=True)
         async with _chest_open_lock:
             prof = get_profile(
                 interaction.user.id,
                 interaction.user.display_name,
             )
             if prof.get("rubini", 0) < CHEST_COST:
-                return await interaction.edit_original_response(
+                return await interaction.response.send_message(
                     content=(
                         f"❌ You need at least **{format_num(CHEST_COST)}** "
                         f"{E_RUBY} to open the chest. Your balance: **"
                         f"{format_num(prof.get('rubini', 0))}** {E_RUBY}."
-                    )
+                    ),
+                    ephemeral=True,
                 )
 
             prof["rubini"] -= CHEST_COST
@@ -9730,7 +9730,7 @@ class ChestPanelView(View):
                     else discord.Color.blurple()
                 ),
             )
-            await interaction.edit_original_response(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.command(name="chest")
