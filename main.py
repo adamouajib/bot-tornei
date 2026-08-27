@@ -820,6 +820,14 @@ def _clear_private_ai_queue(user_id: int) -> None:
     ai_processing_users.discard(user_id)
 
 
+async def _safe_log_ai_exception(guild, context: str, exc: Exception) -> None:
+    """Never let audit logging create a second visible AI error message."""
+    try:
+        await _log_exception(guild, context, exc)
+    except Exception as log_exc:
+        print(f"[AI LOG ERROR] {context}: {log_exc}")
+
+
 def _schedule_private_ai_batch(user_id: int, channel: discord.TextChannel) -> None:
     """Start or restart the quiet period used to combine fast messages."""
     previous = ai_debounce_tasks.get(user_id)
@@ -845,7 +853,12 @@ async def _run_debounced_private_ai_batch(
         processing_started = True
         messages = ai_pending_messages.pop(user_id, [])
         if messages:
-            await _process_private_ai_batch(messages, channel)
+            response_handled = await _process_private_ai_batch(messages, channel)
+            # _process_private_ai_batch sends its own user-facing messages for
+            # expected failures. Do not append a generic error after one of
+            # those messages, or after a partial multi-message response.
+            if not response_handled:
+                await channel.send(format_ai_error(RuntimeError("AI response was not delivered")))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -878,10 +891,10 @@ async def _handle_private_ai_message(
 
 async def _process_private_ai_batch(
     messages: list[discord.Message], channel: discord.TextChannel
-):
+) -> bool:
     """Generate one answer for the messages collected during the quiet period."""
     if not messages:
-        return
+        return True
     message = messages[-1]
     user_id = message.author.id
     combined_content = "\n".join(
@@ -926,8 +939,9 @@ async def _process_private_ai_batch(
             raise RuntimeError("No GEMINI_API_KEY is configured")
         except Exception as exc:
             traceback.print_exc()
-            await _log_exception(message.guild, "Private AI configuration", exc)
-            return await channel.send(format_ai_error(exc))
+            await _safe_log_ai_exception(message.guild, "Private AI configuration", exc)
+            await channel.send(format_ai_error(exc))
+            return True
     user_lock = ai_user_locks.setdefault(user_id, asyncio.Lock())
     # Keep the typing indicator active while the batch waits for the lock and
     # while Gemini is generating the single combined response.
@@ -942,11 +956,12 @@ async def _process_private_ai_batch(
                 traceback.print_exc()
                 print(f"[AI CONTEXT ERROR] Could not build the complete server context: {exc}")
                 conversation.pop()
-                await _log_exception(message.guild, "Private AI context", exc)
-                return await channel.send(
+                await _safe_log_ai_exception(message.guild, "Private AI context", exc)
+                await channel.send(
                     "⚠️ Non riesco a preparare la conoscenza completa del server in questo momento. "
                     "Riprova tra poco."
                 )
+                return True
             reply_text = ""
             try:
                 response = await asyncio.wait_for(
@@ -963,31 +978,40 @@ async def _process_private_ai_batch(
                     "[GEMINI TIMEOUT] La richiesta ha superato il tempo massimo "
                     f"di {AI_REQUEST_TIMEOUT_SECONDS:.0f} secondi."
                 )
-                await _log_exception(message.guild, "Private AI timeout", exc)
-                return await channel.send(
+                await _safe_log_ai_exception(message.guild, "Private AI timeout", exc)
+                await channel.send(
                     "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
                 )
+                return True
             except Exception as exc:
                 traceback.print_exc()
                 print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
-                await _log_exception(message.guild, "Private AI completion", exc)
-                return await channel.send(format_ai_error(exc))
+                await _safe_log_ai_exception(message.guild, "Private AI completion", exc)
+                await channel.send(format_ai_error(exc))
+                return True
             if not reply_text:
-                return await channel.send(
+                await channel.send(
                     "⚠️ Non riesco a generare una risposta in questo momento. Riprova tra poco."
                 )
+                return True
+            sent_chunks = 0
             try:
                 for response_chunk in split_ai_response(reply_text):
                     await channel.send(embed=discord.Embed(
                         description=response_chunk,
                         color=discord.Color(0x00F0FF),
                     ))
+                    sent_chunks += 1
                 conversation.append({"role": "assistant", "content": reply_text})
                 conversation[:] = conversation[-12:]
+                return True
             except Exception as exc:
                 traceback.print_exc()
                 print(f"[AI SEND ERROR] Errore invio risposta: {exc}")
-                await _log_exception(message.guild, "Private AI response send", exc)
+                await _safe_log_ai_exception(message.guild, "Private AI response send", exc)
+                # A failed second chunk must not cause a generic error after
+                # the first valid chunk has already reached the user.
+                return sent_chunks > 0
 
 
 def clean_ai_response(response) -> str:
