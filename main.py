@@ -169,9 +169,20 @@ TWITCH_POLL_MINUTES = 3
 TWITCH_API_BASE = "https://api.twitch.tv/helix"
 TWITCH_OAUTH_URL = "https://id.twitch.tv/oauth2/token"
 TWITCH_API_TIMEOUT_SECONDS = 15.0
-# The reward is intentionally kept in one place so it can be changed without
-# touching the claim rules or the Twitch polling code.
-TWITCH_REWARD_GEMS = 50
+TWITCH_REWARD_CURRENCY_NAMES = {
+    "ruby": "ruby",
+    "rubies": "ruby",
+    "rubino": "ruby",
+    "rubini": "ruby",
+    "crystal": "crystals",
+    "crystals": "crystals",
+    "cristallo": "crystals",
+    "cristalli": "crystals",
+    "gem": "gems",
+    "gems": "gems",
+    "gemma": "gems",
+    "gemme": "gems",
+}
 
 TOUR_HUB_CHANNEL_ID    = 1510038159751254047
 TOUR_REG_CHANNEL_ID    = 1410696022463877320
@@ -1432,7 +1443,8 @@ def build_ai_server_knowledge() -> str:
         twitch_status = (
             "The most recently tracked Piccolofe Twitch live has ended. "
             "Recorded watch-time data may still be used with `:claim-tw <twitch_name>` "
-            "when the viewer has reached the required minimum."
+            "when the viewer has reached the required minimum. "
+            f"Configured reward: {_format_twitch_reward(twitch_state.get('reward'))}."
         )
     else:
         twitch_status = "No Piccolofe Twitch live is currently tracked."
@@ -1498,17 +1510,22 @@ CURRENCIES, PROGRESSION, AND REWARDS
 - The public Gems leaderboard shows awarded Gems. Do not promise automatic
   delivery unless the relevant Big Tournament prize and account verification
   are in place.
-- Watching Piccolofe's Twitch live is an additional Gems reward route. The
-  tracker checks viewers visible in Twitch chat every {TWITCH_POLL_MINUTES}
-  minutes and accumulates watch time only for viewers it can see. After the
-  stream has ended, use `:claim-tw <twitch_name>` with the exact Twitch login;
-  at least 30 tracked minutes are required, the claim can be made only once for
-  that completed stream, and it credits {TWITCH_REWARD_GEMS} Gems to the
-  member's server record. The command cannot be claimed while the stream is
-  still live. This Twitch reward gives Gems only, not Ruby, Crystals, XP or
-  Ranked Points. Never promise an external Stumble Guys transfer automatically;
-  explain that the server record/leaderboard is updated and staff handles any
-  real-account transfer process that is separately confirmed.
+- Watching Piccolofe's Twitch live is a Ruby, Crystals and Gems reward route.
+  The tracker checks viewers visible in Twitch chat every
+  {TWITCH_POLL_MINUTES} minutes and accumulates watch time only for viewers it
+  can see. Staff registers the reward with
+  `:log-tw <amount> <currency> <amount> <currency> <amount> <currency>`;
+  Ruby, Crystals and Gems are all required, and the configured reward is
+  currently: {_format_twitch_reward(twitch_state.get('reward') if isinstance(twitch_state, dict) else None)}.
+  After the stream has ended, use `:claim-tw <twitch_name>` with the exact
+  Twitch login; at least 30 tracked minutes are required and the claim can be
+  made only once for that completed stream. The command cannot be claimed
+  while the stream is still live. This reward does not include XP or Ranked
+  Points. If staff has not registered the reward yet, do not invent amounts;
+  tell the member to wait for staff. Never promise an external Stumble Guys
+  transfer automatically; explain that the server record/leaderboard is
+  updated and staff handles any real-account transfer process that is
+  separately confirmed.
 - Ranked thresholds are:
 {rank_lines}
 
@@ -2398,6 +2415,9 @@ def _new_twitch_live_state() -> dict:
         "dashboard_message_id": None,
         "dashboard_guild_id": None,
         "watch_time": {},
+        # Staff can register the reward later with :log-tw, including after
+        # the stream ends but before viewers claim it.
+        "reward": None,
     }
 
 
@@ -2413,6 +2433,63 @@ def _get_twitch_live_state() -> dict:
     if not isinstance(state.get("watch_time"), dict):
         state["watch_time"] = {}
     return state
+
+
+def _normalise_twitch_reward(reward: dict | None) -> dict | None:
+    """Return a complete positive Ruby/Crystals/Gems reward, if configured."""
+    if not isinstance(reward, dict):
+        return None
+    normalised = {}
+    for currency in ("ruby", "crystals", "gems"):
+        try:
+            amount = int(reward.get(currency, 0))
+        except (TypeError, ValueError):
+            return None
+        if amount <= 0:
+            return None
+        normalised[currency] = amount
+    return normalised
+
+
+def _format_twitch_reward(reward: dict | None) -> str:
+    """Format a configured Twitch reward for Discord and Gemini."""
+    reward = _normalise_twitch_reward(reward)
+    if not reward:
+        return "not registered yet"
+    return (
+        f"{reward['ruby']:,} Ruby + "
+        f"{reward['crystals']:,} Crystals + "
+        f"{reward['gems']:,} Gems"
+    )
+
+
+def _parse_twitch_reward(parts: tuple[str, ...]) -> tuple[dict | None, str | None]:
+    """Parse :log-tw's repeated amount/currency pairs."""
+    if len(parts) != 6:
+        return None, (
+            "Usage: `:log-tw <amount> <currency> <amount> <currency> "
+            "<amount> <currency>` — Ruby, Crystals and Gems are all required."
+        )
+    reward = {}
+    for index in range(0, len(parts), 2):
+        try:
+            amount = int(parts[index].replace(",", "").replace(".", ""))
+        except ValueError:
+            return None, f"❌ `{parts[index]}` is not a valid whole-number amount."
+        if amount <= 0:
+            return None, "❌ Each reward amount must be greater than zero."
+        currency = TWITCH_REWARD_CURRENCY_NAMES.get(parts[index + 1].casefold())
+        if currency is None:
+            return None, (
+                f"❌ Unknown currency `{parts[index + 1]}`. Use Ruby, "
+                "Crystals or Gems."
+            )
+        if currency in reward:
+            return None, f"❌ `{parts[index + 1]}` was entered more than once."
+        reward[currency] = amount
+    if set(reward) != {"ruby", "crystals", "gems"}:
+        return None, "❌ The Twitch reward must include Ruby, Crystals and Gems."
+    return reward, None
 
 
 def _normalise_twitch_name(name: str) -> str:
@@ -2741,12 +2818,14 @@ async def _poll_twitch_live_dashboard() -> None:
 
         stream_id = str(stream.get("id"))
         if not state.get("is_live") or str(state.get("stream_id")) != stream_id:
+            configured_reward = _normalise_twitch_reward(state.get("reward"))
             state.clear()
             state.update(_new_twitch_live_state())
             state.update({
                 "is_live": True,
                 "stream_id": stream_id,
                 "started_at": stream.get("started_at"),
+                "reward": configured_reward,
             })
             chatter_status, chatters = await _get_twitch_chatters(stream.get("user_id", ""))
             if chatter_status == "ok":
@@ -3171,6 +3250,25 @@ async def set_twitch_dashboard(ctx, channel: discord.TextChannel):
     )
 
 
+@bot.command(name="log-tw", aliases=["log_tw"])
+@admin_only()
+async def log_twitch_reward(ctx, *reward_parts: str):
+    """Register the Ruby/Crystals/Gems reward for the Twitch stream."""
+    reward, error = _parse_twitch_reward(reward_parts)
+    if error:
+        return await ctx.send(error, delete_after=12.0)
+    state = _get_twitch_live_state()
+    state["reward"] = reward
+    save_db()
+    await ctx.send(
+        "✅ Twitch reward registered: "
+        f"**{_format_twitch_reward(reward)}**.\n"
+        "Viewers can claim it after the live ends with `:claim-tw <twitch_name>` "
+        "once they have at least 30 tracked minutes.",
+        delete_after=12.0,
+    )
+
+
 @bot.command(name="claim-tw", aliases=["claim_tw"])
 async def claim_twitch_reward(ctx, twitch_name: str):
     """Claim the reward for the most recently completed piccolofe stream."""
@@ -3196,15 +3294,24 @@ async def claim_twitch_reward(ctx, twitch_name: str):
         if minutes < 30:
             return await ctx.send("❌ Not enough watch time (30 mins required).")
 
+        reward = _normalise_twitch_reward(state.get("reward"))
+        if not reward:
+            return await ctx.send(
+                "⏳ The Twitch reward has not been registered by staff yet. "
+                "Please try again later."
+            )
+
         prof = get_profile(ctx.author.id, ctx.author.display_name)
-        _record_gems(ctx.author, TWITCH_REWARD_GEMS)
+        prof["rubini"] = prof.get("rubini", 0) + reward["ruby"]
+        prof["cristalli"] = prof.get("cristalli", 0) + reward["crystals"]
+        _record_gems(ctx.author, reward["gems"])
         row["claimed"] = True
         row["claimed_by"] = ctx.author.id
         save_db()
 
     await ctx.send(
         "✅ Reward claimed! You watched 30+ mins.\n"
-        f"Reward: **{TWITCH_REWARD_GEMS} Gems**."
+        f"Reward: **{_format_twitch_reward(reward)}**."
     )
 
 
@@ -7204,6 +7311,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
             (":set-tw (alias :set_tw)", "Sets the Discord channel for the live Twitch viewer dashboard for piccolofe.", "<#channel> text-channel mention; administrator or owner access.", ":set-tw #twitch-live"),
+            (":log-tw (alias :log_tw)", "Registers the three-part Ruby, Crystals and Gems reward used by :claim-tw.", "<amount> <currency> repeated three times; all three currencies are required; administrator or owner access.", ":log-tw 1000 Ruby 100 Crystals 50 Gems"),
             (":claim-tw (alias :claim_tw)", "Claims the reward for the most recent completed piccolofe stream after at least 30 tracked minutes.", "<twitch_name>; only available after Twitch confirms that the stream has ended.", ":claim-tw MyTwitchName"),
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
             (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
@@ -7228,7 +7336,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "set-supporter", "giveaway", "setup-result",
-        "setup-scomesse", "set-welcome", "add-ticket", "set-tw", "pex", "reset-all",
+        "setup-scomesse", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
