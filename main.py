@@ -1939,10 +1939,10 @@ def build_ai_system_instruction() -> str:
     )
 
 # ── Special role names (auto-created on_ready) ─────────────────────────────
-STUMBLE_GAMBLER_ROLE_NAME   = "Stumble Gambler"
+JACKPOT_ROLE_NAME           = "🎰 Jackpot Winner"
 BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
-SLOT_MACHINE_COST = 500
-SLOT_EMOJIS = ["👑", "💎", "🔴", "🐔"]
+SLOT_MACHINE_MIN_BET = 100
+SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
 
 # ── In-memory: duels & match bets ──────────────────────────────────────────
 active_duels: dict = {}
@@ -8906,147 +8906,139 @@ async def setup_shop(ctx):
 # 🎰 STUMBLE MACHINE
 # ==========================================
 
-def _spin_result(multiplier: int) -> tuple:
-    """Returns (reels, outcome, ruby_win, crystal_win, flavor_text)."""
-    reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
-    if reels[0] == reels[1] == reels[2]:
-        sym = reels[0]
-        if sym == "🐔":
-            return reels, "jackpot_loss", 0, 0, "💀 THREE CHICKENS! You lost everything, champion 🐔🐔🐔\nBetter luck next time!"
-        elif sym == "👑":
-            ruby = random.randint(5000, 10000) * multiplier
-            return reels, "rare", ruby, 0, f"👑 **CROWN JACKPOT!** The **{STUMBLE_GAMBLER_ROLE_NAME}** role was assigned!"
-        elif sym == "💎":
-            ruby = random.randint(2000, 8000) * multiplier
-            return reels, "base_big", ruby, 0, "💎 **TRIPLE DIAMOND!** You are a legend."
-        elif sym == "🔴":
-            crystal = random.randint(500, 2000) * multiplier
-            return reels, "medium", 0, crystal, "🔴 **TRIPLE RED!** Crystals for you!"
-    counts = {e: reels.count(e) for e in set(reels)}
-    best = max(counts, key=counts.get)
-    if counts[best] >= 2 and best != "🐔":
-        ruby = random.randint(100, 2000) * multiplier
-        return reels, "base_small", ruby, 0, f"**Pair of {best}!** Small win."
-    return reels, "loss", 0, 0, "No combination. Better luck next time!"
-
-
-def _machine_embed(prof: dict) -> discord.Embed:
-    e = discord.Embed(
-        title="🎰 Stumble Machine",
-        description=(
-            "**How it works:**\n"
-            "Spin the reels and try your luck! Three matching symbols win.\n\n"
-            f"**Cost:** `{SLOT_MACHINE_COST}` {E_RUBY} · or **x10** for `{SLOT_MACHINE_COST * 10}` {E_RUBY}\n\n"
-            "**Prizes:**\n"
-            "👑👑👑 — **Jackpot**: Ruby casuali + ruolo Stumble Gambler\n"
-            "💎💎💎 — **Grande vincita**: 2.000–8.000 Ruby\n"
-            "🔴🔴🔴 — **Medium win**: 500–2,000 Crystals\n"
-            "🐔🐔🐔 — **Total loss**: lose your wager\n"
-            "2x matching — **Small win**: 100–2,000 Ruby\n\n"
-            f"**Your balance:** {format_num(prof.get('rubini', 0))} {E_RUBY}"
-        ),
-        color=discord.Color.gold()
-    )
-    e.set_image(url=MACHINE_EMBED_IMAGE_URL)
-    e.set_footer(text="PCF™ Machine • Press a button to play!")
-    return e
-
-
-class SlotMachineAmountModal(Modal, title="🎰 Choose your wager"):
-    amount = TextInput(
-        label="How much Ruby do you want to wager?",
-        placeholder="Minimum 500 Ruby, in multiples of 500",
-        min_length=3,
-        max_length=4,
-    )
-
-    def __init__(self, view: "SlotMachineView"):
-        super().__init__()
-        self.machine_view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            amount = int(self.amount.value.strip())
-        except ValueError:
-            return await interaction.response.send_message(
-                "❌ Enter a valid number.", ephemeral=True
-            )
-        if amount < SLOT_MACHINE_COST or amount > SLOT_MACHINE_COST * 10 or amount % SLOT_MACHINE_COST:
-            return await interaction.response.send_message(
-                f"❌ The wager must be a multiple of {SLOT_MACHINE_COST}, "
-                f"between {SLOT_MACHINE_COST} and {SLOT_MACHINE_COST * 10} Ruby.",
-                ephemeral=True,
-            )
-        await self.machine_view._play(interaction, amount // SLOT_MACHINE_COST)
-
-
-class SlotMachineView(View):
-    def __init__(self, user_id: int):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-
-    def _check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.user_id
-
-    async def _play(self, interaction: discord.Interaction, multiplier: int):
-        if not self._check(interaction):
-            return await interaction.response.send_message("❌ This is not your machine!", ephemeral=True)
-        cost = SLOT_MACHINE_COST * multiplier
-        prof = get_profile(interaction.user.id, interaction.user.display_name)
-        if prof.get("rubini", 0) < cost:
-            return await interaction.response.send_message(
-                f"❌ Ruby insufficienti! Ti servono **{format_num(cost)}** {E_RUBY}. "
-                f"You have: {format_num(prof.get('rubini', 0))} {E_RUBY}", ephemeral=True)
-        prof["rubini"] -= cost
-        reels, outcome, ruby_win, crystal_win, flavor = _spin_result(multiplier)
-        reel_str = "  ".join(reels)
-        result_lines = [f"╔══ 🎰 RISULTATO ══╗", f"║  {reel_str}  ║", f"╚═══════════════════╝", f"", flavor]
-        if ruby_win:
-            prof["rubini"] += ruby_win
-            prof["slot_ruby_won"] = prof.get("slot_ruby_won", 0) + ruby_win
-            result_lines.append(f"\n💰 +**{format_num(ruby_win)}** {E_RUBY}")
-        if crystal_win:
-            prof["cristalli"] = prof.get("cristalli", 0) + crystal_win
-            result_lines.append(f"\n💠 +**{format_num(crystal_win)}** {E_CRYSTAL}")
-        if outcome in ("rare",):
-            prof["slot_wins"] = prof.get("slot_wins", 0) + 1
-            # Assign Stumble Gambler role
-            guild = interaction.guild
-            if guild:
-                role = discord.utils.get(guild.roles, name=STUMBLE_GAMBLER_ROLE_NAME)
-                if role:
-                    try:
-                        await interaction.user.add_roles(role, reason="Stumble Machine jackpot")
-                        result_lines.append(f"\n🏅 You received the **{STUMBLE_GAMBLER_ROLE_NAME}** role!")
-                    except Exception:
-                        pass
-        elif outcome in ("base_big", "base_small", "medium"):
-            prof["slot_wins"] = prof.get("slot_wins", 0) + 1
-        save_db()
-        color = discord.Color.green() if outcome != "jackpot_loss" and outcome != "loss" else discord.Color.red()
-        em = discord.Embed(
-            title="🎰 Stumble Machine — Result",
-            description="\n".join(result_lines),
-            color=color
+def _spin_result(bet_amount: int) -> tuple:
+    """Return (reels, outcome, ruby_payout, crystal_payout, flavor_text)."""
+    roll = random.random()
+    if roll < 0.005:
+        return (
+            ["👑", "👑", "👑"],
+            "jackpot",
+            bet_amount * 20,
+            50,
+            "👑 **JACKPOT!** You hit the 20x Ruby prize!",
         )
-        em.set_image(url=MACHINE_EMBED_IMAGE_URL)
-        em.set_footer(text=f"Balance: {format_num(prof['rubini'])} Ruby · {format_num(prof.get('cristalli', 0))} Crystals")
-        # Keep the public machine panel intact; only the player sees the result.
-        await interaction.response.send_message(embed=em, ephemeral=True)
+    if roll < 0.03:
+        return (
+            ["💎", "💎", "💎"],
+            "diamond",
+            bet_amount * 5,
+            15,
+            "💎 **TRIPLE DIAMOND!** You won 5x Ruby and 15 Crystals!",
+        )
+    if roll < 0.15:
+        return (
+            ["🍒", "🍒", "🍒"],
+            "cherries",
+            bet_amount * 3,
+            0,
+            "🍒 **TRIPLE CHERRIES!** You won 3x Ruby!",
+        )
+    if roll < 0.50:
+        pair_symbol = random.choice(SLOT_EMOJIS)
+        third_symbol = random.choice(
+            [symbol for symbol in SLOT_EMOJIS if symbol != pair_symbol]
+        )
+        reels = [pair_symbol, pair_symbol, third_symbol]
+        random.shuffle(reels)
+        return (
+            reels,
+            "pair",
+            bet_amount,
+            0,
+            f"**Pair of {pair_symbol}!** Your bet was refunded.",
+        )
 
-    @discord.ui.button(label="🎰 Wager", style=discord.ButtonStyle.primary)
-    async def choose_amount(self, interaction: discord.Interaction, button: Button):
-        if not self._check(interaction):
-            return await interaction.response.send_message("❌ This is not your machine!", ephemeral=True)
-        await interaction.response.send_modal(SlotMachineAmountModal(self))
+    # Three distinct symbols represent the no-match outcome.
+    reels = random.sample(SLOT_EMOJIS, 3)
+    return reels, "loss", 0, 0, "No match. You lost the bet."
 
 
 @bot.command(name="machine")
 @owner_only()
-async def machine_cmd(ctx):
-    """🎰 Stumble Machine — spin the reels and win Ruby or Crystals!"""
+async def machine_cmd(ctx, bet_amount: int = SLOT_MACHINE_MIN_BET):
+    """🎰 Stumble Machine — spin with an optional Ruby bet."""
+    if bet_amount < SLOT_MACHINE_MIN_BET:
+        return await ctx.send(
+            f"❌ The minimum bet is **{format_num(SLOT_MACHINE_MIN_BET)}** {E_RUBY}.",
+            delete_after=6.0,
+        )
     prof = get_profile(ctx.author.id, ctx.author.display_name)
-    await ctx.send(embed=_machine_embed(prof), view=SlotMachineView(ctx.author.id))
+    if prof.get("rubini", 0) < bet_amount:
+        return await ctx.send(
+            f"❌ You need at least **{format_num(bet_amount)}** {E_RUBY} to play. "
+            f"Your balance: **{format_num(prof.get('rubini', 0))}** {E_RUBY}.",
+            delete_after=6.0,
+        )
+
+    prof["rubini"] -= bet_amount
+    reels, outcome, ruby_payout, crystal_payout, flavor = _spin_result(bet_amount)
+    prof["rubini"] += ruby_payout
+    prof["cristalli"] = prof.get("cristalli", 0) + crystal_payout
+    if ruby_payout:
+        prof["slot_ruby_won"] = prof.get("slot_ruby_won", 0) + ruby_payout
+    if outcome != "loss":
+        prof["slot_wins"] = prof.get("slot_wins", 0) + 1
+
+    role_notice = None
+    if outcome == "jackpot":
+        guild = ctx.guild
+        if guild:
+            try:
+                jackpot_role = discord.utils.get(guild.roles, name=JACKPOT_ROLE_NAME)
+                role_created = jackpot_role is None
+                if role_created:
+                    jackpot_role = await guild.create_role(
+                        name=JACKPOT_ROLE_NAME,
+                        color=discord.Color.gold(),
+                        reason="Create Stumble Machine jackpot role",
+                    )
+                await ctx.author.add_roles(jackpot_role, reason="Stumble Machine jackpot")
+                role_notice = (
+                    f"🎰 The **{JACKPOT_ROLE_NAME}** role was "
+                    f"{'created and ' if role_created else ''}granted to you!"
+                )
+            except discord.Forbidden:
+                role_notice = (
+                    f"⚠️ Jackpot role creation or assignment failed. "
+                    f"Please give the bot permission to manage roles."
+                )
+            except discord.HTTPException as exc:
+                print(f"[MACHINE ROLE ERROR] {exc}")
+                role_notice = "⚠️ The jackpot role could not be assigned."
+
+    save_db()
+    reel_str = "  ".join(reels)
+    payout_parts = []
+    if ruby_payout:
+        payout_parts.append(f"**{format_num(ruby_payout)}** {E_RUBY}")
+    if crystal_payout:
+        payout_parts.append(f"**{format_num(crystal_payout)}** {E_CRYSTAL}")
+    total_payout = " + ".join(payout_parts) if payout_parts else "**0**"
+    result_lines = [
+        f"**Rolled:** {reel_str}",
+        f"**Bet:** {format_num(bet_amount)} {E_RUBY}",
+        f"**Total payout:** {total_payout}",
+        "",
+        flavor,
+    ]
+    if role_notice:
+        result_lines.extend(["", role_notice])
+    color = discord.Color.gold() if outcome == "jackpot" else (
+        discord.Color.green() if outcome != "loss" else discord.Color.red()
+    )
+    embed = discord.Embed(
+        title="🎰 Stumble Machine — Result",
+        description="\n".join(result_lines),
+        color=color,
+    )
+    embed.set_image(url=MACHINE_EMBED_IMAGE_URL)
+    embed.set_footer(
+        text=(
+            f"Balance: {format_num(prof['rubini'])} Ruby · "
+            f"{format_num(prof.get('cristalli', 0))} Crystals"
+        )
+    )
+    await ctx.send(embed=embed)
 
 
 # ==========================================
