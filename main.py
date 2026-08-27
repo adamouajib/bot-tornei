@@ -410,7 +410,7 @@ E_W       = "<:emoji_45:1507810623063461948>"
 TICKET_SUPPORT_CAT  = 1410695991660908604
 TICKET_STAFF_CAT    = 1410695994114310247
 TICKET_GEMS_CAT     = 1410695992998756352
-SUPPORTER_ROLE_ID   = 1410695946588913684
+SUPPORTER_ROLE_ID   = 1542646365954379866
 HIGH_STAFF_ROLE_NAME = "High staff"
 
 # In-memory: {user_id_str: {"channel_id": int, "type": str, "claimed_by": int|None}}
@@ -457,7 +457,8 @@ EVENT_INFO_CHANNEL_ID  = 1410696018231824508
 EVENT_START_CHANNEL_ID = 1410696026830143559
 
 ADMIN_TOUR_ROLE_ID  = 1510189891361837167   # can host FFA / World Cup
-BOOSTER_ROLE_ID     = 1410695942574833675   # given on boost
+BOOSTER_ROLE_ID     = 1164660692134150184   # [W] role given on boost
+VIP_ROLE_ID         = 1201072892398547004   # Twitch VIP role
 SG_VERIFIED_ROLE_ID = 1510193637785473185   # given after SG account link
 SG_LINK_TICKET_CAT  = 1510195918291468420   # category for SG link tickets
 SG_LINK_CHANNEL_ID  = 1542227301322719314  # channel containing the SG link setup button
@@ -634,7 +635,7 @@ ADMIN_COMMANDS = {
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
     "linked", "leaderboard", "gems", "stumble-top", "set-tw", "setup-shop",
-    "set-perks",
+    "set-perks", "set-p",
 }
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
@@ -2249,11 +2250,23 @@ def _member_has_role_name(member: discord.Member, role_name: str) -> bool:
     )
 
 
+def _member_has_role_id(member: discord.Member, role_id: int) -> bool:
+    """Check a member's live Discord roles by configured role ID."""
+    return any(
+        getattr(role, "id", None) == role_id
+        for role in getattr(member, "roles", ())
+    )
+
+
 def _member_has_booster_status(member: discord.Member) -> bool:
     """Return whether a member currently has booster status."""
-    return _member_has_role_name(member, BOOSTER_PERK_ROLE_NAME) or bool(
-        getattr(member, "premium_subscriber", False)
-        or getattr(member, "premium_since", None)
+    return (
+        _member_has_role_id(member, BOOSTER_ROLE_ID)
+        or _member_has_role_name(member, BOOSTER_PERK_ROLE_NAME)
+        or bool(
+            getattr(member, "premium_subscriber", False)
+            or getattr(member, "premium_since", None)
+        )
     )
 
 
@@ -2281,17 +2294,21 @@ def _member_has_bio_perk_link(member: discord.Member) -> bool:
 
 def _has_custom_tournament_access(member: discord.Member) -> bool:
     """VIPs and server boosters may create one custom tournament per day."""
-    return _member_has_role_name(member, VIP_ROLE_NAME) or _member_has_role_name(
-        member,
-        BOOSTER_PERK_ROLE_NAME,
+    return (
+        _member_has_role_id(member, VIP_ROLE_ID)
+        or _member_has_role_name(member, VIP_ROLE_NAME)
+        or _member_has_role_id(member, BOOSTER_ROLE_ID)
+        or _member_has_role_name(member, BOOSTER_PERK_ROLE_NAME)
     )
 
 
 def _tournament_perk(member: discord.Member) -> tuple[int, str | None]:
     """Return the highest-priority tournament multiplier and perk label."""
-    if _member_has_role_name(member, VIP_ROLE_NAME):
+    if _member_has_role_id(member, VIP_ROLE_ID) or _member_has_role_name(
+        member, VIP_ROLE_NAME
+    ):
         return 5, VIP_ROLE_NAME
-    if _member_has_role_name(member, BOOSTER_PERK_ROLE_NAME):
+    if _member_has_booster_status(member):
         return 3, BOOSTER_PERK_ROLE_NAME
     if _member_has_role_name(member, BIO_SUPPORTER_ROLE_NAME):
         return 2, BIO_SUPPORTER_ROLE_NAME
@@ -2336,7 +2353,17 @@ def _format_cooldown(seconds: int) -> str:
 
 
 def _perk_role(guild: discord.Guild, role_name: str) -> discord.Role | None:
-    """Find a perk role by its exact name."""
+    """Find a configured perk role by ID, then fall back to its exact name."""
+    configured_role_ids = {
+        BOOSTER_PERK_ROLE_NAME: BOOSTER_ROLE_ID,
+        BIO_SUPPORTER_ROLE_NAME: SUPPORTER_ROLE_ID,
+        VIP_ROLE_NAME: VIP_ROLE_ID,
+    }
+    configured_role_id = configured_role_ids.get(role_name)
+    if configured_role_id:
+        role = guild.get_role(configured_role_id)
+        if role:
+            return role
     return discord.utils.get(guild.roles, name=role_name)
 
 
@@ -3670,6 +3697,7 @@ async def on_ready():
             SupporterVerifyView(),
             TourRegisterView(),
             TourHubView(),
+            CustomTournamentPanelView(),
             StaffLbView(),
         ):
             bot.add_view(view)
@@ -3700,7 +3728,7 @@ async def on_ready():
             (BIO_SUPPORTER_ROLE_NAME,     discord.Color.from_rgb(26, 188, 156)),
             (VIP_ROLE_NAME,               discord.Color.from_rgb(155, 89, 182)),
         ]:
-            if not discord.utils.get(guild.roles, name=role_name):
+            if not _perk_role(guild, role_name):
                 try:
                     await guild.create_role(
                         name=role_name, color=color,
@@ -3882,8 +3910,8 @@ async def set_perks(ctx):
                 "**🎁 Active Perks**\n"
                 "╰ **2x Rubies** earned in all Tournaments\n\n"
                 "**📌 How to activate:**\n"
-                "╰ Add `discord.gg/YOURSERVER` to your Bio or Custom Status\n"
-                "╰ Run the `:checkbio` command to claim the role and perks!\n\n"
+                "╰ Add the server link (`discord.gg/SERVERLINK`) to your Custom Status\n"
+                "╰ Run the `:supporter` command to claim the role and perks!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=discord.Color.from_rgb(26, 188, 156),
@@ -5171,6 +5199,70 @@ class TourHubView(View):
         )
 
 
+def _build_custom_tournament_panel_embed() -> discord.Embed:
+    return discord.Embed(
+        title="🏆 CREATE CUSTOM TOURNAMENT",
+        description=(
+            "**Exclusive Feature for VIPs and Boosters!**\n"
+            "╰ Click the button below to set up your daily custom tournament."
+        ),
+        color=discord.Color.from_rgb(255, 215, 0),
+    )
+
+
+class CustomTournamentPanelView(View):
+    """Permanent public panel that opens the VIP/booster tournament flow."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="🏆 Create Tournament",
+        style=discord.ButtonStyle.primary,
+        custom_id="create_tourney_btn",
+    )
+    async def create_tournament(
+        self,
+        interaction: discord.Interaction,
+        button: Button,
+    ):
+        if not _has_custom_tournament_access(interaction.user):
+            return await interaction.response.send_message(
+                "❌ Access Denied: Only VIPs and Boosters can create custom tournaments!",
+                ephemeral=True,
+            )
+
+        remaining = _perk_cooldown_remaining(
+            interaction.user.id,
+            "create_tourney",
+            86400,
+        )
+        if remaining:
+            return await interaction.response.send_message(
+                f"⏳ You can create another custom tournament in "
+                f"**{_format_cooldown(remaining)}**.",
+                ephemeral=True,
+            )
+        if db.get("tour"):
+            return await interaction.response.send_message(
+                "❌ There is already an active tournament.",
+                ephemeral=True,
+            )
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="✨ Custom Tournament",
+                description=(
+                    "Choose a format below to create your custom tournament.\n\n"
+                    "Your VIP or booster perk allows **one custom tournament every 24 hours**."
+                ),
+                color=discord.Color.from_rgb(155, 89, 182),
+            ),
+            view=TourHubView(perk_host_id=interaction.user.id),
+            ephemeral=True,
+        )
+
+
 @bot.command(name="assign-hosts", aliases=["assign_hosts"])
 @hoster_only()
 async def assign_hosts(ctx):
@@ -5303,6 +5395,16 @@ async def create_custom_tournament(ctx):
         color=discord.Color.from_rgb(155, 89, 182),
     )
     await ctx.send(embed=embed, view=TourHubView(perk_host_id=ctx.author.id))
+
+
+@bot.command(name="set-P", aliases=["set-p", "set_p"])
+@admin_only()
+async def set_custom_tournament_panel(ctx):
+    """Publish the permanent custom tournament creation panel."""
+    await ctx.send(
+        embed=_build_custom_tournament_panel_embed(),
+        view=CustomTournamentPanelView(),
+    )
 
 
 @bot.command(name="big-tour")
@@ -8328,6 +8430,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
             (":setup-shop (alias :setup_shop)", "Replaces old shop panels in the current channel with one persistent three-embed shop panel.", "No arguments; administrator access.", ":setup-shop"),
              (":set-perks (alias :set_perks)", "Publishes the three separate Booster, Bio Supporter and Twitch VIP perk panels.", "No arguments; administrator access.", ":set-perks"),
+            (":set-P (aliases :set-p, :set_p)", "Publishes the permanent custom tournament creation panel.", "No arguments; administrator access.", ":set-P"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
             (":set-tw (alias :set_tw)", "Sets the Discord channel for the live Twitch viewer dashboard for piccolofe.", "<#channel> text-channel mention; administrator or owner access.", ":set-tw #twitch-live"),
@@ -8356,7 +8459,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
-        "setup-scomesse", "setup-shop", "set-perks", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
+        "setup-scomesse", "setup-shop", "set-perks", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
