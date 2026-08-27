@@ -2219,7 +2219,6 @@ def build_ai_system_instruction() -> str:
 # ── Special role names (auto-created on_ready) ─────────────────────────────
 JACKPOT_ROLE_NAME           = "🎰 Jackpot Winner"
 UNBOXER_ROLE_NAME           = "📦 Unboxer Supremo"
-BLOCK_DASH_LEGEND_ROLE_NAME = "Block Dash Legend"
 BOOSTER_PERK_ROLE_NAME      = "[W]"
 BIO_SUPPORTER_ROLE_NAME     = "[S]"
 VIP_ROLE_NAME               = "VIP"
@@ -3721,7 +3720,6 @@ async def on_ready():
     for guild in bot.guilds:
         for role_name, color in [
             (JACKPOT_ROLE_NAME,           discord.Color.gold()),
-            (BLOCK_DASH_LEGEND_ROLE_NAME, discord.Color.purple()),
             ("W", discord.Color.gold()),
             (BOOSTER_PERK_ROLE_NAME,      discord.Color.from_rgb(244, 127, 255)),
             (BIO_SUPPORTER_ROLE_NAME,     discord.Color.from_rgb(26, 188, 156)),
@@ -10388,6 +10386,7 @@ class DuelView(View):
         self.bet_a: int | None = None   # challenger's ruby bet
         self.bet_b: int | None = None   # challenged's ruby bet
         self.confirmed: set  = set()    # ids who confirmed
+        self.duel_thread: discord.Thread | None = None
         self._msg: discord.Message | None = None
 
     # ── Helpers ────────────────────────────────────────────────────────────
@@ -10412,12 +10411,64 @@ class DuelView(View):
         for b in buttons:
             self.add_item(b)
 
+    async def _create_duel_thread(self, interaction: discord.Interaction) -> discord.Thread:
+        """Create a private thread where the two players coordinate their match."""
+        channel = interaction.channel
+        parent_channel = (
+            channel.parent if isinstance(channel, discord.Thread) else channel
+        )
+        if not isinstance(parent_channel, discord.TextChannel):
+            raise RuntimeError("A private duel thread can only be created in a text channel.")
+
+        thread_name = (
+            f"⚔️ 1v1 • {self.challenger.display_name} vs "
+            f"{self.challenged.display_name}"
+        )[:100]
+        thread = await parent_channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            auto_archive_duration=1440,
+            invitable=False,
+            reason="Create private 1v1 duel thread",
+        )
+        try:
+            await thread.add_user(self.challenger)
+            await thread.add_user(self.challenged)
+            await thread.send(
+                f"⚔️ **1v1 thread:** {self.challenger.mention} vs "
+                f"{self.challenged.mention}\n\n"
+                "Choose any Stumble Guys map together. The bot does not choose "
+                "the map, and no role is awarded for winning this duel."
+            )
+        except Exception:
+            try:
+                await thread.delete(reason="Duel thread setup failed")
+            except Exception:
+                pass
+            raise
+        return thread
+
     # ── Phase 1: Accept / Refuse ────────────────────────────────────────────
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="duel_accept")
     async def accept(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.challenged.id:
             return await interaction.response.send_message("❌ Only the challenged player can accept!", ephemeral=True)
+        try:
+            self.duel_thread = await self._create_duel_thread(interaction)
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "❌ I couldn't create the private duel thread. "
+                "Please give me permission to create and manage private threads.",
+                ephemeral=True,
+            )
+        except (discord.HTTPException, RuntimeError) as exc:
+            print(f"[1v1 thread error] {exc}")
+            return await interaction.response.send_message(
+                "❌ I couldn't create the private duel thread. Please try again "
+                "or ask staff to check the channel permissions.",
+                ephemeral=True,
+            )
         self.state = "wagering"
         self.clear_items()
         # Add wager buttons
@@ -10430,6 +10481,9 @@ class DuelView(View):
         em = self._duel_embed(
             "⚔️ Challenge Accepted!",
             f"{self.challenged.mention} accepted the challenge!\n\n"
+            f"🔒 Private duel thread: {self.duel_thread.mention}\n"
+            f"Choose any Stumble Guys map together in that thread; the bot "
+            f"does not choose the map.\n\n"
             f"**Phase 2:** Each player enters their wager using their button.",
             discord.Color.orange()
         )
@@ -10558,22 +10612,12 @@ class DuelView(View):
         prof_w["rubini"]    = prof_w.get("rubini", 0) + total
         prof_w["duel_wins"] = prof_w.get("duel_wins", 0) + 1
         save_db()
-        # Assign Block Dash Legend role
-        guild = interaction.guild
-        legend_role = discord.utils.get(guild.roles, name=BLOCK_DASH_LEGEND_ROLE_NAME) if guild else None
-        role_txt = ""
-        if legend_role:
-            try:
-                await winner.add_roles(legend_role, reason="1v1 winner")
-                role_txt = f"\n🏅 The **{BLOCK_DASH_LEGEND_ROLE_NAME}** role was assigned!"
-            except Exception:
-                pass
         for child in self.children:
             child.disabled = True
         em = discord.Embed(
             title="🏆 Duel Finished!",
             description=(
-                f"**Winner:** {winner.mention}{role_txt}\n"
+                f"**Winner:** {winner.mention}\n"
                 f"**+{format_num(total)}** {E_RUBY} awarded!\n\n"
                 f"Arbiter: {interaction.user.mention}"
             ),
@@ -10601,7 +10645,8 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
         description=(
             f"{ctx.author.mention} challenged {opponent.mention} to a duel!\n\n"
             f"**{opponent.display_name}**, do you accept the challenge?\n\n"
-            f"The winner receives the entire wager and the **{BLOCK_DASH_LEGEND_ROLE_NAME}** role! 🏅"
+            f"The winner receives the entire wager. After acceptance, "
+            f"a private thread will be created so you can choose the map together."
         ),
         color=discord.Color.blue()
     )
