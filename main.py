@@ -309,6 +309,20 @@ def _persist_state() -> None:
             for winner in event.get("winners", [])
         ]
     state["event"] = event
+    # Ticket button callbacks can be dispatched by a persistent view after a
+    # restart, so keep the small amount of routing state they need in SQLite.
+    state["active_tickets"] = {
+        str(user_id): dict(ticket)
+        for user_id, ticket in active_tickets.items()
+    }
+    state["ticket_channel_map"] = {
+        str(channel_id): int(user_id)
+        for channel_id, user_id in ticket_channel_map.items()
+    }
+    state["supporter_verifications"] = {
+        str(channel_id): dict(request)
+        for channel_id, request in db.get("supporter_verifications", {}).items()
+    }
     conn = _sqlite_conn()
     with _sqlite_lock:
         try:
@@ -337,6 +351,14 @@ def load_db():
     for key, value_json in rows:
         db[key] = json.loads(value_json)
     db["profiles"] = SQLiteProfileStore()
+    active_tickets.clear()
+    active_tickets.update(db.get("active_tickets", {}))
+    ticket_channel_map.clear()
+    ticket_channel_map.update({
+        int(channel_id): int(user_id)
+        for channel_id, user_id in db.get("ticket_channel_map", {}).items()
+    })
+    db["supporter_verifications"] = db.get("supporter_verifications", {})
     print(f"[load_db] SQLite loaded — {len(db['profiles'])} profiles")
 
 
@@ -2214,6 +2236,7 @@ _chest_panel_view_registered = False
 _ticket_main_view_registered = False
 _supporter_weekly_view_registered = False
 _sg_link_channel_view_registered = False
+_additional_persistent_views_registered = False
 
 
 def _member_has_role_name(member: discord.Member, role_name: str) -> bool:
@@ -3595,6 +3618,7 @@ async def on_ready():
     global _shop_panel_view_registered, _machine_panel_view_registered
     global _chest_panel_view_registered, _ticket_main_view_registered
     global _supporter_weekly_view_registered, _sg_link_channel_view_registered
+    global _additional_persistent_views_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
@@ -3634,6 +3658,21 @@ async def on_ready():
         bot.add_view(SGLinkChannelView())
         _sg_link_channel_view_registered = True
         print("[on_ready] Persistent SG link panel view registered")
+    if not _additional_persistent_views_registered:
+        # These views either have no per-message state or resolve their
+        # routing data from SQLite, so old messages remain actionable after a
+        # process restart.
+        for view in (
+            TicketControlView(),
+            StaffRequestControlView(),
+            SupporterVerifyView(),
+            TourRegisterView(),
+            TourHubView(),
+            StaffLbView(),
+        ):
+            bot.add_view(view)
+        _additional_persistent_views_registered = True
+        print("[on_ready] Additional persistent views registered")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening, name="PCF™ Official Assistant"))
     await send_setup_notifications()
@@ -4350,7 +4389,11 @@ class TeamInviteView(View):
         self.leader_name = leader_name
         self.mode       = mode
 
-    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="✅ Accept",
+        style=discord.ButtonStyle.success,
+        custom_id="team_invite_accept",
+    )
     async def accept(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.invitee_id:
             return await interaction.response.send_message("❌ This invite is not for you.", ephemeral=True)
@@ -4366,7 +4409,11 @@ class TeamInviteView(View):
         )
         await _check_team_complete(interaction.guild, self.team_id)
 
-    @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="❌ Decline",
+        style=discord.ButtonStyle.danger,
+        custom_id="team_invite_decline",
+    )
     async def decline(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.invitee_id:
             return await interaction.response.send_message("❌ This invite is not for you.", ephemeral=True)
@@ -4724,7 +4771,11 @@ class _TourStep2View(View):
         super().__init__(timeout=300)
         self.uid = uid
 
-    @discord.ui.button(label="⚙️ Go to Step 2 / 3", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="⚙️ Go to Step 2 / 3",
+        style=discord.ButtonStyle.primary,
+        custom_id="tour_setup_step2",
+    )
     async def step2(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.uid:
             return await interaction.response.send_message("❌ This is not your setup!", ephemeral=True)
@@ -4738,7 +4789,11 @@ class _TourStep3View(View):
         super().__init__(timeout=300)
         self.uid = uid
 
-    @discord.ui.button(label="📝 Go to Step 3 / 3", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="📝 Go to Step 3 / 3",
+        style=discord.ButtonStyle.success,
+        custom_id="tour_setup_step3",
+    )
     async def step3(self, interaction: discord.Interaction, button: Button):
         if str(interaction.user.id) != self.uid:
             return await interaction.response.send_message("❌ This is not your setup!", ephemeral=True)
@@ -4996,15 +5051,27 @@ class TourSelectView(View):
         except Exception:
             pass
 
-    @discord.ui.button(label="⚔️ FFA — 1v1v1", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="⚔️ FFA — 1v1v1",
+        style=discord.ButtonStyle.primary,
+        custom_id="tour_select_ffa",
+    )
     async def ffa(self, interaction: discord.Interaction, button: Button):
         await self._open(interaction, "FFA")
 
-    @discord.ui.button(label="🏆 Classic", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="🏆 Classic",
+        style=discord.ButtonStyle.success,
+        custom_id="tour_select_classic",
+    )
     async def classic(self, interaction: discord.Interaction, button: Button):
         await self._open(interaction, "Classic")
 
-    @discord.ui.button(label="🌍 World Cup", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="🌍 World Cup",
+        style=discord.ButtonStyle.danger,
+        custom_id="tour_select_worldcup",
+    )
     async def worldcup(self, interaction: discord.Interaction, button: Button):
         await self._open(interaction, "World Cup")
 
@@ -5732,7 +5799,11 @@ async def winner_tour(ctx, *winners: discord.Member):
                 super().__init__(timeout=None)
                 self._sent = False
 
-            @discord.ui.button(label="📤 Sent — Notify All Participants", style=discord.ButtonStyle.success)
+            @discord.ui.button(
+                label="📤 Sent — Notify All Participants",
+                style=discord.ButtonStyle.success,
+                custom_id="big_tour_notify_participants",
+            )
             async def sent_btn(self, interaction: discord.Interaction, button: Button):
                 if self._sent:
                     return await interaction.response.send_message("Already sent!", ephemeral=True)
@@ -5911,7 +5982,12 @@ class EventSetupView(View):
         self.host_id = host_id
         self.channel = channel
 
-    @discord.ui.button(label="⚡ Configure Event", style=discord.ButtonStyle.primary, emoji="📋")
+    @discord.ui.button(
+        label="⚡ Configure Event",
+        style=discord.ButtonStyle.primary,
+        emoji="📋",
+        custom_id="event_setup_configure",
+    )
     async def setup(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.host_id:
             return await interaction.response.send_message("❌ Only the host can do this!", ephemeral=True)
@@ -6123,7 +6199,12 @@ class BigEventSetupView(View):
         self.host_id = host_id
         self.channel = channel
 
-    @discord.ui.button(label="📝 Configure Big Event", style=discord.ButtonStyle.primary, emoji="🌟")
+    @discord.ui.button(
+        label="📝 Configure Big Event",
+        style=discord.ButtonStyle.primary,
+        emoji="🌟",
+        custom_id="big_event_setup_configure",
+    )
     async def setup(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.host_id:
             return await interaction.response.send_message("❌ Only the host can do this!", ephemeral=True)
@@ -6199,7 +6280,11 @@ class BigEventWinnerView(View):
         self.host_id = host_id
         self.channel = channel
 
-    @discord.ui.button(label="🏆 Set Winners", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="🏆 Set Winners",
+        style=discord.ButtonStyle.success,
+        custom_id="big_event_set_winners",
+    )
     async def set_winner_btn(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.host_id:
             return await interaction.response.send_message("❌ Only the host can do this!", ephemeral=True)
@@ -6252,7 +6337,11 @@ class ResetConfirmView(View):
     def __init__(self):
         super().__init__(timeout=30)
 
-    @discord.ui.button(label="⚠️ Yes, reset everything", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="⚠️ Yes, reset everything",
+        style=discord.ButtonStyle.danger,
+        custom_id="reset_all_confirm",
+    )
     async def confirm(self, interaction: discord.Interaction, button: Button):
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Admins only.", ephemeral=True)
@@ -6265,7 +6354,11 @@ class ResetConfirmView(View):
             child.disabled = True
         await interaction.response.edit_message(content="✅ **Reset complete.**", embed=None, view=self)
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="❌ Cancel",
+        style=discord.ButtonStyle.secondary,
+        custom_id="reset_all_cancel",
+    )
     async def cancel(self, interaction: discord.Interaction, button: Button):
         for child in self.children:
             child.disabled = True
@@ -6292,13 +6385,28 @@ async def reset_all(ctx):
 ticket_channel_map: dict = {}
 
 class TicketControlView(View):
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int | None = None):
         super().__init__(timeout=None)
         self.user_id = user_id
 
+    def _resolve_user_id(self, interaction: discord.Interaction) -> int | None:
+        if self.user_id is not None:
+            return self.user_id
+        channel_id = getattr(interaction.channel, "id", None)
+        mapped_user_id = ticket_channel_map.get(channel_id)
+        if mapped_user_id is not None:
+            return int(mapped_user_id)
+        for user_id, ticket in active_tickets.items():
+            if int(ticket.get("channel_id", 0)) == channel_id:
+                return int(user_id)
+        return None
+
     @discord.ui.button(label="🙋 Claim", style=discord.ButtonStyle.primary, custom_id="ticket_claim")
     async def claim(self, interaction: discord.Interaction, button: Button):
-        uid = str(self.user_id)
+        user_id = self._resolve_user_id(interaction)
+        if user_id is None:
+            return await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+        uid = str(user_id)
         if uid not in active_tickets:
             return await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
         t = active_tickets[uid]
@@ -6310,10 +6418,14 @@ class TicketControlView(View):
         await interaction.response.send_message(
             f"✅ {interaction.user.mention} claimed the ticket.", ephemeral=False
         )
+        save_db()
 
     @discord.ui.button(label="🔒 Close", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close(self, interaction: discord.Interaction, button: Button):
-        uid = str(self.user_id)
+        user_id = self._resolve_user_id(interaction)
+        if user_id is None:
+            return await interaction.response.send_message("❌ Ticket not found.", ephemeral=True)
+        uid = str(user_id)
         channel = interaction.channel
         await interaction.response.send_message("🔒 Ticket closed. Channel will be deleted in 5 seconds.")
         if uid in active_tickets:
@@ -6326,6 +6438,7 @@ class TicketControlView(View):
             del active_tickets[uid]
         if channel.id in ticket_channel_map:
             del ticket_channel_map[channel.id]
+        save_db()
         await asyncio.sleep(5)
         try:
             await channel.delete()
@@ -6333,23 +6446,41 @@ class TicketControlView(View):
             pass
 
 class StaffRequestControlView(View):
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int | None = None):
         super().__init__(timeout=None)
         self.user_id = user_id
 
+    def _resolve_user_id(self, interaction: discord.Interaction) -> int | None:
+        if self.user_id is not None:
+            return self.user_id
+        channel_id = getattr(interaction.channel, "id", None)
+        mapped_user_id = ticket_channel_map.get(channel_id)
+        if mapped_user_id is not None:
+            return int(mapped_user_id)
+        for user_id, ticket in active_tickets.items():
+            if (
+                int(ticket.get("channel_id", 0)) == channel_id
+                and ticket.get("type") == "staff"
+            ):
+                return int(user_id)
+        return None
+
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="staff_accept")
     async def accept(self, interaction: discord.Interaction, button: Button):
+        user_id = self._resolve_user_id(interaction)
+        if user_id is None:
+            return await interaction.response.send_message("❌ Application not found.", ephemeral=True)
         guild = interaction.guild
-        member = guild.get_member(self.user_id)
+        member = guild.get_member(user_id)
         if not member and guild:
             try:
-                member = await guild.fetch_member(self.user_id)
+                member = await guild.fetch_member(user_id)
             except Exception:
                 pass
         if not member:
             return await interaction.response.send_message("❌ User not found in server.", ephemeral=True)
         # Determine which roles to give based on application answer
-        role_type = active_tickets.get(str(self.user_id), {}).get("role_type", "staff")
+        role_type = active_tickets.get(str(user_id), {}).get("role_type", "staff")
         roles_given = []
         if role_type in ("staff", "both"):
             trial_role = guild.get_role(TRIAL_MOD_ROLE_ID)
@@ -6395,12 +6526,13 @@ class StaffRequestControlView(View):
         await interaction.response.edit_message(
             content=f"✅ **{member.display_name}** accepted! Roles given: {role_str}", view=self
         )
-        uid = str(self.user_id)
+        uid = str(user_id)
         if uid in active_tickets:
             del active_tickets[uid]
         channel = interaction.channel
         if channel.id in ticket_channel_map:
             del ticket_channel_map[channel.id]
+        save_db()
         await asyncio.sleep(5)
         try:
             await channel.delete()
@@ -6409,12 +6541,15 @@ class StaffRequestControlView(View):
 
     @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id="staff_decline")
     async def decline(self, interaction: discord.Interaction, button: Button):
+        user_id = self._resolve_user_id(interaction)
+        if user_id is None:
+            return await interaction.response.send_message("❌ Application not found.", ephemeral=True)
         guild = interaction.guild
-        member = guild.get_member(self.user_id)
+        member = guild.get_member(user_id)
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(
-            content=f"❌ Application from **{member.display_name if member else self.user_id}** declined.", view=self
+            content=f"❌ Application from **{member.display_name if member else user_id}** declined.", view=self
         )
         if member:
             try:
@@ -6432,12 +6567,13 @@ class StaffRequestControlView(View):
                 await member.send(embed=embed)
             except Exception:
                 pass
-        uid = str(self.user_id)
+        uid = str(user_id)
         if uid in active_tickets:
             del active_tickets[uid]
         channel = interaction.channel
         if channel.id in ticket_channel_map:
             del ticket_channel_map[channel.id]
+        save_db()
         await asyncio.sleep(5)
         try:
             await channel.delete()
@@ -6480,6 +6616,7 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
         "role_type": role_type,
     }
     ticket_channel_map[ch.id] = user.id
+    save_db()
     embed = discord.Embed(title=f"📋 Staff Application — {user.display_name}", color=discord.Color.blue())
     embed.add_field(name="👤 User",        value=user.mention,             inline=True)
     embed.add_field(name="📅 Age",         value=answers.get("age","—"),   inline=True)
@@ -6531,6 +6668,7 @@ class TicketMainView(View):
 
         active_tickets[uid] = {"channel_id": ch.id, "type": "support", "claimed_by": None, "user_id_int": interaction.user.id}
         ticket_channel_map[ch.id] = interaction.user.id
+        save_db()
 
         ctrl_embed = discord.Embed(
             title=f"🎫 Support Ticket — {interaction.user.display_name}",
@@ -6561,6 +6699,7 @@ class TicketMainView(View):
             await interaction.response.send_message("❌ I can't open a DM with you. Enable DMs from this server.", ephemeral=True)
             del active_tickets[uid]
             del ticket_channel_map[ch.id]
+            save_db()
             await ch.delete()
 
     @discord.ui.button(label="👮 Staff Request", style=discord.ButtonStyle.success, custom_id="ticket_staff")
@@ -7000,27 +7139,39 @@ async def on_message(message: discord.Message):
 # ==========================================
 class SupporterVerifyView(View):
     """Accept/Reject view for staff in the verification ticket."""
-    def __init__(self, user_id: int, name: str):
+    def __init__(self, user_id: int | None = None, name: str = ""):
         super().__init__(timeout=None)
         self.user_id = user_id
         self.name    = name
 
+    def _request_data(self, interaction: discord.Interaction) -> tuple[int | None, str]:
+        if self.user_id is not None:
+            return self.user_id, self.name
+        request = db.get("supporter_verifications", {}).get(
+            str(getattr(interaction.channel, "id", ""))
+        ) or {}
+        raw_user_id = request.get("user_id")
+        return (int(raw_user_id) if raw_user_id is not None else None), request.get("name", "")
+
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="sup_ver_accept")
     async def accept(self, interaction: discord.Interaction, button: Button):
+        user_id, name = self._request_data(interaction)
+        if user_id is None:
+            return await interaction.response.send_message("❌ Verification request not found.", ephemeral=True)
         guild  = interaction.guild
-        member = guild.get_member(self.user_id) if guild else None
+        member = guild.get_member(user_id) if guild else None
         if not member and guild:
             try:
-                member = await guild.fetch_member(self.user_id)
+                member = await guild.fetch_member(user_id)
             except Exception:
                 pass
         if not member:
             return await interaction.response.send_message("❌ User not found in server.", ephemeral=True)
-        uid_str    = str(self.user_id)
+        uid_str    = str(user_id)
         now        = datetime.utcnow()
         supporters = db.setdefault("supporters", {})
         supporters[uid_str] = {
-            "name":          self.name,
+            "name":          name,
             "joined_at":     now.isoformat(),
             "last_rewarded": now.isoformat(),
         }
@@ -7050,7 +7201,11 @@ class SupporterVerifyView(View):
             pass
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content=f"✅ **{self.name}** accepted!", view=self)
+        db.get("supporter_verifications", {}).pop(
+            str(getattr(interaction.channel, "id", "")), None
+        )
+        save_db()
+        await interaction.response.edit_message(content=f"✅ **{name}** accepted!", view=self)
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete()
@@ -7059,8 +7214,11 @@ class SupporterVerifyView(View):
 
     @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="sup_ver_reject")
     async def reject(self, interaction: discord.Interaction, button: Button):
+        user_id, name = self._request_data(interaction)
+        if user_id is None:
+            return await interaction.response.send_message("❌ Verification request not found.", ephemeral=True)
         try:
-            user = await bot.fetch_user(self.user_id)
+            user = await bot.fetch_user(user_id)
             embed = discord.Embed(
                 title="❌ Verification Failed",
                 description=(
@@ -7077,7 +7235,11 @@ class SupporterVerifyView(View):
             pass
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content=f"❌ **{self.name}**'s request rejected.", view=self)
+        db.get("supporter_verifications", {}).pop(
+            str(getattr(interaction.channel, "id", "")), None
+        )
+        save_db()
+        await interaction.response.edit_message(content=f"❌ **{name}**'s request rejected.", view=self)
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete()
@@ -7153,7 +7315,11 @@ class SupporterConfirmView(View):
         self.user_id = user_id
         self.name    = name
 
-    @discord.ui.button(label="✅ I added the link to my bio!", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="✅ I added the link to my bio!",
+        style=discord.ButtonStyle.success,
+        custom_id="supporter_bio_confirm",
+    )
     async def confirm(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ This button is only for you!", ephemeral=True)
@@ -7198,12 +7364,21 @@ class SupporterConfirmView(View):
                 color=discord.Color.blue()
             )
             verify_embed.set_image(url=STUMBLE_IMG)
+            db.setdefault("supporter_verifications", {})[str(ticket_ch.id)] = {
+                "user_id": self.user_id,
+                "name": self.name,
+            }
+            save_db()
             view = SupporterVerifyView(user_id=self.user_id, name=self.name)
             await ticket_ch.send(embed=verify_embed, view=view)
         except Exception as e:
             print(f"[Supporter verify ticket] {e}")
 
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="❌ Cancel",
+        style=discord.ButtonStyle.danger,
+        custom_id="supporter_bio_cancel",
+    )
     async def cancel(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("❌ This button is only for you!", ephemeral=True)
@@ -8822,7 +8997,11 @@ class PexView(View):
     def _s(self):
         return self.staff_data[self.current] if self.staff_data else None
 
-    @discord.ui.button(label="⬆️ Promote", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="⬆️ Promote",
+        style=discord.ButtonStyle.success,
+        custom_id="pex_promote",
+    )
     async def promote(self, interaction: discord.Interaction, button: Button):
         if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
@@ -8848,7 +9027,11 @@ class PexView(View):
             print(f"[pex promote] {e}")
             await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
-    @discord.ui.button(label="⬇️ Demote", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="⬇️ Demote",
+        style=discord.ButtonStyle.danger,
+        custom_id="pex_demote",
+    )
     async def demote(self, interaction: discord.Interaction, button: Button):
         if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
@@ -8887,7 +9070,11 @@ class PexView(View):
             print(f"[pex demote] {e}")
             await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
-    @discord.ui.button(label="⏸️ Keep", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="⏸️ Keep",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pex_keep",
+    )
     async def keep(self, interaction: discord.Interaction, button: Button):
         if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
@@ -8900,7 +9087,11 @@ class PexView(View):
             content=f"⏸️ **{s['member'].display_name}** kept at current rank. **Staff {self.current+1}/{len(self.staff_data)}**",
             embed=_pex_member_embed(ns), view=self)
 
-    @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="▶️ Next",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pex_next",
+    )
     async def nxt(self, interaction: discord.Interaction, button: Button):
         if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
@@ -8910,7 +9101,11 @@ class PexView(View):
             content=f"**Staff {self.current+1}/{len(self.staff_data)}**",
             embed=_pex_member_embed(s), view=self)
 
-    @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="◀️ Prev",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pex_prev",
+    )
     async def prev(self, interaction: discord.Interaction, button: Button):
         if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
@@ -8920,7 +9115,12 @@ class PexView(View):
             content=f"**Staff {self.current+1}/{len(self.staff_data)}**",
             embed=_pex_member_embed(s), view=self)
 
-    @discord.ui.button(label="❌ Done", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(
+        label="❌ Done",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pex_done",
+        row=1,
+    )
     async def done(self, interaction: discord.Interaction, button: Button):
         for child in self.children:
             child.disabled = True
@@ -9013,14 +9213,22 @@ def _build_staff_lb_embed(weekly: bool = False) -> discord.Embed:
 
 class StaffLbView(View):
     def __init__(self):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
 
-    @discord.ui.button(label="⭐ Weekly Leaderboard", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="⭐ Weekly Leaderboard",
+        style=discord.ButtonStyle.secondary,
+        custom_id="staff_lb_weekly",
+    )
     async def weekly(self, interaction: discord.Interaction, button: Button):
         embed = _build_staff_lb_embed(weekly=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🔁 All-Time", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="🔁 All-Time",
+        style=discord.ButtonStyle.primary,
+        custom_id="staff_lb_alltime",
+    )
     async def alltime(self, interaction: discord.Interaction, button: Button):
         embed = _build_staff_lb_embed(weekly=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -9106,7 +9314,11 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
             except (discord.NotFound, discord.HTTPException):
                 pass
 
-        @discord.ui.button(label="🎁 CLAIM", style=discord.ButtonStyle.success)
+        @discord.ui.button(
+            label="🎁 CLAIM",
+            style=discord.ButtonStyle.success,
+            custom_id=f"drop_claim_{drop_id}",
+        )
         async def claim(self, interaction: discord.Interaction, button: Button):
             drop = _active_drops.get(drop_id)
             if not drop or len(drop["claimed_ids"]) >= drop["max_claims"]:
@@ -9251,7 +9463,12 @@ class ShopMainView(View):
     def _check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
 
-    @discord.ui.button(label="W Items", emoji="<:emoji_45:1507810623063461948>", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="W Items",
+        emoji="<:emoji_45:1507810623063461948>",
+        style=discord.ButtonStyle.primary,
+        custom_id="shop_main_witems",
+    )
     async def w_items(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ This isn't your shop!", ephemeral=True)
@@ -9261,7 +9478,12 @@ class ShopMainView(View):
             view=WShopView(self.user_id),
         )
 
-    @discord.ui.button(label="Gems", emoji="<:gems:1507509442286190652>", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Gems",
+        emoji="<:gems:1507509442286190652>",
+        style=discord.ButtonStyle.success,
+        custom_id="shop_main_gems",
+    )
     async def gems_page(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ This isn't your shop!", ephemeral=True)
@@ -9271,7 +9493,11 @@ class ShopMainView(View):
             view=GemsShopView(self.user_id),
         )
 
-    @discord.ui.button(label="🔄 Exchange", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="🔄 Exchange",
+        style=discord.ButtonStyle.secondary,
+        custom_id="shop_main_exchange",
+    )
     async def exchange(self, interaction: discord.Interaction, button: Button):
         if not self._check(interaction):
             return await interaction.response.send_message("❌ This isn't your shop!", ephemeral=True)
@@ -9345,7 +9571,12 @@ class WShopView(View):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.add_item(WShopSelect(user_id))
-        back_btn = Button(label="◀️ Back", style=discord.ButtonStyle.danger, row=1)
+        back_btn = Button(
+            label="◀️ Back",
+            style=discord.ButtonStyle.danger,
+            custom_id="shop_witems_back",
+            row=1,
+        )
         async def back_cb(interaction: discord.Interaction):
             if interaction.user.id != user_id:
                 return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)
@@ -9422,7 +9653,12 @@ class GemsShopView(View):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.add_item(GemsShopSelect(user_id))
-        back_btn = Button(label="◀️ Back", style=discord.ButtonStyle.danger, row=1)
+        back_btn = Button(
+            label="◀️ Back",
+            style=discord.ButtonStyle.danger,
+            custom_id="shop_gems_back",
+            row=1,
+        )
         async def back_cb(interaction: discord.Interaction):
             if interaction.user.id != user_id:
                 return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)
@@ -9437,7 +9673,12 @@ class ExchangeView(View):
         super().__init__(timeout=120)
         self.user_id = user_id
         self.add_item(ExchangeSelect(user_id))
-        back_btn = Button(label="◀️ Back", style=discord.ButtonStyle.danger, row=1)
+        back_btn = Button(
+            label="◀️ Back",
+            style=discord.ButtonStyle.danger,
+            custom_id="shop_exchange_back",
+            row=1,
+        )
         async def back_cb(interaction: discord.Interaction):
             if interaction.user.id != user_id:
                 return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)

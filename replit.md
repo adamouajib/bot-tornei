@@ -43,4 +43,17 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 
 ## Runtime data
 
-The bot stores profiles, tournament state, events, and economy data in the local `db.json` file. This file is generated at runtime and is excluded from version control.
+The bot stores profiles, balances, tournament state, events, economy data, and
+perk cooldowns in the local `pcf.sqlite3` database. Profile and cooldown writes
+commit directly to SQLite; other state is persisted by `save_db()`. SQLite and
+its WAL files are runtime data and are excluded from version control.
+
+The older `db.json` file is read only as a one-time migration source when the
+SQLite schema has not been initialized.
+
+## Persistent buttons
+
+All buttons have explicit custom IDs. Persistent public panels and ticket /
+verification controls are registered with `bot.add_view(...)` during
+`on_ready()`, and ticket routing context is restored from SQLite so existing
+ticket buttons continue working after a bot restart.

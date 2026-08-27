@@ -5,3 +5,4 @@
 - [Keep-alive bootstrap](keep-alive-bootstrap.md) — Preserve the Flask/nest_asyncio startup block at the beginning of main.py and in bot.zip.
 - [Imported Python dependencies](imported-python-dependency-bootstrap.md) — Imported Python workflows may need an explicit package install even when dependency files are present.
 - [.replit validation](dot-replit-validation.md) — Direct .replit edits are blocked; use the validated temporary-file replacement flow.
+- [Persistent Discord state](persistent-discord-state.md) — Restart-safe views need static IDs plus durable routing context for per-message actions.
