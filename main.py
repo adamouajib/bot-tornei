@@ -9397,20 +9397,20 @@ async def setup_shop(ctx):
 # ==========================================
 
 MACHINE_PANEL_DESCRIPTION = (
-    "**Costo per Giocata:** 100 Rubini\n\n"
+    "**Cost per Spin:** 100 Rubies\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "**🏆 PREMI & PROBABILITÀ**\n\n"
+    "**🏆 PRIZES & ODDS**\n\n"
     "👑 👑 👑 **Jackpot (0.5%)**\n"
-    "╰ 20x Puntata + 50 Cristalli 💎\n"
-    "╰ Ruolo Esclusivo: **🎰 Jackpot Winner**\n\n"
+    "╰ 20x Bet + 50 Crystals 💎\n"
+    "╰ Exclusive Role: **🎰 Jackpot Winner**\n\n"
     "💎 💎 💎 **Mega Win (2.5%)**\n"
-    "╰ 5x Puntata + 15 Cristalli 💎\n\n"
+    "╰ 5x Bet + 15 Crystals 💎\n\n"
     "🍒 🍒 🍒 **Win (12%)**\n"
-    "╰ 3x Puntata (300 Rubini)\n\n"
+    "╰ 3x Bet (300 Rubies)\n\n"
     "🍋 🍋 ❓ **Two Match (35%)**\n"
-    "╰ Rimborso Puntata (100 Rubini)\n\n"
+    "╰ Bet Refunded (100 Rubies)\n\n"
     "❌ **No Match (50%)**\n"
-    "╰ Nessuna Vincita\n\n"
+    "╰ No Winnings\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━"
 )
 
@@ -9594,21 +9594,21 @@ async def machine_cmd(ctx):
 CHEST_COST = 250
 CHEST_EMOJI_MARKUP = "<:1chest:1542582817161224233>"
 CHEST_PANEL_DESCRIPTION = (
-    "**Costo per Apertura:** 250 Rubini\n\n"
+    "**Cost per Opening:** 250 Rubies\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "**🎁 RARITÀ & PROBABILITÀ**\n\n"
-    "⚪ **Comune (60%)**\n"
-    "╰ Premi: 50 – 150 Rubini\n\n"
-    "🔵 **Rara (25%)**\n"
-    "╰ Premi: 300 – 600 Rubini\n\n"
-    "🟣 **Epica (12%)**\n"
-    "╰ Premi: 10 – 20 Cristalli 💎\n\n"
-    "🟡 **Leggendaria (3%)**\n"
-    "╰ Premi: 50 Cristalli 💎\n"
-    "╰ Ruolo Esclusivo: **📦 Unboxer Supremo**\n\n"
+    "**🎁 RARITIES & ODDS**\n\n"
+    "⚪ **Common (60%)**\n"
+    "╰ Prizes: 50 – 150 Rubies\n\n"
+    "🔵 **Rare (25%)**\n"
+    "╰ Prizes: 300 – 600 Rubies\n\n"
+    "🟣 **Epic (12%)**\n"
+    "╰ Prizes: 10 – 20 Crystals 💎\n\n"
+    "🟡 **Legendary (3%)**\n"
+    "╰ Prizes: 50 Crystals 💎\n"
+    "╰ Exclusive Role: **📦 Supreme Unboxer**\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━"
 )
-CHEST_OPEN_BUTTON_LABEL = "📦 Apri Cassa"
+CHEST_OPEN_BUTTON_LABEL = "📦 Open Chest"
 _chest_open_lock = asyncio.Lock()
 
 
