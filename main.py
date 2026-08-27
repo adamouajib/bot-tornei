@@ -165,6 +165,7 @@ XP_PER_LEVEL      = 100
 
 SUPPORTER_LINK = "https://discord.gg/ZptqBM8ZC3"
 BIO_SUPPORT_LINK = os.getenv("BIO_SUPPORT_LINK", SUPPORTER_LINK).strip()
+BIO_PERK_LINK = os.getenv("BIO_PERK_LINK", "discord.gg/YOURSERVER").strip()
 TOURNAMENT_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
 DB_FILE = "db.json"
 
@@ -1992,6 +1993,28 @@ def _member_has_booster_status(member: discord.Member) -> bool:
     )
 
 
+def _member_has_bio_perk_link(member: discord.Member) -> bool:
+    """Return whether a member's custom activity contains the configured bio link."""
+    configured = BIO_PERK_LINK.casefold().strip()
+    if not configured:
+        return False
+    needles = {configured}
+    if configured.startswith(("http://", "https://")):
+        needles.add(re.sub(r"^https?://", "", configured))
+    if configured.startswith("www."):
+        needles.add(configured[4:])
+
+    for activity in getattr(member, "activities", ()):
+        for field in ("name", "state", "details", "url"):
+            value = getattr(activity, field, None)
+            if value is None:
+                continue
+            value = str(value).casefold()
+            if any(needle in value for needle in needles):
+                return True
+    return False
+
+
 def _has_custom_tournament_access(member: discord.Member) -> bool:
     """VIPs and server boosters may create one custom tournament per day."""
     return _member_has_role_name(member, VIP_ROLE_NAME) or _member_has_role_name(
@@ -3381,6 +3404,9 @@ async def on_ready():
             (JACKPOT_ROLE_NAME,           discord.Color.gold()),
             (BLOCK_DASH_LEGEND_ROLE_NAME, discord.Color.purple()),
             ("W", discord.Color.gold()),
+            (BOOSTER_PERK_ROLE_NAME,      discord.Color.from_rgb(244, 127, 255)),
+            (BIO_SUPPORTER_ROLE_NAME,     discord.Color.from_rgb(26, 188, 156)),
+            (VIP_ROLE_NAME,               discord.Color.from_rgb(155, 89, 182)),
         ]:
             if not discord.utils.get(guild.roles, name=role_name):
                 try:
@@ -3390,6 +3416,20 @@ async def on_ready():
                     print(f"[on_ready] Created role: {role_name}")
                 except Exception as e:
                     print(f"[on_ready] Could not create role {role_name}: {e}")
+        booster_perk_role = _perk_role(guild, BOOSTER_PERK_ROLE_NAME)
+        if booster_perk_role:
+            for member in guild.members:
+                if (
+                    getattr(member, "premium_subscriber", False)
+                    or getattr(member, "premium_since", None)
+                ) and booster_perk_role not in member.roles:
+                    try:
+                        await member.add_roles(
+                            booster_perk_role,
+                            reason="Sync active server booster perk",
+                        )
+                    except (discord.Forbidden, discord.HTTPException) as exc:
+                        print(f"[on_ready] Could not sync booster perk for {member.id}: {exc}")
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -3459,6 +3499,29 @@ async def on_member_update(before: discord.Member, after: discord.Member):
                 await after.add_roles(booster_role, reason="Server Boost")
             except Exception as e:
                 print(f"[boost role] {e}")
+        booster_perk_role = await _ensure_perk_role(
+            guild,
+            BOOSTER_PERK_ROLE_NAME,
+            discord.Color.from_rgb(244, 127, 255),
+        )
+        if booster_perk_role and booster_perk_role not in after.roles:
+            try:
+                await after.add_roles(
+                    booster_perk_role,
+                    reason="Server Boost perk",
+                )
+            except Exception as e:
+                print(f"[boost perk role] {e}")
+    elif before.premium_since is not None and after.premium_since is None:
+        booster_perk_role = _perk_role(guild, BOOSTER_PERK_ROLE_NAME)
+        if booster_perk_role and booster_perk_role in after.roles:
+            try:
+                await after.remove_roles(
+                    booster_perk_role,
+                    reason="Server Boost ended",
+                )
+            except Exception as e:
+                print(f"[boost perk role remove] {e}")
 
         if channel:
             embed = discord.Embed(
@@ -3489,6 +3552,171 @@ async def set_twitch_dashboard(ctx, channel: discord.TextChannel):
     await ctx.send(
         f"✅ Twitch live dashboard channel set to {channel.mention}.",
         delete_after=8.0,
+    )
+
+
+@bot.command(name="set-perks", aliases=["set_perks"])
+@admin_only()
+async def set_perks(ctx):
+    """Publish the three separate perk panels in the current channel."""
+    embeds = [
+        discord.Embed(
+            title="🚀 SERVER BOOST PERKS",
+            description=(
+                "**Become a Server Booster to unlock exclusive perks!**\n"
+                "*The bot automatically detects when you boost.*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "**🏷️ Exclusive Role & Badge**\n"
+                "╰ Pink Role & Tag: **[W]**\n\n"
+                "**⚡ 1x Boost**\n"
+                "╰ **3x Multiplier** on Tournament rewards\n"
+                "╰ Ability to create **1 Custom Tournament** per day\n"
+                "╰ Dedicated weekly reward\n\n"
+                "**🔥 2x Boost (Double Boost)**\n"
+                "╰ All 1x Boost perks upgraded\n"
+                "╰ Doubled weekly reward (100 Crystals 💎 + 2,000 Rubies)\n"
+                "╰ Top priority in tournament rooms\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(244, 127, 255),
+        ),
+        discord.Embed(
+            title="🔗 BIO LINK SUPPORTERS",
+            description=(
+                "**Put the server link in your Discord Bio for free perks!**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "**🏷️ Exclusive Tag**\n"
+                "╰ Special Role & Tag: **[S]**\n\n"
+                "**🎁 Active Perks**\n"
+                "╰ **2x Rubies** earned in all Tournaments\n\n"
+                "**📌 How to activate:**\n"
+                "╰ Add `discord.gg/YOURSERVER` to your Bio or Custom Status\n"
+                "╰ Run the `:checkbio` command to claim the role and perks!\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(26, 188, 156),
+        ),
+        discord.Embed(
+            title="💜 TWITCH SUB VIP PERKS",
+            description=(
+                "**Subscribe to the Twitch channel to get VIP status!**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "**👑 Exclusive Role**\n"
+                "╰ Special Role: **VIP**\n\n"
+                "**💎 Exclusive Perks**\n"
+                "╰ **5x Multiplier** on Tournament rewards\n"
+                "╰ Ability to **create 1 Custom Tournament** per day\n"
+                "╰ **100 Crystals 💎** claimable every 14 days\n\n"
+                "**📌 How to get the role:**\n"
+                "╰ 1. Link your Twitch account to Discord (Settings > Connections).\n"
+                "╰ 2. You will receive the role automatically!\n"
+                "*(Having trouble? Open a Ticket with a screenshot of your subscription and we will assign it manually!)*\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=discord.Color.from_rgb(155, 89, 182),
+        ),
+    ]
+    for index, embed in enumerate(embeds):
+        await ctx.send(embed=embed)
+        if index < len(embeds) - 1:
+            await asyncio.sleep(1)
+@bot.command(name="vipclaim", aliases=["vip-claim", "vip_claim"])
+async def vip_claim(ctx):
+    """Give a VIP member their 14-day crystal reward."""
+    if not _member_has_role_name(ctx.author, VIP_ROLE_NAME):
+        return await ctx.send("❌ You need the **VIP** role to use this command.", delete_after=8.0)
+    remaining = _perk_cooldown_remaining(ctx.author.id, "vipclaim", 14 * 86400)
+    if remaining:
+        return await ctx.send(
+            f"⏳ Your VIP reward is ready again in **{_format_cooldown(remaining)}**.",
+            delete_after=8.0,
+        )
+    prof = get_profile(ctx.author.id, ctx.author.display_name)
+    prof["cristalli"] += 100
+    _set_perk_cooldown(ctx.author.id, "vipclaim")
+    save_db()
+    await ctx.send(
+        f"✅ VIP reward claimed: **+100** {E_CRYSTAL} Crystals. "
+        "You can claim again in 14 days.",
+        delete_after=10.0,
+    )
+
+
+@bot.command(name="boostclaim", aliases=["boost-claim", "boost_claim"])
+async def boost_claim(ctx):
+    """Give a booster their weekly reward based on their boost tier."""
+    if not _member_has_booster_status(ctx.author):
+        return await ctx.send(
+            "❌ You need the **[W]** booster role or an active server boost to use this command.",
+            delete_after=10.0,
+        )
+    remaining = _perk_cooldown_remaining(ctx.author.id, "boostclaim", 7 * 86400)
+    if remaining:
+        return await ctx.send(
+            f"⏳ Your booster reward is ready again in **{_format_cooldown(remaining)}**.",
+            delete_after=8.0,
+        )
+    prof = get_profile(ctx.author.id, ctx.author.display_name)
+    is_double_boost = int(prof.get("boost_count", 0) or 0) >= 2
+    crystal_reward = 100 if is_double_boost else 50
+    ruby_reward = 2000 if is_double_boost else 1000
+    prof["cristalli"] += crystal_reward
+    prof["rubini"] += ruby_reward
+    _set_perk_cooldown(ctx.author.id, "boostclaim")
+    save_db()
+    tier = "2x Boost" if is_double_boost else "1x Boost"
+    await ctx.send(
+        f"✅ **{tier}** reward claimed: **+{format_num(crystal_reward)}** "
+        f"{E_CRYSTAL} Crystals + **{format_num(ruby_reward)}** {E_RUBY} Rubies. "
+        "You can claim again in 7 days.",
+        delete_after=10.0,
+    )
+
+
+@bot.command(name="checkbio", aliases=["check-bio", "check_bio"])
+async def check_bio(ctx):
+    """Assign or remove the bio supporter role based on the live custom status."""
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used in a server.", delete_after=8.0)
+    role = _perk_role(ctx.guild, BIO_SUPPORTER_ROLE_NAME)
+    has_link = _member_has_bio_perk_link(ctx.author)
+    if has_link:
+        if role is None:
+            role = await _ensure_perk_role(
+                ctx.guild,
+                BIO_SUPPORTER_ROLE_NAME,
+                discord.Color.from_rgb(26, 188, 156),
+            )
+        if role is None:
+            return await ctx.send(
+                "❌ I couldn't find or create the **[S]** role. Please ask an admin to check my role permissions.",
+                delete_after=10.0,
+            )
+        if role not in ctx.author.roles:
+            try:
+                await ctx.author.add_roles(role, reason="Bio link supporter verified")
+            except (discord.Forbidden, discord.HTTPException):
+                return await ctx.send(
+                    "❌ I couldn't assign the **[S]** role. Please ask an admin to check my role permissions.",
+                    delete_after=10.0,
+                )
+        return await ctx.send(
+            f"✅ Bio link detected. You now have the **[S]** role and **2x Ruby tournament rewards**.",
+            delete_after=10.0,
+        )
+
+    if role and role in ctx.author.roles:
+        try:
+            await ctx.author.remove_roles(role, reason="Bio link supporter status expired")
+        except (discord.Forbidden, discord.HTTPException):
+            return await ctx.send(
+                "❌ I found the **[S]** role but couldn't remove it. Please ask an admin to check my role permissions.",
+                delete_after=10.0,
+            )
+    await ctx.send(
+        f"❌ I couldn't find `{BIO_PERK_LINK}` in your custom status or activity. "
+        "The **[S]** role was removed if you had it.",
+        delete_after=10.0,
     )
 
 
@@ -4712,6 +4940,36 @@ async def setup_tour_hub(ctx):
     await ctx.send(f"✅ Hub sent to {channel.mention}!", delete_after=5.0)
 
 
+@bot.command(name="create-tourney", aliases=["create_tourney", "custom-tourney", "custom_tourney"])
+async def create_custom_tournament(ctx):
+    """Open the one-per-day custom tournament setup for VIPs and boosters."""
+    if not _has_custom_tournament_access(ctx.author):
+        return await ctx.send(
+            "❌ Only members with the **VIP** or **[W]** role can create a custom tournament.",
+            delete_after=10.0,
+        )
+    remaining = _perk_cooldown_remaining(ctx.author.id, "create_tourney", 86400)
+    if remaining:
+        return await ctx.send(
+            f"⏳ You can create another custom tournament in **{_format_cooldown(remaining)}**.",
+            delete_after=8.0,
+        )
+    if db.get("tour"):
+        return await ctx.send(
+            "❌ There is already an active tournament.",
+            delete_after=8.0,
+        )
+    embed = discord.Embed(
+        title="✨ Custom Tournament",
+        description=(
+            "Choose a format below to create your custom tournament.\n\n"
+            "Your VIP or booster perk allows **one custom tournament every 24 hours**."
+        ),
+        color=discord.Color.from_rgb(155, 89, 182),
+    )
+    await ctx.send(embed=embed, view=TourHubView(perk_host_id=ctx.author.id))
+
+
 @bot.command(name="big-tour")
 @admin_only()
 async def big_tour(ctx):
@@ -5175,7 +5433,7 @@ async def winner_tour(ctx, *winners: discord.Member):
         prof["tornei_v"] += 1 if position == 1 else 0
         prof["punti"] += 100 if position == 1 else 0
         if prize_text:
-            grant_prize(prize_text, member)
+            grant_prize(prize_text, member, tournament_reward=True)
         await update_rank_roles(ctx.guild, member, prof["punti"])
     # Keep the result-channel announcement focused on the tournament winner.
     # Other placements are still awarded above, but their names are not
@@ -5307,7 +5565,7 @@ async def team_winner(ctx):
                     prof = get_profile(mbr.id, mbr.display_name)
                     prof["tornei_v"] += 1
                     prof["punti"]    += 100
-                    grant_prize(t.get("premio",""), mbr)
+                    grant_prize(t.get("premio",""), mbr, tournament_reward=True)
                     await update_rank_roles(ctx.guild, mbr, prof["punti"])
             except Exception:
                 pass
@@ -7580,6 +7838,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":end (aliases :winner-tour, :winner_tour)", "Closes a 1v1 tournament and awards the winner with Ruby and Crystals.", "[@winner] optional member mention; without it, the last remaining player is detected.", ":end @Winner"),
             (":team-winner", "Closes a team-format tournament and awards the winning team.", "No arguments; the active tournament must contain a winning team.", ":team-winner"),
             (":close-tour (alias :close_tour)", "Resets and closes the currently active tournament.", "No arguments; hoster/admin access. This clears the active tournament state.", ":close-tour"),
+            (":create-tourney (aliases :create_tourney, :custom-tourney)", "Opens the custom tournament setup for VIPs and boosters.", "No arguments; requires VIP or [W]. One custom tournament per 24 hours.", ":create-tourney"),
             (":event", "Posts a Flash Event embed in the current channel with its registration controls.", "No command arguments; configure the event through the displayed controls.", ":event"),
             (":start-event (alias :start_event)", "Starts the active Flash Event, mentions the event role and opens the room.", "No arguments; the event must already be configured.", ":start-event"),
             (":cod-event (alias :cod_event)", "Posts the event room code together with the selected map and emote.", "<emote> <map> <room code>.", ":cod-event 🏃 Skyline ABC123"),
@@ -7612,6 +7871,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":teamleave", "Removes you from your current team.", "No arguments.", ":teamleave"),
             (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
             (":boost", "Mostra allo Staff i vantaggi Ruby, Cristalli e ruolo assegnati ai booster.", "Nessun argomento; richiede un ruolo Staff.", ":boost"),
+            (":vipclaim", "Claims the VIP crystal reward.", "No arguments; requires the VIP role. One claim every 14 days.", ":vipclaim"),
+            (":boostclaim", "Claims the weekly booster reward.", "No arguments; requires [W] or an active server boost. One claim every 7 days.", ":boostclaim"),
+            (":checkbio", "Checks the configured link in your custom status and assigns or removes the [S] role.", "No arguments; the configured bio link must be visible in your Discord activity.", ":checkbio"),
             (":link", "Shows the Stumble Guys account-linking setup; it does not link the account directly.", "Go to <#1542227301322719314>, press the account-link button, then follow the modal and DM screenshot instructions.", ":link"),
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
             (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
@@ -7620,6 +7882,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":setup-result", "Sets the channel where final tournament result embeds are published.", "<#channel> text-channel mention; owner access.", ":setup-result #results"),
             (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
             (":setup-shop (alias :setup_shop)", "Replaces old shop panels in the current channel with one persistent three-embed shop panel.", "No arguments; administrator access.", ":setup-shop"),
+             (":set-perks (alias :set_perks)", "Publishes the three separate Booster, Bio Supporter and Twitch VIP perk panels.", "No arguments; administrator access.", ":set-perks"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
             (":add-ticket (alias :add_ticket)", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
             (":set-tw (alias :set_tw)", "Sets the Discord channel for the live Twitch viewer dashboard for piccolofe.", "<#channel> text-channel mention; administrator or owner access.", ":set-tw #twitch-live"),
@@ -7636,7 +7899,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # together, while privileged commands are grouped by the role they need.
     community_names = {
         "profile", "team", "myteam", "teamleave", "1v1", "link", "supporter",
-        "help", "claim-tw",
+        "help", "claim-tw", "create-tourney", "vipclaim", "boostclaim", "checkbio",
     }
     staff_names = {
         "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
@@ -7648,7 +7911,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
-        "setup-scomesse", "setup-shop", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
+        "setup-scomesse", "setup-shop", "set-perks", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
