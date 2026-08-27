@@ -8090,7 +8090,7 @@ _active_drops: dict = {}   # channel_id → {prize, claimer_id, count, max, msg_
 
 @bot.command(name="drop")
 @admin_only()
-async def drop_cmd(ctx, max_people: int, amount: int, currency: str):
+async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
     """Start a limited drop: :drop <people> <amount> <currency>."""
     if max_people < 1 or max_people > 100 or amount < 1:
         return await ctx.send("❌ People and amount must be positive; people cannot exceed 100.", delete_after=6.0)
