@@ -204,7 +204,6 @@ def _legacy_state(data: dict) -> dict:
         "supporter_channel_id": data.get("supporter_channel_id"),
         "supporter_msg_id": data.get("supporter_msg_id"),
         "result_channel_id": data.get("result_channel_id"),
-        "betting_channel_id": data.get("betting_channel_id"),
         "log_channel_id": data.get("log_channel_id"),
         "canale_dashboard_twitch": data.get("canale_dashboard_twitch"),
         "twitch_live": data.get("twitch_live", {}),
@@ -287,7 +286,7 @@ def _persist_state() -> None:
         for key in (
             "leaderboard_channel_id", "leaderboard_msg_ids", "welcome_channel_id",
             "level_channel_id", "supporter_channel_id", "supporter_msg_id",
-            "result_channel_id", "betting_channel_id", "log_channel_id",
+            "result_channel_id", "log_channel_id",
             "canale_dashboard_twitch", "twitch_live", "supporters", "gems",
             "sg_links", "big_event", "event_history", "event_bans",
         )
@@ -347,6 +346,8 @@ def load_db():
     conn = _sqlite_conn()
     _migrate_legacy_db(conn)
     with _sqlite_lock:
+        conn.execute("DELETE FROM state WHERE key = 'betting_channel_id'")
+        conn.commit()
         rows = conn.execute("SELECT key, value_json FROM state").fetchall()
     for key, value_json in rows:
         db[key] = json.loads(value_json)
@@ -638,7 +639,7 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
 # permission) from becoming available to ordinary community members.
 OWNER_COMMANDS = {
     "set-log", "set-welcome", "set-lvl", "set-leaderboard", "setup-result",
-    "setup-scomesse", "reset-all", "pex", "setup", "big-tour",
+    "reset-all", "pex", "setup", "big-tour",
     "chest", "announcement",
 }
 ADMIN_COMMANDS = {
@@ -870,7 +871,6 @@ db = {
     "supporter_channel_id": None,
     "supporter_msg_id": None,
     "result_channel_id": None,
-    "betting_channel_id": None,
     "log_channel_id": None,
     "canale_dashboard_twitch": None,
     "twitch_live": {},
@@ -1667,15 +1667,15 @@ def build_ai_source_context() -> str:
         "- Top-level persisted sections include profiles, teams, tour, event, "
         "big_event, event_history, event_bans, leaderboard_channel_id, "
         "leaderboard_msg_ids, welcome_channel_id, level_channel_id, "
-        "supporter_channel_id, supporter_msg_id, result_channel_id, "
-        "betting_channel_id, log_channel_id, supporters, gems and sg_links.\n"
+         "supporter_channel_id, supporter_msg_id, result_channel_id, "
+         "log_channel_id, supporters, gems and sg_links.\n"
         "- Each profile stores the member name, Ranked Points, Ruby, Crystals, "
         "Gems, XP/message progression, level, staff counters, Stumble Guys "
         "name and owned W Items. The exact keys and serialization behavior "
         "are defined in main.py.\n"
         "- Runtime-only interaction state includes active DM sessions, "
-        "conversation history, ticket state, tournament controls and betting "
-        "controls; do not claim these are permanent database records.\n\n"
+         "conversation history, ticket state and tournament controls; do not "
+         "claim these are permanent database records.\n\n"
         "SAFE PROJECT CONFIGURATION (Python source intentionally excluded):\n"
         "These non-code configuration files may help explain the runtime "
         "environment. Never reveal environment variables or credentials.\n"
@@ -1795,7 +1795,7 @@ CURRENCIES, PROGRESSION, AND REWARDS
   Stumble Guys Gems tracked for account transfers. Ranked Points determine the
   member's competitive rank, while XP tracks chat progression.
 - Keep the currencies separate in every answer: XP is progression, Ranked Points
-  determine rank, Ruby is the main wager/reward currency, Crystals are used for
+  determine rank, Ruby is the main reward currency, Crystals are used for
   W Items and Gems packages, and Gems are the Stumble Guys currency recorded for
   rewards and staff transfers. Never call one currency another or merge their
   balances.
@@ -2052,7 +2052,7 @@ def build_ai_system_instruction() -> str:
         description = description.strip() or f"Discord bot :{name} command."
         owner_commands = {
             "set-log", "set-welcome", "set-leaderboard", "setup-result",
-            "setup-scomesse", "staff-lb", "hoster-lb",
+            "staff-lb", "hoster-lb",
             "reset-staff-week", "machine", "chest", "reset-all", "setup", "big-tour",
         }
         manager_commands = {
@@ -2895,8 +2895,6 @@ async def _advance_round_if_complete(ctx, t: dict) -> bool:
     save_db()
     await ctx.send(f"🔄 **Round {t['round']}** started automatically — {len(winners)} qualified!", delete_after=6.0)
     await _update_bracket_messages(t)
-    betting_channel = bot.get_channel(db.get("betting_channel_id")) or ctx.channel
-    await _post_match_bets(betting_channel, t)
     await _auto_assign_hosts_dm(ctx.guild, t)
     return True
 
@@ -3624,7 +3622,7 @@ async def send_setup_notifications():
     global _setup_notifications_sent
     if _setup_notifications_sent:
         return
-    setup_names = {"setup", "setup-result", "setup-scomesse", "setup-shop", "big-tour"}
+    setup_names = {"setup", "setup-result", "setup-shop", "big-tour"}
     rows = []
     for command in sorted(bot.commands, key=lambda item: item.name.casefold()):
         if command.name not in setup_names:
@@ -5606,8 +5604,6 @@ async def bracket(ctx, next_round: int = None):
                 f"**{t['total_rounds']}** round(s).", delete_after=6.0)
         t["bracket_channel_id"] = ctx.channel.id
         await _update_bracket_messages(t)
-        betting_channel = bot.get_channel(db.get("betting_channel_id")) or ctx.channel
-        await _post_match_bets(betting_channel, t)
         return
 
     if next_round is not None and next_round > cur:
@@ -5769,9 +5765,6 @@ async def qual(ctx):
             return await ctx.send(f"❌ No open match for **{win_name}**.", delete_after=6.0)
         await _give_xp_and_rank(ctx, winner, t["matches"][found_mid], win_name)
         await assign_winner_role(ctx.guild, winner)
-        # Resolve any tournament bets on this match
-        if found_mid is not None:
-            asyncio.ensure_future(_resolve_bets_for_match(str(found_mid), t["matches"][found_mid].get("winner", "")))
 
     save_db()
     await _update_bracket_messages(t)
@@ -6101,14 +6094,6 @@ async def setup_result(ctx, channel: discord.TextChannel):
     db["result_channel_id"] = channel.id
     save_db()
     await ctx.send(f"✅ Tournament results channel set to {channel.mention}.", delete_after=8.0)
-
-@bot.command(name="setup-scomesse", aliases=["setup_scomesse", "setup-scommesse"])
-@owner_only()
-async def setup_scomesse(ctx, channel: discord.TextChannel):
-    """Set the channel for match betting."""
-    db["betting_channel_id"] = channel.id
-    save_db()
-    await ctx.send(f"✅ Tournament betting channel set to {channel.mention}.", delete_after=8.0)
 
 @bot.command(name="leaderboard")
 @manager_or_admin_only()
@@ -8496,7 +8481,6 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":giveaway", "Starts a timed giveaway and awards the configured prize to randomly selected winners.", "<duration> <number of winners> <prize>; duration examples: 30m, 2h or 1d.", ":giveaway 30m 1 5000 Ruby"),
             (":help (aliases :guide, :commands, :comandi, :guida)", "Shows the complete multilingual command guide in private messages, organized by permission category.", "No arguments; available to all members.", ":help"),
             (":setup-result", "Sets the channel where final tournament result embeds are published.", "<#channel> text-channel mention; owner access.", ":setup-result #results"),
-            (":setup-scomesse (aliases :setup_scomesse, :setup-scommesse)", "Sets the channel where match betting panels are published.", "<#channel> text-channel mention; owner access.", ":setup-scomesse #scommesse"),
             (":setup-shop (alias :setup_shop)", "Replaces old shop panels in the current channel with one persistent three-embed shop panel.", "No arguments; administrator access.", ":setup-shop"),
              (":set-perks (alias :set_perks)", "Publishes the three separate Booster, Bio Supporter and Twitch VIP perk panels.", "No arguments; administrator access.", ":set-perks"),
             (":set-P (aliases :set-p, :set_p)", "Publishes the permanent custom tournament creation panel.", "No arguments; administrator access.", ":set-P"),
@@ -8529,7 +8513,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
-        "setup-scomesse", "setup-shop", "set-perks", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
+        "setup-shop", "set-perks", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
@@ -8585,7 +8569,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
         ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
-        ":1v1": "Invia a un altro membro una sfida 1v1 e avvia il flusso di accettazione e puntata del duello.",
+        ":1v1": "Invia a un altro membro una sfida 1v1 in una stanza privata; il duello non usa scommesse o trasferimenti di valuta.",
         ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività PCF™.",
         ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
         ":link": "Mostra il setup per collegare l’account Stumble Guys, ma non collega direttamente l’account. Vai nel canale <#1542227301322719314>, premi il pulsante di collegamento e segui le istruzioni del modal e del DM.",
@@ -8594,7 +8578,6 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":giveaway": "Avvia un giveaway temporizzato, raccoglie le partecipazioni e assegna casualmente il premio ai vincitori estratti.",
          ":help": "Mostra il menu delle lingue e invia in DM la guida completa dei 54 comandi, divisa tra Community, Staff/Eventi e Admin/Manager.",
         ":setup-result": "Imposta il canale per pubblicare automaticamente i risultati finali dei tornei.",
-        ":setup-scomesse": "Imposta il canale per pubblicare i pannelli delle scommesse sui match.",
         ":set-welcome": "Imposta il canale in cui il bot pubblica i messaggi di benvenuto e di uscita dei membri.",
         ":add-ticket": "Comando di manutenzione riservato agli admin per il pannello ticket. Gli utenti devono andare nel canale <#1147528589676380181> e usare i pulsanti già presenti.",
         ":pex": "Controlla i Ranked Points dello staff e aggiorna i ruoli rank promuovendo o retrocedendo i membri quando necessario.",
@@ -8654,7 +8637,6 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":giveaway": "समयबद्ध giveaway शुरू करके विजेताओं को पुरस्कार देता है।",
         ":help": "भाषा चुनकर श्रेणियों में पूरी कमांड गाइड DM करता है।",
         ":setup-result": "टूर्नामेंट के अंतिम परिणाम भेजने वाला चैनल तय करता है।",
-        ":setup-scomesse": "मैच सट्टेबाजी पैनल भेजने वाला चैनल तय करता है।",
         ":set-welcome": "स्वागत और विदाई संदेशों का चैनल तय करता है।",
         ":add-ticket": "SG लिंक, रिपोर्ट और staff आवेदन वाला ticket पैनल प्रकाशित करता है।",
         ":pex": "Staff अंक जाँचकर उनके rank roles अपडेट करता है।",
