@@ -4175,19 +4175,6 @@ async def time_cmd(interaction: discord.Interaction, member: discord.Member, dur
             "❌ The server owner cannot be timed out.",
             ephemeral=True,
         )
-    bot_member = interaction.guild.me
-    if bot_member is not None:
-        if not bot_member.guild_permissions.moderate_members:
-            return await interaction.response.send_message(
-                "❌ I need the Discord **Moderate Members** permission to apply timeouts.",
-                ephemeral=True,
-            )
-        if member.id == bot_member.id or member.top_role >= bot_member.top_role:
-            return await interaction.response.send_message(
-                "❌ I cannot timeout this member because their highest role is equal to "
-                "or higher than mine. Move my bot role above their role and try again.",
-                ephemeral=True,
-            )
     until = discord.utils.utcnow() + timedelta(seconds=seconds)
     try:
         await member.timeout(until, reason=reason)
@@ -4199,7 +4186,8 @@ async def time_cmd(interaction: discord.Interaction, member: discord.Member, dur
             actor=interaction.user,
         )
         return await interaction.response.send_message(
-            "❌ I couldn't apply the timeout. Check my moderation permissions and the member's role hierarchy.",
+            "❌ Discord rejected the timeout for this member. Check the bot's assigned "
+            "role and the target member's role hierarchy.",
             ephemeral=True,
         )
     except discord.HTTPException as exc:
