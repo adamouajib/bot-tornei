@@ -346,7 +346,6 @@ def load_db():
     conn = _sqlite_conn()
     _migrate_legacy_db(conn)
     with _sqlite_lock:
-        conn.execute("DELETE FROM state WHERE key = 'betting_channel_id'")
         conn.commit()
         rows = conn.execute("SELECT key, value_json FROM state").fetchall()
     for key, value_json in rows:
@@ -647,7 +646,7 @@ ADMIN_COMMANDS = {
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
     "linked", "leaderboard", "gems", "stumble-top", "set-tw", "setup-shop",
-    "set-perks", "set-p",
+    "set-perks", "setup-p", "set-p",
 }
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
@@ -2234,15 +2233,10 @@ BOOSTER_PERK_ROLE_NAME      = "[W]"
 BIO_SUPPORTER_ROLE_NAME     = "[S]"
 VIP_ROLE_NAME               = "VIP"
 SLOT_MACHINE_MIN_BET = 200
-DUEL_MIN_WAGER = 100
 SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
 
-# ── In-memory: duels & match bets ──────────────────────────────────────────
+# ── In-memory: duels ───────────────────────────────────────────────────────
 active_duels: dict = {}
-# {msg_id: {state, challenger_id, challenged_id, challenger_name, challenged_name,
-#           bet_a, bet_b, confirmed_ids, channel_id, guild_id}}
-active_bets: dict = {}
-# {match_id_str: {p1, p2, bets: {uid: {choice, amount}}, channel_id}}
 _shop_panel_view_registered = False
 _machine_panel_view_registered = False
 _chest_panel_view_registered = False
@@ -3974,84 +3968,6 @@ async def vip_claim(ctx):
     )
 
 
-@bot.command(name="boostclaim", aliases=["boost-claim", "boost_claim"])
-async def boost_claim(ctx):
-    """Give a booster their weekly reward based on their boost tier."""
-    if not _member_has_booster_status(ctx.author):
-        return await ctx.send(
-            "❌ You need the **[W]** booster role or an active server boost to use this command.",
-            delete_after=10.0,
-        )
-    remaining = _perk_cooldown_remaining(ctx.author.id, "boostclaim", 7 * 86400)
-    if remaining:
-        return await ctx.send(
-            f"⏳ Your booster reward is ready again in **{_format_cooldown(remaining)}**.",
-            delete_after=8.0,
-        )
-    prof = get_profile(ctx.author.id, ctx.author.display_name)
-    is_double_boost = int(prof.get("boost_count", 0) or 0) >= 2
-    crystal_reward = 100 if is_double_boost else 50
-    ruby_reward = 2000 if is_double_boost else 1000
-    prof["cristalli"] += crystal_reward
-    prof["rubini"] += ruby_reward
-    _set_perk_cooldown(ctx.author.id, "boostclaim")
-    save_db()
-    tier = "2x Boost" if is_double_boost else "1x Boost"
-    await ctx.send(
-        f"✅ **{tier}** reward claimed: **+{format_num(crystal_reward)}** "
-        f"{E_CRYSTAL} Crystals + **{format_num(ruby_reward)}** {E_RUBY} Rubies. "
-        "You can claim again in 7 days.",
-        delete_after=10.0,
-    )
-
-
-@bot.command(name="checkbio", aliases=["check-bio", "check_bio"])
-async def check_bio(ctx):
-    """Assign or remove the bio supporter role based on the live custom status."""
-    if ctx.guild is None:
-        return await ctx.send("❌ This command can only be used in a server.", delete_after=8.0)
-    role = _perk_role(ctx.guild, BIO_SUPPORTER_ROLE_NAME)
-    has_link = _member_has_bio_perk_link(ctx.author)
-    if has_link:
-        if role is None:
-            role = await _ensure_perk_role(
-                ctx.guild,
-                BIO_SUPPORTER_ROLE_NAME,
-                discord.Color.from_rgb(26, 188, 156),
-            )
-        if role is None:
-            return await ctx.send(
-                "❌ I couldn't find or create the **[S]** role. Please ask an admin to check my role permissions.",
-                delete_after=10.0,
-            )
-        if role not in ctx.author.roles:
-            try:
-                await ctx.author.add_roles(role, reason="Bio link supporter verified")
-            except (discord.Forbidden, discord.HTTPException):
-                return await ctx.send(
-                    "❌ I couldn't assign the **[S]** role. Please ask an admin to check my role permissions.",
-                    delete_after=10.0,
-                )
-        return await ctx.send(
-            f"✅ Bio link detected. You now have the **[S]** role and **2x Ruby tournament rewards**.",
-            delete_after=10.0,
-        )
-
-    if role and role in ctx.author.roles:
-        try:
-            await ctx.author.remove_roles(role, reason="Bio link supporter status expired")
-        except (discord.Forbidden, discord.HTTPException):
-            return await ctx.send(
-                "❌ I found the **[S]** role but couldn't remove it. Please ask an admin to check my role permissions.",
-                delete_after=10.0,
-            )
-    await ctx.send(
-        f"❌ I couldn't find `{BIO_PERK_LINK}` in your custom status or activity. "
-        "The **[S]** role was removed if you had it.",
-        delete_after=10.0,
-    )
-
-
 @bot.command(name="log-tw", aliases=["log_tw"])
 @admin_only()
 async def log_twitch_reward(ctx, *reward_parts: str):
@@ -5434,37 +5350,7 @@ async def setup_tour_hub(ctx):
     await ctx.send(f"✅ Hub sent to {channel.mention}!", delete_after=5.0)
 
 
-@bot.command(name="create-tourney", aliases=["create_tourney", "custom-tourney", "custom_tourney"])
-async def create_custom_tournament(ctx):
-    """Open the one-per-day custom tournament setup for VIPs and boosters."""
-    if not _has_custom_tournament_access(ctx.author):
-        return await ctx.send(
-            "❌ Only members with the **VIP** or **[W]** role can create a custom tournament.",
-            delete_after=10.0,
-        )
-    remaining = _perk_cooldown_remaining(ctx.author.id, "create_tourney", 86400)
-    if remaining:
-        return await ctx.send(
-            f"⏳ You can create another custom tournament in **{_format_cooldown(remaining)}**.",
-            delete_after=8.0,
-        )
-    if db.get("tour"):
-        return await ctx.send(
-            "❌ There is already an active tournament.",
-            delete_after=8.0,
-        )
-    embed = discord.Embed(
-        title="✨ Custom Tournament",
-        description=(
-            "Choose a format below to create your custom tournament.\n\n"
-            "Your VIP or booster perk allows **one custom tournament every 24 hours**."
-        ),
-        color=discord.Color.from_rgb(155, 89, 182),
-    )
-    await ctx.send(embed=embed, view=TourHubView(perk_host_id=ctx.author.id))
-
-
-@bot.command(name="set-P", aliases=["set-p", "set_p"])
+@bot.command(name="setup-P", aliases=["setup-p", "setup_p", "set-P", "set-p", "set_p"])
 @admin_only()
 async def set_custom_tournament_panel(ctx):
     """Publish the permanent custom tournament creation panel."""
@@ -6922,7 +6808,7 @@ class TicketMainView(View):
                 "❌ I can't DM you. Please enable DMs from this server.", ephemeral=True
             )
 
-@bot.command(name="add-ticket", aliases=["add_ticket"])
+@bot.command(name="add-ticket")
 @admin_only()
 async def add_ticket(ctx):
     embed = discord.Embed(
@@ -8439,7 +8325,6 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":end (aliases :winner-tour, :winner_tour)", "Closes a 1v1 tournament and awards the winner with Ruby and Crystals.", "[@winner] optional member mention; without it, the last remaining player is detected.", ":end @Winner"),
             (":team-winner", "Closes a team-format tournament and awards the winning team.", "No arguments; the active tournament must contain a winning team.", ":team-winner"),
             (":close-tour (alias :close_tour)", "Resets and closes the currently active tournament.", "No arguments; hoster/admin access. This clears the active tournament state.", ":close-tour"),
-            (":create-tourney (aliases :create_tourney, :custom-tourney)", "Opens the custom tournament setup for VIPs and boosters.", "No arguments; requires VIP or [W]. One custom tournament per 24 hours.", ":create-tourney"),
             (":event", "Posts a Flash Event embed in the current channel with its registration controls.", "No command arguments; configure the event through the displayed controls.", ":event"),
             (":start-event (alias :start_event)", "Starts the active Flash Event, mentions the event role and opens the room.", "No arguments; the event must already be configured.", ":start-event"),
             (":cod-event (alias :cod_event)", "Posts the event room code together with the selected map and emote.", "<emote> <map> <room code>.", ":cod-event 🏃 Skyline ABC123"),
@@ -8473,8 +8358,6 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
             (":boost", "Mostra allo Staff i vantaggi Ruby, Cristalli e ruolo assegnati ai booster.", "Nessun argomento; richiede un ruolo Staff.", ":boost"),
             (":vipclaim", "Claims the VIP crystal reward.", "No arguments; requires the VIP role. One claim every 14 days.", ":vipclaim"),
-            (":boostclaim", "Claims the weekly booster reward.", "No arguments; requires [W] or an active server boost. One claim every 7 days.", ":boostclaim"),
-            (":checkbio", "Checks the configured link in your custom status and assigns or removes the [S] role.", "No arguments; the configured bio link must be visible in your Discord activity.", ":checkbio"),
             (":link", "Shows the Stumble Guys account-linking setup; it does not link the account directly.", "Go to <#1542227301322719314>, press the account-link button, then follow the modal and DM screenshot instructions.", ":link"),
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
             (":set-supporter (alias :set_supporter)", "Sets the channel used for Supporter verification.", "<#channel> text-channel mention; admin access.", ":set-supporter #supporter-check"),
@@ -8483,9 +8366,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":setup-result", "Sets the channel where final tournament result embeds are published.", "<#channel> text-channel mention; owner access.", ":setup-result #results"),
             (":setup-shop (alias :setup_shop)", "Replaces old shop panels in the current channel with one persistent three-embed shop panel.", "No arguments; administrator access.", ":setup-shop"),
              (":set-perks (alias :set_perks)", "Publishes the three separate Booster, Bio Supporter and Twitch VIP perk panels.", "No arguments; administrator access.", ":set-perks"),
-            (":set-P (aliases :set-p, :set_p)", "Publishes the permanent custom tournament creation panel.", "No arguments; administrator access.", ":set-P"),
+            (":setup-P", "Publishes the permanent custom tournament creation panel for VIPs and boosters.", "No arguments; administrator access.", ":setup-P"),
             (":set-welcome (alias :set_welcome)", "Sets the channel used for welcome and goodbye messages.", "<#channel> text-channel mention; administrator access.", ":set-welcome #welcome"),
-            (":add-ticket (alias :add_ticket)", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
+            (":add-ticket", "Admin-only maintenance command for the support panel; members use the buttons in the dedicated ticket channel.", "Go to <#1147528589676380181> and use its buttons. The command itself requires administrator access.", ":add-ticket"),
             (":set-tw (alias :set_tw)", "Sets the Discord channel for the live Twitch viewer dashboard for piccolofe.", "<#channel> text-channel mention; administrator or owner access.", ":set-tw #twitch-live"),
             (":log-tw (alias :log_tw)", "Registers the three-part Ruby, Crystals and Gems reward used by :claim-tw.", "<amount> <currency> repeated three times; all three currencies are required; administrator or owner access.", ":log-tw 1000 Ruby 100 Crystals 50 Gems"),
             (":claim-tw (alias :claim_tw)", "Claims the reward for the most recent completed piccolofe stream after at least 30 tracked minutes.", "<twitch_name>; only available after Twitch confirms that the stream has ended.", ":claim-tw MyTwitchName"),
@@ -8501,7 +8384,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # together, while privileged commands are grouped by the role they need.
     community_names = {
         "profile", "team", "myteam", "teamleave", "1v1", "link", "supporter",
-        "help", "claim-tw", "create-tourney", "vipclaim", "boostclaim", "checkbio",
+        "help", "claim-tw", "vipclaim",
     }
     staff_names = {
         "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
@@ -8513,7 +8396,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
-        "setup-shop", "set-perks", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
+        "setup-shop", "set-perks", "setup-p", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
     permission_pages = [[], [], []]
     for entry in [item for page in commands_by_page for item in page]:
@@ -8569,7 +8452,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
         ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
-        ":1v1": "Invia a un altro membro una sfida 1v1 in una stanza privata; il duello non usa scommesse o trasferimenti di valuta.",
+        ":1v1": "Invia a un altro membro una sfida 1v1 gratuita in una stanza privata, senza trasferimenti di valuta.",
         ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività PCF™.",
         ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
         ":link": "Mostra il setup per collegare l’account Stumble Guys, ma non collega direttamente l’account. Vai nel canale <#1542227301322719314>, premi il pulsante di collegamento e segui le istruzioni del modal e del DM.",
@@ -10595,37 +10478,8 @@ async def chest_cmd(ctx):
 
 
 # ==========================================
-# ⚔️  :1v1 SFIDE E SCOMMESSE
+# ⚔️  :1v1 SFIDE
 # ==========================================
-
-class _DuelWagerModal(Modal):
-    def __init__(self, dueler_role: str):
-        super().__init__(title=f"💰 What do you want to wager, {dueler_role}?")
-        self.amount = TextInput(
-            label="How much Ruby do you want to wager?",
-            placeholder=f"Minimum {DUEL_MIN_WAGER} Ruby (e.g. 500)",
-            min_length=1, max_length=10)
-        self.add_item(self.amount)
-        self.dueler_role = dueler_role  # "sfidante" | "sfidato"
-        self._result: int | None = None
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            val = int(self.amount.value.strip())
-            if val < DUEL_MIN_WAGER:
-                raise ValueError
-            self._result = val
-        except ValueError:
-            await interaction.response.send_message(
-                f"❌ The minimum duel wager is **{DUEL_MIN_WAGER} Ruby**.",
-                ephemeral=True,
-            )
-            return
-        # Signal to the view via a stored future
-        await interaction.response.defer()
-        if hasattr(self, "_callback"):
-            await self._callback(interaction, val)
-
 
 class DuelView(View):
     """Full lifecycle view for a 1v1 duel — persists across all phases."""
@@ -10636,9 +10490,7 @@ class DuelView(View):
         self.challenged  = challenged
         self.channel_id  = channel_id
         self.guild_id    = guild_id
-        self.state       = "pending"    # pending → wagering → confirming → arbiting
-        self.bet_a: int | None = None   # challenger's ruby bet
-        self.bet_b: int | None = None   # challenged's ruby bet
+        self.state       = "pending"    # pending → arbiting
         self.confirmed: set  = set()    # ids who confirmed
         self.duel_thread: discord.Thread | None = None
         self._msg: discord.Message | None = None
@@ -10653,10 +10505,6 @@ class DuelView(View):
         e = discord.Embed(title=title, description=desc, color=color)
         e.add_field(name="⚔️ Challenger",  value=self.challenger.mention, inline=True)
         e.add_field(name="🛡️ Challenged",   value=self.challenged.mention, inline=True)
-        if self.bet_a is not None:
-            e.add_field(name="💰 Challenger wager", value=f"{format_num(self.bet_a)} {E_RUBY}", inline=True)
-        if self.bet_b is not None:
-            e.add_field(name="💰 Challenged wager",  value=f"{format_num(self.bet_b)} {E_RUBY}", inline=True)
         e.set_image(url=STUMBLE_IMG)
         return e
 
@@ -10721,23 +10569,21 @@ class DuelView(View):
                 "or ask staff to check the channel permissions.",
                 ephemeral=True,
             )
-        self.state = "wagering"
+        self.state = "arbiting"
         self.clear_items()
-        # Add wager buttons
-        bet_a_btn = Button(label=f"💰 Wager {self.challenger.display_name}", style=discord.ButtonStyle.primary, custom_id="duel_bet_a")
-        bet_b_btn = Button(label=f"💰 Wager {self.challenged.display_name}",  style=discord.ButtonStyle.primary, custom_id="duel_bet_b")
-        bet_a_btn.callback = self._bet_a_callback
-        bet_b_btn.callback = self._bet_b_callback
-        self.add_item(bet_a_btn)
-        self.add_item(bet_b_btn)
+        win_a = Button(label=f"🏆 {self.challenger.display_name} wins", style=discord.ButtonStyle.success, custom_id="duel_win_a")
+        win_b = Button(label=f"🏆 {self.challenged.display_name} wins", style=discord.ButtonStyle.danger, custom_id="duel_win_b")
+        win_a.callback = lambda i: self._declare_winner(i, self.challenger, self.challenged)
+        win_b.callback = lambda i: self._declare_winner(i, self.challenged, self.challenger)
+        self.add_item(win_a)
+        self.add_item(win_b)
         em = self._duel_embed(
             "⚔️ 1v1 Ready!",
             f"{self.challenger.mention} and {self.challenged.mention}, this private "
             f"thread is your match room.\n\n"
             "Choose the map and match rules together. The bot will not choose "
             "them.\n\n"
-            f"**Prize:** each player chooses their own wager below "
-            f"(minimum **{DUEL_MIN_WAGER} Ruby**). The winner receives the total.",
+            "When the match is complete, a Staff member can record the winner.",
             discord.Color.orange()
         )
         try:
@@ -10773,117 +10619,12 @@ class DuelView(View):
         await interaction.response.edit_message(embed=em, view=self)
         self.stop()
 
-    # ── Phase 2: Wager modals ───────────────────────────────────────────────
-
-    async def _bet_a_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.challenger.id:
-            return await interaction.response.send_message("❌ This button is for the challenger!", ephemeral=True)
-        modal = _DuelWagerModal("Challenger")
-        async def _cb(inter, val):
-            prof = get_profile(self.challenger.id, self.challenger.display_name)
-            if prof.get("rubini", 0) < val:
-                await inter.followup.send(f"❌ Not enough Ruby! You have {format_num(prof.get('rubini',0))} {E_RUBY}", ephemeral=True)
-                return
-            self.bet_a = val
-            await self._check_both_wagered(inter)
-        modal._callback = _cb
-        await interaction.response.send_modal(modal)
-
-    async def _bet_b_callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.challenged.id:
-            return await interaction.response.send_message("❌ This button is for the challenged player!", ephemeral=True)
-        modal = _DuelWagerModal("Challenged")
-        async def _cb(inter, val):
-            prof = get_profile(self.challenged.id, self.challenged.display_name)
-            if prof.get("rubini", 0) < val:
-                await inter.followup.send(f"❌ Not enough Ruby! You have {format_num(prof.get('rubini',0))} {E_RUBY}", ephemeral=True)
-                return
-            self.bet_b = val
-            await self._check_both_wagered(inter)
-        modal._callback = _cb
-        await interaction.response.send_modal(modal)
-
-    async def _check_both_wagered(self, interaction: discord.Interaction):
-        """After each wager, refresh the embed. If both set, show Confirm button."""
-        if self._msg is None:
-            return
-        if self.bet_a is not None and self.bet_b is not None:
-            self.state = "confirming"
-            self.clear_items()
-            confirm_btn = Button(label="🤝 Confirm Challenge", style=discord.ButtonStyle.success, custom_id="duel_confirm")
-            confirm_btn.callback = self._confirm_callback
-            self.add_item(confirm_btn)
-            em = self._duel_embed(
-                "⚔️ Wagers Entered!",
-                f"Both players have entered their wagers.\n"
-                f"**Both players** must press **Confirm Challenge** to start the duel!",
-                discord.Color.blurple()
-            )
-        else:
-            waiting_for = self.challenger.display_name if self.bet_a is None else self.challenged.display_name
-            em = self._duel_embed(
-                "⚔️ Challenge in progress...",
-                f"Waiting for **{waiting_for}** to enter a wager...",
-                discord.Color.orange()
-            )
-        try:
-            await self._msg.edit(embed=em, view=self)
-        except Exception:
-            pass
-
-    # ── Phase 3: Confirm ────────────────────────────────────────────────────
-
-    async def _confirm_callback(self, interaction: discord.Interaction):
-        if interaction.user.id not in (self.challenger.id, self.challenged.id):
-            return await interaction.response.send_message("❌ Only the duelists can confirm!", ephemeral=True)
-        self.confirmed.add(interaction.user.id)
-        wait_txt = "Waiting for the other player..." if len(self.confirmed) < 2 else "Everyone confirmed!"
-        await interaction.response.send_message(
-            f"✅ {interaction.user.display_name} confirmed! ({wait_txt})",
-            ephemeral=True)
-        if len(self.confirmed) >= 2:
-            await self._start_arbiter()
-
-    async def _start_arbiter(self):
-        if self._msg is None:
-            return
-        self.state = "arbiting"
-        # Deduct bets from both
-        prof_a = get_profile(self.challenger.id, self.challenger.display_name)
-        prof_b = get_profile(self.challenged.id, self.challenged.display_name)
-        bet_a  = self.bet_a or 0
-        bet_b  = self.bet_b or 0
-        prof_a["rubini"] = max(0, prof_a.get("rubini", 0) - bet_a)
-        prof_b["rubini"] = max(0, prof_b.get("rubini", 0) - bet_b)
-        save_db()
-        self.clear_items()
-        win_a = Button(label=f"🏆 {self.challenger.display_name} wins", style=discord.ButtonStyle.success, custom_id="duel_win_a")
-        win_b = Button(label=f"🏆 {self.challenged.display_name} wins",  style=discord.ButtonStyle.danger,  custom_id="duel_win_b")
-        win_a.callback = lambda i: self._declare_winner(i, self.challenger, self.challenged)
-        win_b.callback = lambda i: self._declare_winner(i, self.challenged, self.challenger)
-        self.add_item(win_a)
-        self.add_item(win_b)
-        total = bet_a + bet_b
-        em = self._duel_embed(
-            "⚔️ Duel in progress!",
-            f"The duel has started!\n\n"
-            f"**Total wager:** {format_num(total)} {E_RUBY}\n\n"
-            f"⚠️ Only **Staff** can declare the winner.",
-            discord.Color.red()
-        )
-        try:
-            await self._msg.edit(embed=em, view=self)
-        except Exception:
-            pass
-
-    # ── Phase 4: Arbiter (staff only) ────────────────────────────────────────
+    # ── Phase 2: Arbiter (staff only) ───────────────────────────────────────
 
     async def _declare_winner(self, interaction: discord.Interaction, winner: discord.Member, loser: discord.Member):
         if not self._is_staff(interaction.user):
             return await interaction.response.send_message("❌ Only **Staff** can arbitrate!", ephemeral=True)
-        total = (self.bet_a or 0) + (self.bet_b or 0)
         prof_w = get_profile(winner.id, winner.display_name)
-        prof_w["rubini"]    = prof_w.get("rubini", 0) + total
         prof_w["duel_wins"] = prof_w.get("duel_wins", 0) + 1
         save_db()
         for child in self.children:
@@ -10892,7 +10633,7 @@ class DuelView(View):
             title="🏆 Duel Finished!",
             description=(
                 f"**Winner:** {winner.mention}\n"
-                f"**+{format_num(total)}** {E_RUBY} awarded!\n\n"
+                "**No currency was exchanged.**\n\n"
                 f"Arbiter: {interaction.user.mention}"
             ),
             color=discord.Color.gold()
@@ -10906,7 +10647,7 @@ class DuelView(View):
 
 @bot.command(name="1v1")
 async def duel_cmd(ctx, opponent: discord.Member = None):
-    """⚔️ Challenge a member to a Ruby wager duel!"""
+    """⚔️ Challenge a member to a 1v1 match."""
     if opponent is None:
         return await ctx.send("❌ Use: `:1v1 @user`", delete_after=5.0)
     if opponent.id == ctx.author.id:
@@ -10919,8 +10660,8 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
         description=(
             f"{ctx.author.mention} challenged {opponent.mention} to a duel!\n\n"
             f"**{opponent.display_name}**, do you accept the challenge?\n\n"
-            f"The winner receives the entire wager. After acceptance, "
-            f"a private thread will be created so you can choose the map together."
+            f"After acceptance, a private thread will be created so you can "
+            f"choose the map together. No currency is involved."
         ),
         color=discord.Color.blue()
     )
@@ -10929,127 +10670,6 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
     em.set_image(url=STUMBLE_IMG)
     msg = await ctx.send(embed=em, view=view)
     view._msg = msg
-
-
-# ==========================================
-# 💎 SCOMMESSE SUI MATCH DEL TORNEO
-# ==========================================
-
-class _BetAmountModal(Modal):
-    def __init__(self, match_id: str, choice: str):
-        super().__init__(title=f"💎 Bet on {choice}")
-        self.match_id = match_id
-        self.choice   = choice
-        self.amount   = TextInput(
-            label="How many Crystals do you want to wager?",
-            placeholder="e.g. 200",
-            min_length=1, max_length=8)
-        self.add_item(self.amount)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            val = int(self.amount.value.strip())
-            if val <= 0:
-                raise ValueError
-        except ValueError:
-            return await interaction.response.send_message("❌ Enter a positive number.", ephemeral=True)
-        bet_data = active_bets.get(self.match_id)
-        if not bet_data:
-            return await interaction.response.send_message("❌ Betting for this match is no longer active.", ephemeral=True)
-        prof = get_profile(interaction.user.id, interaction.user.display_name)
-        if prof.get("cristalli", 0) < val:
-            return await interaction.response.send_message(
-                f"❌ Not enough Crystals! You have: {format_num(prof.get('cristalli',0))} {E_CRYSTAL}", ephemeral=True)
-        uid = str(interaction.user.id)
-        if uid in bet_data["bets"]:
-            return await interaction.response.send_message("❌ You already placed a bet on this match!", ephemeral=True)
-        prof["cristalli"] = prof.get("cristalli", 0) - val
-        save_db()
-        bet_data["bets"][uid] = {"choice": self.choice, "amount": val}
-        await interaction.response.send_message(
-            f"✅ Bet recorded! **{format_num(val)}** {E_CRYSTAL} on **{self.choice}**.\n"
-            f"If it wins, you receive double: **{format_num(val * 2)}** {E_CRYSTAL}!",
-            ephemeral=True)
-
-
-class MatchBettingView(View):
-    def __init__(self, match_id: str, p1: str, p2: str):
-        super().__init__(timeout=None)
-        self.match_id = match_id
-        self.p1 = p1
-        self.p2 = p2
-        btn1 = Button(label=f"🎯 {p1[:30]}", style=discord.ButtonStyle.primary,  custom_id=f"bet_{match_id}_p1")
-        btn2 = Button(label=f"🎯 {p2[:30]}", style=discord.ButtonStyle.secondary, custom_id=f"bet_{match_id}_p2")
-        btn1.callback = lambda i: self._bet(i, p1)
-        btn2.callback = lambda i: self._bet(i, p2)
-        self.add_item(btn1)
-        self.add_item(btn2)
-
-    async def _bet(self, interaction: discord.Interaction, choice: str):
-        # Only the two (or three) competitors are blocked from betting.
-        t = db.get("tour") or {}
-        match = t.get("matches", {}).get(int(self.match_id), {})
-        competitor_names = {
-            str(match.get("p1", "")).strip().lower(),
-            str(match.get("p2", "")).strip().lower(),
-            str(match.get("p3", "")).strip().lower(),
-        } - {"", "bye"}
-        competitor_ids = {
-            str(pid) for pid, name in zip(t.get("players", []), t.get("player_names", []))
-            if str(name).strip().lower() in competitor_names
-        }
-        for team in db.get("teams", []):
-            if any(str(name).strip().lower() in competitor_names for name in team.get("names", [])):
-                competitor_ids.update(str(uid) for uid in team.get("ids", []))
-        if str(interaction.user.id) in competitor_ids:
-            return await interaction.response.send_message(
-                "❌ Players cannot bet on their own matches!", ephemeral=True)
-        await interaction.response.send_modal(_BetAmountModal(self.match_id, choice))
-
-
-async def _post_match_bets(channel: discord.TextChannel, t: dict):
-    """Post a betting embed for every match in the current round."""
-    matches = t.get("matches", {})
-    if not matches:
-        return
-    cur_round = t.get("round", 1)
-    count = 0
-    for mid, m in matches.items():
-        if m.get("winner"):
-            continue
-        p1 = m.get("p1", "?")
-        p2 = m.get("p2", "?")
-        if p2 == "BYE":
-            continue
-        mid_str = str(mid)
-        active_bets[mid_str] = {"p1": p1, "p2": p2, "bets": {}, "channel_id": channel.id}
-        em = discord.Embed(
-            title=f"💎 Betting — Match #{mid} (Round {cur_round})",
-            description=(
-                f"**{p1}** ⚔️ **{p2}**\n\n"
-                f"Bet your {E_CRYSTAL} **Crystals** on the winner!\n"
-                f"If correct → **double** your wager!\n\n"
-                f"*(Match players cannot bet)*"
-            ),
-            color=discord.Color.purple()
-        )
-        em.set_footer(text="PCF™ Betting • Bet responsibly!")
-        await channel.send(embed=em, view=MatchBettingView(mid_str, p1, p2))
-        count += 1
-        if count >= 8:  # Cap a 8 embed per non spammare
-            break
-
-
-async def _resolve_bets_for_match(match_id: str, winner_name: str):
-    """Resolve bets for a match: pay winners and keep losing wagers."""
-    bet_data = active_bets.pop(str(match_id), None)
-    if not bet_data:
-        return
-    for uid, bet in bet_data["bets"].items():
-        if bet["choice"].lower() == winner_name.lower() or winner_name.lower() in bet["choice"].lower():
-            prof = get_profile(int(uid), uid)
-            prof["cristalli"] = prof.get("cristalli", 0) + bet["amount"] * 2
-    save_db()
 
 
 # ==========================================
