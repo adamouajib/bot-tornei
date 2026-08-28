@@ -425,6 +425,7 @@ EMOJIS = {
 STAFF_ROLES = {
     "staff": 1148186303758876682,
     "high_staff": 1150025388446208012,
+    "hoster": 1542475313433419879,
     "trial_moderator": 1236072421468016652,
     "moderator": 1147594101001302077,
     "head_moderator": 1147595052185563307,
@@ -517,8 +518,8 @@ TWITCH_REWARD_CURRENCY_NAMES = {
     "gemme": "gems",
 }
 
-TOUR_HUB_CHANNEL_ID    = CHANNELS["tournament"]
-TOUR_REG_CHANNEL_ID    = CHANNELS["setup_tornei"]
+TOUR_HUB_CHANNEL_ID    = CHANNELS["setup_tornei"]
+TOUR_REG_CHANNEL_ID    = CHANNELS["tournament"]
 TOUR_PING_ROLE_ID      = 1508572231326896269
 # Temporary campaign setting: notify everyone for every newly published tournament.
 TOURNAMENT_EVERYONE_PING_ENABLED = True
@@ -578,7 +579,7 @@ DEFAULT_TOURNAMENT_PRIZES = (
 )
 
 # ── Role IDs ────────────────────────────────────────────────────────────────
-HOSTER_ROLE_ID       = 1410695924879196231   # event/tour/bracket/qual/match/winner
+HOSTER_ROLE_ID       = STAFF_ROLES["hoster"]  # event/tour/bracket/qual/match/winner
 STAFF_ROLE_IDS       = set(STAFF_ROLES.values())
 ADMIN_ROLE_IDS       = {                     # big-event / economy / tickets
     STAFF_ROLES["administrator"],
@@ -7277,8 +7278,13 @@ async def on_message(message: discord.Message):
             try:
                 level_channel = bot.get_channel(db.get("level_channel_id")) or message.channel
                 await level_channel.send(
+                    content=message.author.mention,
                     embed=embed,
-                    allowed_mentions=discord.AllowedMentions.none(),
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True,
+                        roles=False,
+                        everyone=False,
+                    ),
                 )
             except Exception as e:
                 print(f"[Level-up] {e}")
