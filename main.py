@@ -1107,8 +1107,17 @@ def _is_gemini_rate_limit_error(error_text: str) -> bool:
     ))
 
 async def _get_ai_main_guild() -> discord.Guild | None:
-    """Return the configured PCF guild, never an arbitrary connected guild."""
-    return bot.get_guild(SERVER_ID)
+    """Return the configured PCF guild, including after a cold cache start."""
+    guild = bot.get_guild(SERVER_ID)
+    if guild is not None:
+        return guild
+    try:
+        guild = await bot.fetch_guild(SERVER_ID)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[AI SERVER] Could not access configured server {SERVER_ID}: {exc}")
+        return None
+    print(f"[AI SERVER] Loaded configured server through API: {guild.name} ({guild.id})")
+    return guild
 
 async def _get_ai_category(guild: discord.Guild) -> discord.CategoryChannel:
     category = guild.get_channel(AI_CATEGORY_ID)
@@ -3727,6 +3736,12 @@ async def on_ready():
     global _additional_persistent_views_registered, _announcement_language_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
+    connected_guilds = ", ".join(
+        f"{guild.name} ({guild.id})" for guild in bot.guilds
+    ) or "none"
+    print(f"[on_ready] Connected servers: {connected_guilds}")
+    if bot.get_guild(SERVER_ID) is None:
+        print(f"[on_ready WARNING] Configured server {SERVER_ID} is not in the guild cache")
     if GEMINI_CONFIGURED:
         try:
             await initialize_gemini_model()
@@ -6950,69 +6965,104 @@ async def on_message(message: discord.Message):
             guild = await _get_ai_main_guild()
             if guild is None:
                 await message.channel.send(
-                    "⚠️ I can't find the main server right now. Please try again later."
+                    "⚠️ Non riesco ad accedere al server principale in questo momento. "
+                    "Riprova tra poco."
                 )
                 return
-            existing = await _find_private_ai_channel(guild, message.author.id)
-            if existing:
-                ai_private_channels[message.author.id] = existing.id
-                ai_channel_last_activity[message.author.id] = datetime.utcnow()
-                await message.channel.send(
-                    f"✅ Your private PCF™ Assistant chat is already open: {existing.mention}"
-                )
-                return
-            category = await _get_ai_category(guild)
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(
-                    view_channel=False,
-                    send_messages=False,
-                    read_message_history=False,
-                ),
-            }
-            for role in guild.roles:
-                if not role.is_default():
-                    overwrites[role] = discord.PermissionOverwrite(
+            try:
+                existing = await _find_private_ai_channel(guild, message.author.id)
+                if existing:
+                    ai_private_channels[message.author.id] = existing.id
+                    ai_channel_last_activity[message.author.id] = datetime.utcnow()
+                    await message.channel.send(
+                        f"✅ La tua chat privata con l'assistente PCF™ è già aperta: {existing.mention}"
+                    )
+                    return
+
+                member = guild.get_member(message.author.id)
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(message.author.id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        member = None
+                if member is None:
+                    await message.channel.send(
+                        "⚠️ Devi essere membro del server PCF™ per aprire la chat privata."
+                    )
+                    await _log_dm(message, "OUT", "PRIVATE AI CHAT DENIED — user is not a server member")
+                    return
+
+                category = await _get_ai_category(guild)
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(
                         view_channel=False,
                         send_messages=False,
                         read_message_history=False,
-                    )
-            member = guild.get_member(message.author.id)
-            if member is None:
-                try:
-                    member = await guild.fetch_member(message.author.id)
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    member = None
-            if member:
+                    ),
+                }
+                for role in guild.roles:
+                    if not role.is_default():
+                        overwrites[role] = discord.PermissionOverwrite(
+                            view_channel=False,
+                            send_messages=False,
+                            read_message_history=False,
+                        )
                 overwrites[member] = discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
                     read_message_history=True,
                 )
-            if guild.me:
-                overwrites[guild.me] = discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    embed_links=True,
-                    attach_files=True,
+                bot_member = guild.me
+                if bot_member is None and bot.user is not None:
+                    try:
+                        bot_member = await guild.fetch_member(bot.user.id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        bot_member = None
+                if bot_member is not None:
+                    overwrites[bot_member] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        embed_links=True,
+                        attach_files=True,
+                    )
+                channel = await guild.create_text_channel(
+                    name=f"ai-chat-{message.author.display_name[:18]}",
+                    category=category,
+                    topic=(
+                        f"AI_SESSION_USER_ID:{message.author.id}|"
+                        f"LAST_ACTIVITY:{datetime.utcnow().isoformat()}"
+                    ),
+                    overwrites=overwrites,
+                    reason="Create private AI chat",
                 )
-            channel = await guild.create_text_channel(
-                name=f"ai-chat-{message.author.display_name[:18]}",
-                category=category,
-                topic=(
-                    f"AI_SESSION_USER_ID:{message.author.id}|"
-                    f"LAST_ACTIVITY:{datetime.utcnow().isoformat()}"
-                ),
-                overwrites=overwrites,
-                reason="Create private AI chat",
-            )
-            ai_private_channels[message.author.id] = channel.id
-            ai_channel_last_activity[message.author.id] = datetime.utcnow()
-            active_ai_sessions.add(message.author.id)
-            welcome_embed = _ai_welcome_embed(guild, channel)
-            await channel.send(embed=welcome_embed, view=PrivateAIChatView(message.author.id))
-            await message.channel.send(embed=welcome_embed)
-            await _log_dm(message, "OUT", f"PRIVATE AI CHAT START — {channel.mention}")
+                ai_private_channels[message.author.id] = channel.id
+                ai_channel_last_activity[message.author.id] = datetime.utcnow()
+                active_ai_sessions.add(message.author.id)
+                welcome_embed = _ai_welcome_embed(guild, channel)
+                await channel.send(embed=welcome_embed, view=PrivateAIChatView(message.author.id))
+                await message.channel.send(embed=welcome_embed)
+                await _log_dm(message, "OUT", f"PRIVATE AI CHAT START — {channel.mention}")
+            except discord.Forbidden as exc:
+                print(f"[AI START] Discord permissions denied for {message.author.id}: {exc}")
+                await _safe_log_ai_exception(guild, "Private AI channel permissions", exc)
+                await message.channel.send(
+                    "⚠️ Non posso creare la chat privata: mi manca il permesso "
+                    "**Gestisci canali** nel server PCF™."
+                )
+            except discord.HTTPException as exc:
+                print(f"[AI START] Discord API error for {message.author.id}: {exc}")
+                await _safe_log_ai_exception(guild, "Private AI channel creation", exc)
+                await message.channel.send(
+                    "⚠️ Discord non ha permesso di creare la chat privata. Riprova tra poco."
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                await _safe_log_ai_exception(guild, "Private AI start", exc)
+                await message.channel.send(
+                    "⚠️ Si è verificato un errore durante la creazione della chat privata. "
+                    "Riprova tra poco."
+                )
             return
 
         if command_text == ":end":
