@@ -7202,7 +7202,7 @@ async def on_message(message: discord.Message):
             embed = discord.Embed(
                 title=f"{E_LEVEL} Level Up!",
                 description=(
-                    f"Congratulations {message.author.mention}! 🎉\n"
+                    f"Congratulations **{message.author.display_name}**! 🎉\n"
                     f"You reached **Level {new_level}**!\n\n"
                     f"Your reward:\n{premio_txt}\n\n"
                     f"*(Next level: **{xp_next} more XP**)*"
@@ -7212,7 +7212,10 @@ async def on_message(message: discord.Message):
             embed.set_image(url=STUMBLE_IMG)
             try:
                 level_channel = bot.get_channel(db.get("level_channel_id")) or message.channel
-                await level_channel.send(embed=embed)
+                await level_channel.send(
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             except Exception as e:
                 print(f"[Level-up] {e}")
 
