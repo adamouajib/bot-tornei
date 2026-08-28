@@ -529,6 +529,17 @@ PROFILE_ONLY_CH = 1410696056857170110   # :profile only
 SUPPORTER_VERIFY_CAT = 1410695995951546368   # category for supporter verify tickets
 EVENT_PING_ROLE_ID   = 1410695964783673486   # role pinged when event starts
 GIVEAWAY_PING_ROLE_ID = 1410695965748232263  # role pinged in giveaways
+
+# ── Official announcement ────────────────────────────────────────────────────
+OFFICIAL_ANNOUNCEMENT_CHANNELS = {
+    "account": "<#1542227301322719314>",
+    "roles": "<#1542588765145661530>",
+    "shop": "<#1542311408086290482>",
+    "machine": "<#1542586232918253588>",
+    "chest": "<#1542586149661581312>",
+    "perks": "<#1542585903648608279>",
+}
+
 DEFAULT_EVENT_RULES = (
     "🚫 No Team\n"
     "🚫 No Spam\n"
@@ -628,7 +639,7 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
 OWNER_COMMANDS = {
     "set-log", "set-welcome", "set-lvl", "set-leaderboard", "setup-result",
     "setup-scomesse", "reset-all", "pex", "setup", "big-tour",
-    "chest",
+    "chest", "announcement",
 }
 ADMIN_COMMANDS = {
     "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
@@ -2239,6 +2250,7 @@ _ticket_main_view_registered = False
 _supporter_weekly_view_registered = False
 _sg_link_channel_view_registered = False
 _additional_persistent_views_registered = False
+_announcement_language_view_registered = False
 
 
 def _member_has_role_name(member: discord.Member, role_name: str) -> bool:
@@ -3646,7 +3658,7 @@ async def on_ready():
     global _shop_panel_view_registered, _machine_panel_view_registered
     global _chest_panel_view_registered, _ticket_main_view_registered
     global _supporter_weekly_view_registered, _sg_link_channel_view_registered
-    global _additional_persistent_views_registered
+    global _additional_persistent_views_registered, _announcement_language_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     if GEMINI_CONFIGURED:
@@ -3686,6 +3698,10 @@ async def on_ready():
         bot.add_view(SGLinkChannelView())
         _sg_link_channel_view_registered = True
         print("[on_ready] Persistent SG link panel view registered")
+    if not _announcement_language_view_registered:
+        bot.add_view(OfficialAnnouncementView())
+        _announcement_language_view_registered = True
+        print("[on_ready] Persistent announcement language view registered")
     if not _additional_persistent_views_registered:
         # These views either have no per-message state or resolve their
         # routing data from SQLite, so old messages remain actionable after a
@@ -8490,6 +8506,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":log-tw (alias :log_tw)", "Registers the three-part Ruby, Crystals and Gems reward used by :claim-tw.", "<amount> <currency> repeated three times; all three currencies are required; administrator or owner access.", ":log-tw 1000 Ruby 100 Crystals 50 Gems"),
             (":claim-tw (alias :claim_tw)", "Claims the reward for the most recent completed piccolofe stream after at least 30 tracked minutes.", "<twitch_name>; only available after Twitch confirms that the stream has ended.", ":claim-tw MyTwitchName"),
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
+            (":announcement (aliases :announce, :official-announcement, :annuncio)", "Publishes the official three-embed server announcement with clickable channel links and a persistent language button.", "No arguments; owner access.", ":announcement"),
             (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
             (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
             (":clear (alias :purge)", "Elimina i messaggi recenti del canale.", "<quantità> da 1 a 100; richiede un ruolo Staff.", ":clear 25"),
@@ -8581,6 +8598,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":set-welcome": "Imposta il canale in cui il bot pubblica i messaggi di benvenuto e di uscita dei membri.",
         ":add-ticket": "Comando di manutenzione riservato agli admin per il pannello ticket. Gli utenti devono andare nel canale <#1147528589676380181> e usare i pulsanti già presenti.",
         ":pex": "Controlla i Ranked Points dello staff e aggiorna i ruoli rank promuovendo o retrocedendo i membri quando necessario.",
+        ":announcement": "Pubblica l’annuncio ufficiale con tre embed, link cliccabili ai canali e un pulsante persistente per cambiare lingua.",
         ":reset-all": "Cancella definitivamente profili, punti, rank, tornei, squadre ed eventi dopo la conferma dell’amministratore.",
         ":reset-staff-week": "Azzera i contatori settimanali dei tornei gestiti da staff e host, lasciando invariati i totali storici.",
     }
@@ -8834,6 +8852,201 @@ async def help_cmd(ctx):
     embed.set_image(url=HELP_EMBED_IMAGE_URL)
     embed.set_footer(text="PCF™ Bot • prefix: ':'")
     await ctx.send(embed=embed, view=HelpLangView())
+
+
+OFFICIAL_ANNOUNCEMENT_SOURCE = (
+    {
+        "title": "🎉 WELCOME ME TO THE SERVER!",
+        "description": (
+            "Hello everyone! I am officially here to keep the community active, "
+            "manage tournaments, and run the economy.\n\n"
+            "🔗 **Link Account:** It is REQUIRED to link your account to receive "
+            "rewards. Go to [[ACCOUNT_CHANNEL]] to do it.\n\n"
+            "🎭 **Roles:** Haven't picked your roles for tournaments yet? Go to "
+            "[[ROLES_CHANNEL]].\n\n"
+            "🤖 **AI Chat / Support:** Do you still have questions? Talk to the AI! "
+            "If you have any doubts or just want to chat with the AI, send a Direct "
+            "Message (DM) to the bot and use the command `[[START_COMMAND]]`."
+        ),
+    },
+    {
+        "title": "💎 CURRENCY & SHOP",
+        "description": (
+            "💎 **Rubies:** Base currency earned by chatting, tournaments, and "
+            "minigames (no daily commands).\n\n"
+            "🔷 **Crystals:** Rare currency earned from tournament podiums or "
+            "exchanging Rubies.\n\n"
+            "🛒 **Shop & Exchange:** Visit [[SHOP_CHANNEL]] to exchange your "
+            "Rubies for Crystals, and use Crystals to buy Stumble Guys Gems and "
+            '"W" Roles (which gives you the role on Discord AND in the tournament '
+            "bracket)."
+        ),
+    },
+    {
+        "title": "🏆 TOURNAMENTS, MINIGAMES & PERKS",
+        "description": (
+            "🏆 **Tournaments:** 1st (100 Crystals/2000 Rubies), 2nd "
+            "(50 Crystals/1000 Rubies), 3rd (25 Crystals/500 Rubies).\n\n"
+            "📨 **Tournament Requirement:** To participate, you must make at "
+            "least 1 invite.\n"
+            "Reason: We want to grow this community and we need your help! 🌱✨\n\n"
+            "🎮 **Minigames:** Play games in the dedicated channels "
+            "[[MACHINE_CHANNEL]] (Machine) and [[CHEST_CHANNEL]] (Chest).\n\n"
+            "✨ **Perks:** Check out the exclusive perks for Boosters, Subscribers, "
+            "or users who put the server link in their bio! Visit [[PERKS_CHANNEL]]."
+        ),
+    },
+)
+
+_ANNOUNCEMENT_PLACEHOLDERS = {
+    "[[ACCOUNT_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["account"],
+    "[[ROLES_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["roles"],
+    "[[SHOP_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["shop"],
+    "[[MACHINE_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["machine"],
+    "[[CHEST_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["chest"],
+    "[[PERKS_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["perks"],
+    "[[START_COMMAND]]": ":start",
+}
+_ANNOUNCEMENT_COLORS = (
+    discord.Color.blurple(),
+    discord.Color.purple(),
+    discord.Color.gold(),
+)
+
+
+def _build_announcement_embeds(content: tuple[dict, ...] | list[dict]) -> list[discord.Embed]:
+    """Build the three announcement embeds and restore clickable Discord links."""
+    if len(content) != len(OFFICIAL_ANNOUNCEMENT_SOURCE):
+        raise ValueError("The announcement must contain exactly three embeds.")
+
+    embeds = []
+    for index, item in enumerate(content):
+        title = str(item.get("title", "")).strip()
+        description = str(item.get("description", "")).strip()
+        if not title or not description:
+            raise ValueError("A translated announcement embed is missing text.")
+        for placeholder, replacement in _ANNOUNCEMENT_PLACEHOLDERS.items():
+            description = description.replace(placeholder, replacement)
+        if "[[" in description or "]]" in description:
+            raise ValueError("A translated announcement embed lost a required placeholder.")
+        embeds.append(
+            discord.Embed(
+                title=title,
+                description=description,
+                color=_ANNOUNCEMENT_COLORS[index],
+            )
+        )
+    return embeds
+
+
+def _announcement_source_for_translation() -> list[dict]:
+    return [dict(item) for item in OFFICIAL_ANNOUNCEMENT_SOURCE]
+
+
+async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
+    """Translate only member-facing text while preserving links and facts."""
+    if not GEMINI_CONFIGURED:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+
+    source = _announcement_source_for_translation()
+    prompt = (
+        "Translate the three Discord announcement embeds below into the requested "
+        f"language: {language!r}.\n\n"
+        "Return ONLY valid JSON in this exact shape: "
+        '[{"title":"...","description":"..."},'
+        '{"title":"...","description":"..."},'
+        '{"title":"...","description":"..."}]\n\n'
+        "Translate natural-language text only. Keep Markdown formatting, every "
+        "number, the command placeholder [[START_COMMAND]], and every channel "
+        "placeholder ([[ACCOUNT_CHANNEL]], [[ROLES_CHANNEL]], [[SHOP_CHANNEL]], "
+        "[[MACHINE_CHANNEL]], [[CHEST_CHANNEL]], [[PERKS_CHANNEL]]) exactly "
+        "unchanged. Do not add, remove, or reorder content. Do not include "
+        "Markdown code fences or commentary.\n\n"
+        f"Source embeds:\n{json.dumps(source, ensure_ascii=False)}"
+    )
+    translated = await gemini_completion_with_retries(
+        [{"role": "user", "content": prompt}],
+        (
+            "You are a precise Discord announcement translator. Follow the requested "
+            "JSON schema exactly. Never translate or modify placeholders, commands, "
+            "channel IDs, currency amounts, or Markdown syntax."
+        ),
+    )
+    parsed = json.loads(clean_ai_response(translated))
+    if isinstance(parsed, dict):
+        parsed = parsed.get("embeds")
+    if not isinstance(parsed, list) or len(parsed) != 3:
+        raise ValueError("The translator did not return exactly three embeds.")
+    for source_item, translated_item in zip(source, parsed):
+        if not isinstance(translated_item, dict):
+            raise ValueError("The translator returned an invalid embed.")
+        translated_description = str(translated_item.get("description", ""))
+        for placeholder in _ANNOUNCEMENT_PLACEHOLDERS:
+            if translated_description.count(placeholder) != source_item["description"].count(placeholder):
+                raise ValueError("The translator changed a required placeholder.")
+    return _build_announcement_embeds(parsed)
+
+
+class SetTongueModal(Modal, title="🌐 Set Language / Cambia Lingua"):
+    language = TextInput(
+        label="Enter your language:",
+        placeholder="Italian, English, Spanish, Deutsch...",
+        min_length=2,
+        max_length=80,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        language = self.language.value.strip()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            embeds = await _translate_announcement_embeds(language)
+            await interaction.followup.send(embeds=embeds, ephemeral=True)
+        except Exception as exc:
+            print(f"[announcement translation] {exc}")
+            await interaction.followup.send(
+                "❌ I couldn't translate the announcement right now. Please try again shortly.",
+                ephemeral=True,
+            )
+
+
+class OfficialAnnouncementView(View):
+    """Persistent language control attached to the official announcement."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="🌐 Set Language / Cambia Lingua",
+        style=discord.ButtonStyle.primary,
+        custom_id="set_tongue_btn",
+    )
+    async def set_tongue(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_modal(SetTongueModal())
+
+
+@bot.command(
+    name="announcement",
+    aliases=["announce", "official-announcement", "official_announcement", "annuncio"],
+)
+@owner_only()
+async def official_announcement(ctx):
+    """Publish the official three-embed server announcement."""
+    try:
+        embeds = _build_announcement_embeds(OFFICIAL_ANNOUNCEMENT_SOURCE)
+        await ctx.send(
+            content="@everyone @here",
+            embeds=embeds,
+            view=OfficialAnnouncementView(),
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[announcement publish] {exc}")
+        await ctx.send(
+            "❌ I couldn't publish the official announcement. "
+            "Check Send Messages, Embed Links, and mention permissions.",
+            delete_after=8.0,
+        )
+
 
 # ==========================================
 # 🚀 BOOST INFO
