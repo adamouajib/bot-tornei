@@ -393,24 +393,93 @@ intents.presences = True
 intents.message_content = True
 bot = commands.Bot(command_prefix=":", intents=intents, help_command=None)
 
-E_CRYSTAL = "<:crystal:1507440029323100301>"
-E_RUBY    = "<:ruby:1507420532402819093>"
+SERVER_ID = 1046154910368014417
+SERVER_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
+
+EMOJIS = {
+    "ruby": "<:ruby:1542674594454970448>",
+    "crystal": "<:crystal:1543018326312362015>",
+    "supporter": "<:supporter:1542348853825503312>",
+    "sp_galaxy": "<:SP_galaxy:1542574122859634729>",
+    "trophy": "<:trophy:1542599003013906497>",
+    "gold_medal": "<:gold_medal:1542598324157419592>",
+    "silver_medal": "<:silver_medal:1542598411453202483>",
+    "bronze_medal": "<:bronze_medal:1542598649694130289>",
+    "w_pink": "<:W_pink:1542344837876023366>",
+    "w_red": "<:W_red:1541579235691597899>",
+    "w_yellow": "<:W_yell:1542343645259243572>",
+    "w_sky": "<:W_sky:1542348083147575336>",
+    "w_green": "<:W_green:1542345097314574427>",
+    "w_purple": "<:W_purple:1542343337204387850>",
+    "w_orange": "<:W_org:1542344614999228538>",
+    "rank_no_rank": "<:norank:1542677988905193542>",
+    "rank_wood": "<:RankWood:1541590168828518401>",
+    "rank_bronze": "<:RankBronze:1541590306330509441>",
+    "rank_silver": "<:RankSilver:1541590380938530958>",
+    "rank_gold": "<:RankGold:1541590492213411930>",
+    "rank_platinum": "<:RankPlatinum:1541590562652557522>",
+    "rank_master": "<:RankMaster:1541590621184065577>",
+    "rank_champion": "<:RankChampion:1541590649998942220>",
+}
+
+STAFF_ROLES = {
+    "staff": 1148186303758876682,
+    "high_staff": 1150025388446208012,
+    "trial_moderator": 1236072421468016652,
+    "moderator": 1147594101001302077,
+    "head_moderator": 1147595052185563307,
+    "administrator": 1147594534709108747,
+    "head_administrator": 1147595924726620270,
+    "community_manager": 1048349372208910446,
+}
+
+LEVEL_ROLES: dict[int, int] = {
+    5: 1323612796247605300,
+    10: 1323751589743431680,
+    20: 1323751993306775696,
+    35: 1323752130657517659,
+    50: 132375218931499018335,
+}
+
+CHANNELS = {
+    "setup_tornei": 1542472954577682443,
+    "tournament": 1542313116149227640,
+    "community_event": 1542313345930236037,
+    # Existing operational channels that are also part of the server config.
+    "account_link": 1542227301322719314,
+    "ticket_panel": 1147528589676380181,
+}
+
+TICKETS = {
+    "general_support": 1541795079079858236,
+    "staff_request": 1541795204862976010,
+    "gems_transfer": 1542321231674478646,
+    "supporter": 1542321308841287691,
+    "verify_account": 1542321387018915860,
+}
+
+# Compatibility names keep the existing command code readable while ensuring
+# every configured emoji is sourced from EMOJIS.
+E_CRYSTAL = EMOJIS["crystal"]
+E_RUBY    = EMOJIS["ruby"]
 E_XP      = "<:xp:1507719994958549113>"
 E_CROWN   = "<:stumble_guys_crown:1505322344338427986>"
-E_TROPHY  = "<:trophy:1505324701596123227>"
-E_NO_RANK = "<:ranked:1507509359985295491>"
-E_GOLD    = "<:gold_medal:1505979207107481740>"
-E_BRONZE  = "<:bronze_medal:1505979006963421275>"
+E_TROPHY  = EMOJIS["trophy"]
+E_NO_RANK = EMOJIS["rank_no_rank"]
+E_GOLD    = EMOJIS["gold_medal"]
+E_SILVER  = EMOJIS["silver_medal"]
+E_BRONZE  = EMOJIS["bronze_medal"]
 E_RANKING = "<:ranking:1505323647827710223>"
 E_RULES   = "<:Rules:1506777190166167613>"
 E_LEVEL   = "<:StumbleGuys:1505322057313816617>"
 E_GEMS    = "<:gems:1507509442286190652>"
-E_W       = "<:emoji_45:1507810623063461948>"
+E_W       = EMOJIS["w_pink"]
 
-TICKET_SUPPORT_CAT  = 1410695991660908604
-TICKET_STAFF_CAT    = 1410695994114310247
-TICKET_GEMS_CAT     = 1410695992998756352
+TICKET_SUPPORT_CAT  = TICKETS["general_support"]
+TICKET_STAFF_CAT    = TICKETS["staff_request"]
+TICKET_GEMS_CAT     = TICKETS["gems_transfer"]
 SUPPORTER_ROLE_ID   = 1542646365954379866
+HIGH_STAFF_ROLE_ID  = STAFF_ROLES["high_staff"]
 HIGH_STAFF_ROLE_NAME = "High staff"
 
 # In-memory: {user_id_str: {"channel_id": int, "type": str, "claimed_by": int|None}}
@@ -425,7 +494,7 @@ XP_PER_LEVEL      = 100
 SUPPORTER_LINK = "https://discord.gg/ZptqBM8ZC3"
 BIO_SUPPORT_LINK = os.getenv("BIO_SUPPORT_LINK", SUPPORTER_LINK).strip()
 BIO_PERK_LINK = os.getenv("BIO_PERK_LINK", "discord.gg/YOURSERVER").strip()
-TOURNAMENT_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
+TOURNAMENT_INVITE_URL = SERVER_INVITE_URL
 
 # ── Twitch live dashboard ───────────────────────────────────────────────────
 TWITCH_CHANNEL_LOGIN = "piccolofe"
@@ -448,47 +517,47 @@ TWITCH_REWARD_CURRENCY_NAMES = {
     "gemme": "gems",
 }
 
-TOUR_HUB_CHANNEL_ID    = 1510038159751254047
-TOUR_REG_CHANNEL_ID    = 1410696022463877320
+TOUR_HUB_CHANNEL_ID    = CHANNELS["tournament"]
+TOUR_REG_CHANNEL_ID    = CHANNELS["setup_tornei"]
 TOUR_PING_ROLE_ID      = 1508572231326896269
 # Temporary campaign setting: notify everyone for every newly published tournament.
 TOURNAMENT_EVERYONE_PING_ENABLED = True
-EVENT_INFO_CHANNEL_ID  = 1410696018231824508
-EVENT_START_CHANNEL_ID = 1410696026830143559
+EVENT_INFO_CHANNEL_ID  = CHANNELS["community_event"]
+EVENT_START_CHANNEL_ID = CHANNELS["community_event"]
 
 ADMIN_TOUR_ROLE_ID  = 1510189891361837167   # can host FFA / World Cup
 BOOSTER_ROLE_ID     = 1164660692134150184   # [W] role given on boost
 VIP_ROLE_ID         = 1201072892398547004   # Twitch VIP role
 SG_VERIFIED_ROLE_ID = 1510193637785473185   # given after SG account link
-SG_LINK_TICKET_CAT  = 1510195918291468420   # category for SG link tickets
-SG_LINK_CHANNEL_ID  = 1542227301322719314  # channel containing the SG link setup button
-TICKET_PANEL_CHANNEL_ID = 1147528589676380181  # channel containing the support ticket buttons
+SG_LINK_TICKET_CAT  = TICKETS["verify_account"]  # category for SG link tickets
+SG_LINK_CHANNEL_ID  = CHANNELS["account_link"]  # channel containing the SG link setup button
+TICKET_PANEL_CHANNEL_ID = CHANNELS["ticket_panel"]  # channel containing the support ticket buttons
 
-TRIAL_MOD_ROLE_ID   = 1410695923235033148
+TRIAL_MOD_ROLE_ID   = STAFF_ROLES["trial_moderator"]
 
 # Staff role hierarchy (index 0 = lowest, 5 = highest)
 STAFF_HIERARCHY = [
-    1410695923235033148,  # 0 — Trial Moderator
-    1410695921175494797,  # 1 — Moderator
-    1410695920068198420,  # 2 — Head Moderator
-    1410695919187398820,  # 3 — Admin
-    1410695916687720518,  # 4 — Head Admin
-    1410695915689213984,  # 5 — Community Manager
+    STAFF_ROLES["trial_moderator"],  # 0 — Trial Moderator
+    STAFF_ROLES["moderator"],  # 1 — Moderator
+    STAFF_ROLES["head_moderator"],  # 2 — Head Moderator
+    STAFF_ROLES["administrator"],  # 3 — Admin
+    STAFF_ROLES["head_administrator"],  # 4 — Head Admin
+    STAFF_ROLES["community_manager"],  # 5 — Community Manager
 ]
 STAFF_HIERARCHY_NAMES = {
-    1410695923235033148: "Trial Moderator",
-    1410695921175494797: "Moderator",
-    1410695920068198420: "Head Moderator",
-    1410695919187398820: "Admin",
-    1410695916687720518: "Head Admin",
-    1410695915689213984: "Community Manager",
+    STAFF_ROLES["trial_moderator"]: "Trial Moderator",
+    STAFF_ROLES["moderator"]: "Moderator",
+    STAFF_ROLES["head_moderator"]: "Head Moderator",
+    STAFF_ROLES["administrator"]: "Admin",
+    STAFF_ROLES["head_administrator"]: "Head Admin",
+    STAFF_ROLES["community_manager"]: "Community Manager",
 }
 # Roles that can see / manage tickets (Head Mod and above)
 TICKET_MOD_ROLE_IDS = {
-    1410695920068198420,  # Head Moderator
-    1410695919187398820,  # Admin
-    1410695916687720518,  # Head Admin
-    1410695915689213984,  # Community Manager
+    STAFF_ROLES["head_moderator"],
+    STAFF_ROLES["administrator"],
+    STAFF_ROLES["head_administrator"],
+    STAFF_ROLES["community_manager"],
 }
 
 def compute_level(xp: int) -> int:
@@ -510,23 +579,28 @@ DEFAULT_TOURNAMENT_PRIZES = (
 
 # ── Role IDs ────────────────────────────────────────────────────────────────
 HOSTER_ROLE_ID       = 1410695924879196231   # event/tour/bracket/qual/match/winner
-STAFF_ROLE_IDS       = {1410695924879196231, 1410695925927645277}  # backward compat
+STAFF_ROLE_IDS       = set(STAFF_ROLES.values())
 ADMIN_ROLE_IDS       = {                     # big-event / economy / tickets
-    1410695919187398820, 1410695916687720518,
-    1410695915689213984, 1410695914758344835,
+    STAFF_ROLES["administrator"],
+    STAFF_ROLES["head_administrator"],
+    STAFF_ROLES["community_manager"],
     1410695913856307332,
 }
 OWNER_ROLE_ID        = 1410695913856307332   # legacy owner role
 OWNER_USER_IDS       = {1338274535325175810, 1012712686770995201}  # Adam and Piccolofe
-MANAGER_ROLE_IDS     = {1410695915689213984, 1410695914758344835}
+MANAGER_ROLE_IDS     = {
+    STAFF_ROLES["head_administrator"],
+    STAFF_ROLES["community_manager"],
+    1410695914758344835,
+}
 MEMBER_ROLE_ID       = 1410695955308871703
-STUMBLE_STAFF_ROLE_ID = 1410695925927645277  # given to accepted staff applicants (channel access)
+STUMBLE_STAFF_ROLE_ID = STAFF_ROLES["staff"]  # given to accepted staff applicants (channel access)
 
 # ── Channel restrictions ─────────────────────────────────────────────────────
 SOCIAL_ONLY_CH  = 1410696034232963273   # supporter / team / boost / link / gems only
 SHOP_ONLY_CH    = 1410696028419788891   # persistent shop panel only — all other msgs deleted
 PROFILE_ONLY_CH = 1410696056857170110   # :profile only
-SUPPORTER_VERIFY_CAT = 1410695995951546368   # category for supporter verify tickets
+SUPPORTER_VERIFY_CAT = TICKETS["supporter"]   # category for supporter verify tickets
 EVENT_PING_ROLE_ID   = 1410695964783673486   # role pinged when event starts
 GIVEAWAY_PING_ROLE_ID = 1410695965748232263  # role pinged in giveaways
 
@@ -548,19 +622,8 @@ DEFAULT_EVENT_RULES = (
 )
 
 # ── Level roles ──────────────────────────────────────────────────────────────
-# Configure the Discord role IDs here.  ``None`` leaves a milestone disabled
-# until the corresponding role is created in the server.
-LEVEL_5_ROLE_ID  = None
-LEVEL_10_ROLE_ID = None
-LEVEL_20_ROLE_ID = None
-LEVEL_35_ROLE_ID = None
-LEVEL_50_ROLE_ID = None
-LEVEL_ROLES: dict[int, int | None] = {
-    5: LEVEL_5_ROLE_ID, 10: LEVEL_10_ROLE_ID, 20: LEVEL_20_ROLE_ID,
-    35: LEVEL_35_ROLE_ID, 50: LEVEL_50_ROLE_ID,
-}
-LEVEL_ROLE_THRESHOLDS = sorted(LEVEL_ROLES.keys())   # [5,10,15,20,30]
-LEVEL_ROLE_IDS        = {rid for rid in LEVEL_ROLES.values() if rid}
+LEVEL_ROLE_THRESHOLDS = sorted(LEVEL_ROLES.keys())
+LEVEL_ROLE_IDS = set(LEVEL_ROLES.values())
 
 def _level_role_for(level: int) -> int | None:
     """Return the role ID that should be active at this level (or None)."""
@@ -669,14 +732,14 @@ def _prefix_access_allowed(ctx) -> bool:
     return True
 
 RANK_DATA = [
-    (0,     None,                "<:ranked:1507509359985295491>",        "Unranked"),
-    (1000,  1410695954641850521, "<:RankWood:1505325324672696511>",       "Wood"),
-    (2000,  1410695953631154376, "<:RankBronze:1505980128063393833>",     "Bronze"),
-    (3000,  1410695952397762600, "<:RankSilver:1505325648347009166>",     "Silver"),
-    (4000,  1410695950950994033, "<:RankGold:1505325823064936658>",       "Gold"),
-    (5000,  1410695949730316402, "<:RankPlatinum:1505325989683658843>",   "Platinum"),
-    (7000,  1410695948698652813, "<:RankMaster:1505326047552606390>",     "Master"),
-    (10000, 1410695947570249868, "<:RankChampion:1505979987876909262>",   "Champion"),
+    (0,     None,                EMOJIS["rank_no_rank"], "Unranked"),
+    (1000,  1410695954641850521, EMOJIS["rank_wood"], "Wood"),
+    (2000,  1410695953631154376, EMOJIS["rank_bronze"], "Bronze"),
+    (3000,  1410695952397762600, EMOJIS["rank_silver"], "Silver"),
+    (4000,  1410695950950994033, EMOJIS["rank_gold"], "Gold"),
+    (5000,  1410695949730316402, EMOJIS["rank_platinum"], "Platinum"),
+    (7000,  1410695948698652813, EMOJIS["rank_master"], "Master"),
+    (10000, 1410695947570249868, EMOJIS["rank_champion"], "Champion"),
 ]
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
@@ -1041,8 +1104,8 @@ def _is_gemini_rate_limit_error(error_text: str) -> bool:
     ))
 
 async def _get_ai_main_guild() -> discord.Guild | None:
-    """Return the primary guild the bot is connected to."""
-    return bot.guilds[0] if bot.guilds else None
+    """Return the configured PCF guild, never an arbitrary connected guild."""
+    return bot.get_guild(SERVER_ID)
 
 async def _get_ai_category(guild: discord.Guild) -> discord.CategoryChannel:
     category = discord.utils.get(guild.categories, name=AI_CATEGORY_NAME)
@@ -6666,6 +6729,9 @@ STAFF_APP_QUESTIONS = [
 
 async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: dict):
     """Create the staff application ticket after all DM questions are answered."""
+    if guild.id != SERVER_ID:
+        print(f"[staff ticket] Refusing to create a ticket outside configured server {SERVER_ID}")
+        return
     cat = guild.get_channel(TICKET_STAFF_CAT)
     overwrite = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
     for rid in TICKET_MOD_ROLE_IDS:
@@ -6699,10 +6765,12 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
     embed.set_thumbnail(url=user.display_avatar.url)
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"User ID: {user.id}")
-    high_staff_role = discord.utils.find(
-        lambda role: role.name.casefold() == HIGH_STAFF_ROLE_NAME.casefold(),
-        guild.roles,
-    )
+    high_staff_role = guild.get_role(HIGH_STAFF_ROLE_ID)
+    if high_staff_role is None:
+        high_staff_role = discord.utils.find(
+            lambda role: role.name.casefold() == HIGH_STAFF_ROLE_NAME.casefold(),
+            guild.roles,
+        )
     if high_staff_role:
         ping_content = high_staff_role.mention
     else:
@@ -6716,6 +6784,10 @@ class TicketMainView(View):
 
     @discord.ui.button(label="🆘 Support", style=discord.ButtonStyle.primary, custom_id="ticket_support")
     async def support(self, interaction: discord.Interaction, button: Button):
+        if interaction.guild_id != SERVER_ID:
+            return await interaction.response.send_message(
+                "❌ This ticket panel is only available in the PCF server.", ephemeral=True
+            )
         uid = str(interaction.user.id)
         if uid in active_tickets:
             return await interaction.response.send_message("❌ You already have an open ticket!", ephemeral=True)
@@ -6776,6 +6848,10 @@ class TicketMainView(View):
 
     @discord.ui.button(label="👮 Staff Request", style=discord.ButtonStyle.success, custom_id="ticket_staff")
     async def staff_request(self, interaction: discord.Interaction, button: Button):
+        if interaction.guild_id != SERVER_ID:
+            return await interaction.response.send_message(
+                "❌ This ticket panel is only available in the PCF server.", ephemeral=True
+            )
         uid = str(interaction.user.id)
         if uid in active_tickets or uid in pending_staff_apps:
             return await interaction.response.send_message("❌ You already have an open application or ticket!", ephemeral=True)
@@ -6941,7 +7017,7 @@ async def on_message(message: discord.Message):
             sg_name  = pending["sg_name"]
             guild_id = pending.get("guild_id")
             guild    = bot.get_guild(guild_id) if guild_id else None
-            if guild:
+            if guild and guild.id == SERVER_ID:
                 cat = guild.get_channel(SG_LINK_TICKET_CAT)
                 overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
                 for rid in TICKET_MOD_ROLE_IDS:
@@ -7412,7 +7488,7 @@ class SupporterConfirmView(View):
         pending_embed.set_image(url=STUMBLE_IMG)
         await interaction.response.edit_message(embed=pending_embed, view=self)
         guild = interaction.guild
-        if not guild:
+        if not guild or guild.id != SERVER_ID:
             return
         cat = guild.get_channel(SUPPORTER_VERIFY_CAT)
         overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
@@ -7525,7 +7601,9 @@ async def check_supporters():
     global _supporter_verify_ticket_id
     if not bot.guilds:
         return
-    guild      = bot.guilds[0]
+    guild      = bot.get_guild(SERVER_ID)
+    if guild is None:
+        return
     supporters = db.get("supporters", {})
     if not supporters:
         return
@@ -9676,15 +9754,15 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
 # 🛒 :TEST SHOP (hidden from :help)
 # ==========================================
 W_ITEMS = {
-    "Blue":    {"emoji": "<:W_blue:1507411440112238592>",    "price": 1200, "color": 0x5865F2},
-    "Purple":  {"emoji": "<:W_purple:1507411279868854272>",  "price": 2000, "color": 0x9B59B6},
-    "Twitch Purple": {"emoji": "<:W_purple:1507411279868854272>", "price": 3500, "color": 0x9B59B6},
-    "Red":     {"emoji": "<:W_red:1506782119928795217>",     "price": 1200, "color": 0xE74C3C},
-    "Pink":    {"emoji": "<:W_pink:1507441578912780432>",    "price": 2000, "color": 0xFF69B4},
-    "Yellow":  {"emoji": "<:W_yellow:1507414172583854281>",  "price": 600,  "color": 0xF1C40F},
-    "Azzurro": {"emoji": "<:Wa:1507442128693760202>",        "price": 1200, "color": 0x5DADE2},
-    "Green":   {"emoji": "<:w_green:1507408630906093638>",   "price": 600,  "color": 0x2ECC71},
-    "Orange":  {"emoji": "<:W_orang:1507442976517918770>",   "price": 1200, "color": 0xE67E22},
+    "Blue":    {"emoji": EMOJIS["w_sky"],    "price": 1200, "color": 0x5865F2},
+    "Purple":  {"emoji": EMOJIS["w_purple"], "price": 2000, "color": 0x9B59B6},
+    "Twitch Purple": {"emoji": EMOJIS["w_purple"], "price": 3500, "color": 0x9B59B6},
+    "Red":     {"emoji": EMOJIS["w_red"],    "price": 1200, "color": 0xE74C3C},
+    "Pink":    {"emoji": EMOJIS["w_pink"],   "price": 2000, "color": 0xFF69B4},
+    "Yellow":  {"emoji": EMOJIS["w_yellow"], "price": 600,  "color": 0xF1C40F},
+    "Azzurro": {"emoji": EMOJIS["w_sky"],    "price": 1200, "color": 0x5DADE2},
+    "Green":   {"emoji": EMOJIS["w_green"],  "price": 600,  "color": 0x2ECC71},
+    "Orange":  {"emoji": EMOJIS["w_orange"], "price": 1200, "color": 0xE67E22},
 }
 
 GEM_PACKAGES = [
@@ -10050,8 +10128,8 @@ class ExchangeView(View):
 class ExchangeSelect(discord.ui.Select):
     def __init__(self, user_id: int):
         self.user_id = user_id
-        ruby_emoji = discord.PartialEmoji(name="ruby", id=1507420532402819093)
-        crystal_emoji = discord.PartialEmoji(name="crystal", id=1507440029323100301)
+        ruby_emoji = discord.PartialEmoji.from_str(EMOJIS["ruby"])
+        crystal_emoji = discord.PartialEmoji.from_str(EMOJIS["crystal"])
         options = [
             discord.SelectOption(
                 label=f"{format_shop_amount(ruby_cost)} Ruby → "
@@ -10764,7 +10842,7 @@ async def stumble_top(ctx):
         reverse=True
     )[:3]
 
-    medals = ["🥇", "🥈", "🥉"]
+    medals = [EMOJIS["gold_medal"], EMOJIS["silver_medal"], EMOJIS["bronze_medal"]]
     lines  = []
     for i, (uid, p) in enumerate(ranked):
         name        = p.get("name", uid)
