@@ -1106,6 +1106,13 @@ def _is_gemini_rate_limit_error(error_text: str) -> bool:
         "resource_exhausted",
     ))
 
+def _is_discord_two_factor_required(error: Exception) -> bool:
+    """Identify Discord's server-level 2FA requirement response."""
+    return (
+        getattr(error, "code", None) == 60003
+        or "two factor is required" in str(error).casefold()
+    )
+
 async def _get_ai_main_guild() -> discord.Guild | None:
     """Return the configured PCF guild, including after a cold cache start."""
     guild = bot.get_guild(SERVER_ID)
@@ -7046,10 +7053,19 @@ async def on_message(message: discord.Message):
             except discord.Forbidden as exc:
                 print(f"[AI START] Discord permissions denied for {message.author.id}: {exc}")
                 await _safe_log_ai_exception(guild, "Private AI channel permissions", exc)
-                await message.channel.send(
-                    "⚠️ Non posso creare la chat privata: mi manca il permesso "
-                    "**Gestisci canali** nel server PCF™."
-                )
+                if _is_discord_two_factor_required(exc):
+                    await message.channel.send(
+                        "⚠️ Discord sta bloccando la creazione del canale perché nel server "
+                        "è obbligatoria la **verifica in due passaggi (2FA)** per le azioni "
+                        "di moderazione. I permessi del bot risultano presenti.\n\n"
+                        "Un amministratore deve disattivare questa richiesta nelle "
+                        "impostazioni di sicurezza del server; poi riprova `:start`."
+                    )
+                else:
+                    await message.channel.send(
+                        "⚠️ Non posso creare la chat privata: verifica che il bot abbia "
+                        "il permesso **Gestisci canali** sul server e sulla categoria AI."
+                    )
             except discord.HTTPException as exc:
                 print(f"[AI START] Discord API error for {message.author.id}: {exc}")
                 await _safe_log_ai_exception(guild, "Private AI channel creation", exc)

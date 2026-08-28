@@ -6,3 +6,4 @@
 - [Imported Python dependencies](imported-python-dependency-bootstrap.md) — Imported Python workflows may need an explicit package install even when dependency files are present.
 - [.replit validation](dot-replit-validation.md) — Direct .replit edits are blocked; use the validated temporary-file replacement flow.
 - [Persistent Discord state](persistent-discord-state.md) — Restart-safe views need static IDs plus durable routing context for per-message actions.
+- [Discord server 2FA](discord-server-2fa.md) — Error 60003 can block bot moderation actions even when channel permissions are present.
