@@ -4154,8 +4154,14 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 @bot.tree.command(name="time", description="Timeout a member and notify them by DM.")
 @app_commands.describe(member="Member to timeout", duration="Examples: 30m, 2h, 1d", reason="Reason for the timeout")
 async def time_cmd(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
-    if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
+    if not _has_admin_access(interaction.user):
         return await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+    if interaction.guild is None:
+        return await interaction.response.send_message(
+            "❌ This command can only be used inside a server.",
+            ephemeral=True,
+        )
+    duration = duration.strip()
     match = re.fullmatch(r"(\d+)([smhd])", duration.lower())
     if not match:
         return await interaction.response.send_message("❌ Invalid duration. Use `30m`, `2h`, or `1d`.", ephemeral=True)
@@ -4164,6 +4170,24 @@ async def time_cmd(interaction: discord.Interaction, member: discord.Member, dur
         return await interaction.response.send_message("❌ The timeout duration must be greater than zero.", ephemeral=True)
     if seconds > 28 * 86400:
         return await interaction.response.send_message("❌ Discord timeouts cannot exceed 28 days.", ephemeral=True)
+    if member.id == interaction.guild.owner_id:
+        return await interaction.response.send_message(
+            "❌ The server owner cannot be timed out.",
+            ephemeral=True,
+        )
+    bot_member = interaction.guild.me
+    if bot_member is not None:
+        if not bot_member.guild_permissions.moderate_members:
+            return await interaction.response.send_message(
+                "❌ I need the Discord **Moderate Members** permission to apply timeouts.",
+                ephemeral=True,
+            )
+        if member.id == bot_member.id or member.top_role >= bot_member.top_role:
+            return await interaction.response.send_message(
+                "❌ I cannot timeout this member because their highest role is equal to "
+                "or higher than mine. Move my bot role above their role and try again.",
+                ephemeral=True,
+            )
     until = discord.utils.utcnow() + timedelta(seconds=seconds)
     try:
         await member.timeout(until, reason=reason)
