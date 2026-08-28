@@ -538,6 +538,7 @@ OFFICIAL_ANNOUNCEMENT_CHANNELS = {
     "machine": "<#1542586232918253588>",
     "chest": "<#1542586149661581312>",
     "perks": "<#1542585903648608279>",
+    "duels": "<#1542586522656579656>",
 }
 
 DEFAULT_EVENT_RULES = (
@@ -8373,7 +8374,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":log-tw (alias :log_tw)", "Registers the three-part Ruby, Crystals and Gems reward used by :claim-tw.", "<amount> <currency> repeated three times; all three currencies are required; administrator or owner access.", ":log-tw 1000 Ruby 100 Crystals 50 Gems"),
             (":claim-tw (alias :claim_tw)", "Claims the reward for the most recent completed piccolofe stream after at least 30 tracked minutes.", "<twitch_name>; only available after Twitch confirms that the stream has ended.", ":claim-tw MyTwitchName"),
             (":pex", "Checks staff rank roles and promotes or demotes staff members when their points require it.", "No arguments; owner access.", ":pex"),
-            (":announcement (aliases :announce, :official-announcement, :annuncio)", "Publishes the official three-embed server announcement with clickable channel links and a persistent language button.", "No arguments; owner access.", ":announcement"),
+            (":announcement (aliases :announce, :official-announcement, :annuncio)", "Publishes the official five-embed server announcement with clickable channel and role mentions plus a persistent language button.", "No arguments; owner access.", ":announcement"),
             (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
             (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
             (":clear (alias :purge)", "Elimina i messaggi recenti del canale.", "<quantità> da 1 a 100; richiede un ruolo Staff.", ":clear 25"),
@@ -8464,7 +8465,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":set-welcome": "Imposta il canale in cui il bot pubblica i messaggi di benvenuto e di uscita dei membri.",
         ":add-ticket": "Comando di manutenzione riservato agli admin per il pannello ticket. Gli utenti devono andare nel canale <#1147528589676380181> e usare i pulsanti già presenti.",
         ":pex": "Controlla i Ranked Points dello staff e aggiorna i ruoli rank promuovendo o retrocedendo i membri quando necessario.",
-        ":announcement": "Pubblica l’annuncio ufficiale con tre embed, link cliccabili ai canali e un pulsante persistente per cambiare lingua.",
+         ":announcement": "Pubblica l’annuncio ufficiale con cinque embed, menzioni cliccabili di canali e ruoli e un pulsante persistente per cambiare lingua.",
         ":reset-all": "Cancella definitivamente profili, punti, rank, tornei, squadre ed eventi dopo la conferma dell’amministratore.",
         ":reset-staff-week": "Azzera i contatori settimanali dei tornei gestiti da staff e host, lasciando invariati i totali storici.",
     }
@@ -8721,44 +8722,77 @@ async def help_cmd(ctx):
 
 OFFICIAL_ANNOUNCEMENT_SOURCE = (
     {
-        "title": "🎉 WELCOME ME TO THE SERVER!",
+        "title": "🎉 WELCOME ME TO THE SERVER & START HERE!",
         "description": (
-            "Hello everyone! I am officially here to keep the community active, "
-            "manage tournaments, and run the economy.\n\n"
-            "🔗 **Link Account:** It is REQUIRED to link your account to receive "
-            "rewards. Go to [[ACCOUNT_CHANNEL]] to do it.\n\n"
-            "🎭 **Roles:** Haven't picked your roles for tournaments yet? Go to "
-            "[[ROLES_CHANNEL]].\n\n"
-            "🤖 **AI Chat / Support:** Do you still have questions? Talk to the AI! "
-            "If you have any doubts or just want to chat with the AI, send a Direct "
-            "Message (DM) to the bot and use the command `[[START_COMMAND]]`."
+            "Welcome to PCF™! 🎉\n\n"
+            "👤 **Creator Info:** Created by Adam to keep the community active, "
+            "automate tournaments, run the economy, and assist members.\n\n"
+            "🔗 **Link Account (REQUIRED):** Link your account in "
+            "[[ACCOUNT_CHANNEL]] to receive rewards and use account-based features.\n\n"
+            "🎭 **Roles:** Pick your tournament roles in [[ROLES_CHANNEL]] so you "
+            "can see and join the events that interest you.\n\n"
+            "🤖 **AI Support:** DM the bot and use the command `[[START_COMMAND]]` "
+            "to chat directly with the AI."
         ),
     },
     {
-        "title": "💎 CURRENCY & SHOP",
+        "title": "💎 ECONOMY: RUBIES & CRYSTALS",
         "description": (
-            "💎 **Rubies:** Base currency earned by chatting, tournaments, and "
-            "minigames (no daily commands).\n\n"
-            "🔷 **Crystals:** Rare currency earned from tournament podiums or "
-            "exchanging Rubies.\n\n"
-            "🛒 **Shop & Exchange:** Visit [[SHOP_CHANNEL]] to exchange your "
-            "Rubies for Crystals, and use Crystals to buy Stumble Guys Gems and "
-            '"W" Roles (which gives you the role on Discord AND in the tournament '
-            "bracket)."
+            "💎 **Rubies:** Rubies are the base daily activity currency. Earn them "
+            "by chatting and leveling, playing minigames, winning 1v1 bets, and "
+            "placing in tournaments. Use Rubies for minigames, 1v1 stakes, and "
+            "exchanging them into Crystals.\n\n"
+            "🔷 **Crystals:** Crystals are a rare premium currency earned from "
+            "tournament podiums (1st: **100**, 2nd: **50**, 3rd: **25**), jackpot "
+            "drops, or the shop exchange. Use Crystals to buy Stumble Guys Gems "
+            "(**100, 250, or 800**) and **W Roles**:\n"
+            "• Green / Yellow\n"
+            "• Red / Orange / Light Blue\n"
+            "• Pink / Purple\n"
+            "• Twitch Purple\n\n"
+            "Each W Role grants the matching colored Discord role and the bracket "
+            '"W".\n\n'
+            "🛒 **Shop:** Visit [[SHOP_CHANNEL]] for Gems, W Roles, and currency "
+            "exchanges."
         ),
     },
     {
-        "title": "🏆 TOURNAMENTS, MINIGAMES & PERKS",
+        "title": "💬 CHAT LEVELS & REWARDS",
         "description": (
-            "🏆 **Tournaments:** 1st (100 Crystals/2000 Rubies), 2nd "
-            "(50 Crystals/1000 Rubies), 3rd (25 Crystals/500 Rubies).\n\n"
-            "📨 **Tournament Requirement:** To participate, you must make at "
-            "least 1 invite.\n"
-            "Reason: We want to grow this community and we need your help! 🌱✨\n\n"
-            "🎮 **Minigames:** Play games in the dedicated channels "
-            "[[MACHINE_CHANNEL]] (Machine) and [[CHEST_CHANNEL]] (Chest).\n\n"
-            "✨ **Perks:** Check out the exclusive perks for Boosters, Subscribers, "
-            "or users who put the server link in their bio! Visit [[PERKS_CHANNEL]]."
+            "💬 **XP Info:** Earn chat XP by talking in the server and receive "
+            "rewards every 5 levels.\n\n"
+            "🎖️ **Role Rewards:** Reach these milestones to receive the specific "
+            "Discord role:\n"
+            "• **Level 5:** [[LEVEL_5_ROLE]]\n"
+            "• **Level 10:** [[LEVEL_10_ROLE]]\n"
+            "• **Level 20:** [[LEVEL_20_ROLE]]\n"
+            "• **Level 35:** [[LEVEL_35_ROLE]]\n"
+            "• **Level 50:** [[LEVEL_50_ROLE]]"
+        ),
+    },
+    {
+        "title": "🏆 TOURNAMENTS",
+        "description": (
+            "🏆 **Match Code:** When your match starts, Tournament Hosts send the "
+            "room code directly to your DMs. Keep your Discord DMs open so you do "
+            "not miss it.\n\n"
+            "📨 **Entry Requirement:** A minimum of **1 invite** is required to "
+            "participate in tournaments.\n\n"
+            "Vogliamo fare crescere questa community e ci serve il vostro aiuto! "
+            "🌱✨"
+        ),
+    },
+    {
+        "title": "🎮 MINIGAMES, LEADERBOARDS & PERKS",
+        "description": (
+            "🎁 **Minigames:** Play Chests in [[CHEST_CHANNEL]] and Slots in "
+            "[[MACHINE_CHANNEL]].\n\n"
+            "⚔️ **1v1 Battles:** Play in [[DUELS_CHANNEL]] using "
+            "`:1v1 <user>` to bet Rubies against another member.\n\n"
+            "📊 **Leaderboards:** Compete for the top spots in 1v1, Rubies, "
+            "Tournaments Won, Events Won, Crystals, and Chat XP.\n\n"
+            "✨ **Perks Note:** Booster, Subscriber, and Bio link perks are listed "
+            "in the message immediately below."
         ),
     },
 )
@@ -8770,19 +8804,29 @@ _ANNOUNCEMENT_PLACEHOLDERS = {
     "[[MACHINE_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["machine"],
     "[[CHEST_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["chest"],
     "[[PERKS_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["perks"],
+    "[[DUELS_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["duels"],
     "[[START_COMMAND]]": ":start",
+    # The final source ID was supplied with one extra digit. This is the
+    # valid 19-digit Discord snowflake corresponding to the Level 50 role.
+    "[[LEVEL_5_ROLE]]": "<@&1323612796247605300>",
+    "[[LEVEL_10_ROLE]]": "<@&1323751589743431680>",
+    "[[LEVEL_20_ROLE]]": "<@&1323751993306775696>",
+    "[[LEVEL_35_ROLE]]": "<@&1323752130657517659>",
+    "[[LEVEL_50_ROLE]]": "<@&1323752189314990183>",
 }
 _ANNOUNCEMENT_COLORS = (
     discord.Color.blurple(),
     discord.Color.purple(),
     discord.Color.gold(),
+    discord.Color.green(),
+    discord.Color.orange(),
 )
 
 
 def _build_announcement_embeds(content: tuple[dict, ...] | list[dict]) -> list[discord.Embed]:
-    """Build the three announcement embeds and restore clickable Discord links."""
+    """Build the five announcement embeds and restore Discord mentions."""
     if len(content) != len(OFFICIAL_ANNOUNCEMENT_SOURCE):
-        raise ValueError("The announcement must contain exactly three embeds.")
+        raise ValueError("The announcement must contain exactly five embeds.")
 
     embeds = []
     for index, item in enumerate(content):
@@ -8815,18 +8859,19 @@ async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
 
     source = _announcement_source_for_translation()
     prompt = (
-        "Translate the three Discord announcement embeds below into the requested "
+        "Translate the five Discord announcement embeds below into the requested "
         f"language: {language!r}.\n\n"
         "Return ONLY valid JSON in this exact shape: "
         '[{"title":"...","description":"..."},'
         '{"title":"...","description":"..."},'
+        '{"title":"...","description":"..."},'
+        '{"title":"...","description":"..."},'
         '{"title":"...","description":"..."}]\n\n'
         "Translate natural-language text only. Keep Markdown formatting, every "
-        "number, the command placeholder [[START_COMMAND]], and every channel "
-        "placeholder ([[ACCOUNT_CHANNEL]], [[ROLES_CHANNEL]], [[SHOP_CHANNEL]], "
-        "[[MACHINE_CHANNEL]], [[CHEST_CHANNEL]], [[PERKS_CHANNEL]]) exactly "
-        "unchanged. Do not add, remove, or reorder content. Do not include "
-        "Markdown code fences or commentary.\n\n"
+        "number, command, channel placeholder, and role placeholder exactly "
+        "unchanged. Do not translate or modify anything inside [[...]] tokens. "
+        "Do not add, remove, or reorder content. Do not include Markdown code "
+        "fences or commentary.\n\n"
         f"Source embeds:\n{json.dumps(source, ensure_ascii=False)}"
     )
     translated = await gemini_completion_with_retries(
@@ -8834,14 +8879,15 @@ async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
         (
             "You are a precise Discord announcement translator. Follow the requested "
             "JSON schema exactly. Never translate or modify placeholders, commands, "
-            "channel IDs, currency amounts, or Markdown syntax."
+            "channel IDs, role IDs, currency amounts, or Markdown syntax. Return "
+            "exactly five embeds."
         ),
     )
     parsed = json.loads(clean_ai_response(translated))
     if isinstance(parsed, dict):
         parsed = parsed.get("embeds")
-    if not isinstance(parsed, list) or len(parsed) != 3:
-        raise ValueError("The translator did not return exactly three embeds.")
+    if not isinstance(parsed, list) or len(parsed) != 5:
+        raise ValueError("The translator did not return exactly five embeds.")
     for source_item, translated_item in zip(source, parsed):
         if not isinstance(translated_item, dict):
             raise ValueError("The translator returned an invalid embed.")
@@ -8865,7 +8911,15 @@ class SetTongueModal(Modal, title="🌐 Set Language / Cambia Lingua"):
         await interaction.response.defer(ephemeral=True)
         try:
             embeds = await _translate_announcement_embeds(language)
-            await interaction.followup.send(embeds=embeds, ephemeral=True)
+            await interaction.followup.send(
+                embeds=embeds,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    users=False,
+                    everyone=False,
+                ),
+            )
         except Exception as exc:
             print(f"[announcement translation] {exc}")
             await interaction.followup.send(
@@ -8895,14 +8949,18 @@ class OfficialAnnouncementView(View):
 )
 @owner_only()
 async def official_announcement(ctx):
-    """Publish the official three-embed server announcement."""
+    """Publish the official five-embed server announcement."""
     try:
         embeds = _build_announcement_embeds(OFFICIAL_ANNOUNCEMENT_SOURCE)
         await ctx.send(
-            content="@everyone @here",
+            content="@everyone",
             embeds=embeds,
             view=OfficialAnnouncementView(),
-            allowed_mentions=discord.AllowedMentions(everyone=True),
+            allowed_mentions=discord.AllowedMentions(
+                everyone=True,
+                roles=True,
+                users=False,
+            ),
         )
     except (discord.Forbidden, discord.HTTPException) as exc:
         print(f"[announcement publish] {exc}")
