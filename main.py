@@ -446,6 +446,7 @@ CHANNELS = {
     "setup_tornei": 1542472954577682443,
     "tournament": 1542313116149227640,
     "community_event": 1542313345930236037,
+    "ai_chat_category": 1543039580188446720,
     # Existing operational channels that are also part of the server config.
     "account_link": 1542227301322719314,
     "ticket_panel": 1147528589676380181,
@@ -1003,6 +1004,7 @@ if not GEMINI_CONFIGURED:
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 AI_CATEGORY_NAME = "💬 AI CHATS"
+AI_CATEGORY_ID = CHANNELS["ai_chat_category"]
 AI_LOG_CHANNEL_NAMES = {"ai-staff-logs", "moderation-logs"}
 AI_BANNED_WORDS = {
     "cazzo", "cazzо", "cazzata", "merda", "stronzo", "stronza", "bastardo",
@@ -1109,10 +1111,17 @@ async def _get_ai_main_guild() -> discord.Guild | None:
     return bot.get_guild(SERVER_ID)
 
 async def _get_ai_category(guild: discord.Guild) -> discord.CategoryChannel:
-    category = discord.utils.get(guild.categories, name=AI_CATEGORY_NAME)
-    if category:
-        return category
-    return await guild.create_category(AI_CATEGORY_NAME, reason="Create private AI chat category")
+    category = guild.get_channel(AI_CATEGORY_ID)
+    if category is None:
+        try:
+            category = await guild.fetch_channel(AI_CATEGORY_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            raise RuntimeError(
+                f"Configured AI category {AI_CATEGORY_ID} could not be found"
+            ) from exc
+    if not isinstance(category, discord.CategoryChannel):
+        raise RuntimeError(f"Configured AI channel {AI_CATEGORY_ID} is not a category")
+    return category
 
 async def _get_ai_log_channel(guild: discord.Guild) -> discord.TextChannel:
     channel = next(
