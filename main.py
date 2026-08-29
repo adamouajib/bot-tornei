@@ -464,7 +464,8 @@ TICKETS = {
 # every configured emoji is sourced from EMOJIS.
 E_CRYSTAL = EMOJIS["crystal"]
 E_RUBY    = EMOJIS["ruby"]
-E_XP      = "<:xp:1507719994958549113>"
+E_XP      = "<:xp:1543345017173844049>"
+E_RP      = "<:rp:1543349903042814044>"
 E_CROWN   = "<:stumble_guys_crown:1505322344338427986>"
 E_TROPHY  = EMOJIS["trophy"]
 E_NO_RANK = EMOJIS["rank_no_rank"]
@@ -473,7 +474,7 @@ E_SILVER  = EMOJIS["silver_medal"]
 E_BRONZE  = EMOJIS["bronze_medal"]
 E_RANKING = "<:ranking:1505323647827710223>"
 E_RULES   = "<:Rules:1506777190166167613>"
-E_LEVEL   = "<:StumbleGuys:1505322057313816617>"
+E_LEVEL   = E_XP
 E_GEMS    = "<:gems:1507509442286190652>"
 E_W       = EMOJIS["w_pink"]
 
@@ -746,6 +747,9 @@ RANK_DATA = [
 ALL_RANK_IDS = {r[1] for r in RANK_DATA if r[1]}
 
 STUMBLE_IMG          = "https://cdn.cloudflare.steamstatic.com/steam/apps/1677740/header.jpg"
+WELCOME_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1259089269713272912/1543350721360171089/4c022646-4c7a-4041-92b7-f3815541017a.png?ex=6a948cde&is=6a933b5e&hm=93b57383b1da2768c82181701030663d455da121c6e7d7e9f79681dc58fc086d&"
+TICKET_PANEL_IMAGE_URL = "https://cdn.discordapp.com/attachments/1259089269713272912/1543351070535848058/3e0c8b6c-0777-40c2-901f-7b1f38fc6190_1.png?ex=6a948d31&is=6a933bb1&hm=e7785be0f24a6e24857f146dac9492c133f9dc21e749dd05f84f1f3b9fb1c643&"
+LEVEL_UP_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1259089269713272912/1543351379849121892/58a8fc06-861e-4672-bcaa-6d2db4ba096d.png?ex=6a948d7b&is=6a933bfb&hm=3bbe15947fea23317eef803f788b33cbb2faef46419e4c23c14854a4fc01d12a&"
 EVENT_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542323844042330133/1787701511707.png?ex=6a90d083&is=6a8f7f03&hm=bda40bb743ae136eb186df4277911e38e89dab2955cb5e9dbe14eb0d90af1f3a&"
 PROFILE_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542324547267862649/d7a47641-09f5-4433-ac0e-09ec24c82fdb.png?ex=6a90d12b&is=6a8f7fab&hm=905efef5a416227b5ba51d35617cc87034420288fee7e3c4222563f38a13dbf1&"
 HELP_EMBED_IMAGE_URL = "https://cdn.discordapp.com/attachments/1410696028419788891/1542324554427531274/a22750ce-ecb7-485c-9f80-af46421b3602.png?ex=6a90d12c&is=6a8f7fac&hm=4b7aa817171a784cd7b8f5e855e56bf8dbceaa26e05f3f920dc6eab1fa105682&"
@@ -921,6 +925,15 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
         and invite.inviter.id == member_id
         and (invite.uses or 0) > 0
         for invite in invites
+    )
+
+def _tournament_invite_requirement_message() -> str:
+    """Return the Italian explanation shown when a member has no used invite."""
+    return (
+        "❌ Per partecipare a un torneo devi prima aver invitato almeno "
+        "una persona in questo server.\n"
+        "Crea un invito qui e fallo usare a una persona: "
+        f"{TOURNAMENT_INVITE_URL}"
     )
 
 db = {
@@ -2679,7 +2692,7 @@ def build_leaderboard_embeds() -> list:
     profiles = list(db["profiles"].values())
     embeds   = []
     categories = [
-        (f"{E_XP} Top 10 — Ranked Points",  "punti",    E_XP,      discord.Color.blurple()),
+        (f"{E_RP} Top 10 — Ranked Points",  "punti",    E_RP,      discord.Color.blurple()),
         (f"{E_RUBY} Top 10 — Ruby",          "rubini",   E_RUBY,    discord.Color.red()),
         (f"{E_CRYSTAL} Top 10 — Crystals",   "cristalli",E_CRYSTAL, discord.Color.teal()),
         (f"{E_CROWN} Top 10 — Tournaments Won", "tornei_v", E_CROWN,   discord.Color.gold()),
@@ -3883,7 +3896,7 @@ async def on_member_join(member: discord.Member):
         color=discord.Color.green()
     )
     embed.set_footer(text=f"Member #{guild.member_count} • PCF™")
-    embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=WELCOME_EMBED_IMAGE_URL)
     await channel.send(content=member.mention, embed=embed)
 
 @bot.event
@@ -4357,7 +4370,7 @@ async def profile(ctx, member: discord.Member = None):
         color=discord.Color.blue()
     )
     level_msg = prof.get("level_msg", 0)
-    embed.add_field(name=f"{E_XP} Ranked Points",
+    embed.add_field(name=f"{E_RP} Ranked Points",
         value=f"**{format_num(punti)}** Ranked Points\n{prog}", inline=False)
     embed.add_field(name="💰 Balance",
         value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Crystals · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gems",
@@ -4365,8 +4378,8 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(name="🏅 Statistics",
          value=f"{E_CROWN} **{prof['tornei_v']}** tournaments won · {E_TROPHY} **{prof['eventi_v']}** events won",
         inline=False)
-    embed.add_field(name="⬆️ Chat Level",
-         value=f"Level **{level_msg}** · {format_num(prof.get('xp_msg',0))} XP",
+    embed.add_field(name=f"{E_XP} Chat Level",
+         value=f"Level **{level_msg}** · {format_num(prof.get('xp_msg',0))} {E_XP} XP",
         inline=True)
     embed.set_footer(text="PCF™ · Player profile")
     embed.set_thumbnail(url=target.display_avatar.url)
@@ -4380,7 +4393,7 @@ GIVE_KEYS  = {
     "gemme":"gemme","gems":"gemme","gem":"gemme",
     "tornei":"tornei_v","eventi":"eventi_v",
 }
-GIVE_ICONS = {"punti":E_XP,"rubini":E_RUBY,"cristalli":E_CRYSTAL,"tornei_v":E_CROWN,"eventi_v":E_TROPHY}
+GIVE_ICONS = {"punti":E_RP,"rubini":E_RUBY,"cristalli":E_CRYSTAL,"tornei_v":E_CROWN,"eventi_v":E_TROPHY}
 
 @bot.command(name="give", aliases=["add"])
 @admin_only()
@@ -4438,7 +4451,7 @@ async def add_punti_cmd(ctx, member: discord.Member, amount: int):
         print(f"[add-punti rank] {e}")
     save_db()
     await ctx.send(embed=discord.Embed(
-        description=f"{E_XP} **+{format_num(amount)} Points** → {member.mention}\nNew total: **{format_num(prof['punti'])}** {E_XP}",
+        description=f"{E_RP} **+{format_num(amount)} Ranked Points** → {member.mention}\nNew total: **{format_num(prof['punti'])}** {E_RP}",
         color=discord.Color.green()), delete_after=10.0)
 
 @bot.command(name="set-rank", aliases=["set_rank"])
@@ -4791,10 +4804,7 @@ class TourRegisterView(View):
                 )
             if not invited:
                 return await interaction.response.send_message(
-                    "❌ Per entrare in un torneo devi prima aver invitato almeno "
-                    f"una persona in questo server.\n"
-                    f"Non devi entrare in un altro server: crea un invito qui e "
-                    f"fallo usare a una persona. {TOURNAMENT_INVITE_URL}",
+                    _tournament_invite_requirement_message(),
                     ephemeral=True,
                 )
         if modalita in TEAM_MODES:
@@ -5938,7 +5948,7 @@ async def winner_tour(ctx, *winners: discord.Member):
                     f"🏆 **Winners**\n{result_lines}",
         color=discord.Color.gold()
     )
-    embed.add_field(name=f"{E_XP} Bonus", value="+100 XP Points",           inline=True)
+    embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points",       inline=True)
     embed.add_field(name="🗺️ Map",       value=t["mappa"],                  inline=True)
     embed.add_field(name="⚡ Ability",    value=t["emote"],                  inline=True)
     embed.set_thumbnail(url=winner.display_avatar.url)
@@ -6044,7 +6054,7 @@ async def team_winner(ctx):
         color=discord.Color.gold()
     )
     embed.add_field(name="🎁 Prizes",     value=format_tournament_prizes(t.get("premio","—")), inline=False)
-    embed.add_field(name=f"{E_XP} Bonus", value="+100 XP Points each",              inline=True)
+    embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points each",          inline=True)
     embed.add_field(name="🗺️ Map",       value=t.get("mappa","—"),                 inline=True)
     embed.add_field(name="⚡ Ability",    value=t.get("emote","—"),                 inline=True)
     tournament_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
@@ -6942,7 +6952,7 @@ async def add_ticket(ctx):
         ),
         color=discord.Color.gold()
     )
-    embed.set_image(url=STUMBLE_IMG)
+    embed.set_image(url=TICKET_PANEL_IMAGE_URL)
     embed.set_footer(text="PCF™ Support System")
     await ctx.send(embed=embed, view=TicketMainView())
 
@@ -7349,7 +7359,7 @@ async def on_message(message: discord.Message):
                 ),
                 color=discord.Color.gold()
             )
-            embed.set_image(url=STUMBLE_IMG)
+            embed.set_image(url=LEVEL_UP_EMBED_IMAGE_URL)
             try:
                 level_channel = bot.get_channel(db.get("level_channel_id")) or message.channel
                 await level_channel.send(
