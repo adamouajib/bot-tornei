@@ -920,6 +920,14 @@ _invite_cache_lock = asyncio.Lock()
 bot.invite_cache = _invite_cache
 
 
+class InviteRegistrationError(RuntimeError):
+    """Expected invite/role failure that should be shown to the member."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.user_message = message
+
+
 async def _invite_snapshot(
     guild: discord.Guild,
 ) -> dict[str, dict[str, int | None]] | None:
@@ -998,7 +1006,14 @@ async def _ensure_invite_role(guild: discord.Guild) -> discord.Role | None:
             color=discord.Color.green(),
             reason="Create invite eligibility role",
         )
-    except (discord.Forbidden, discord.HTTPException) as exc:
+    except discord.Forbidden:
+        print(
+            "[ERROR 403] Forbidden: Hierarchy issue or missing permissions. "
+            "Bot role must be higher than '1 Invite'."
+        )
+        traceback.print_exc()
+        return None
+    except discord.HTTPException as exc:
         print(f"[invite tracker] Could not create {INVITE_ROLE_NAME} in {guild.id}: {exc}")
         return None
 
@@ -1008,6 +1023,7 @@ async def _award_invite_role(
     inviter_id: int,
     *,
     reason: str,
+    raise_on_forbidden: bool = False,
 ) -> bool:
     """Give the invite role to an inviter, if the bot can manage the role."""
     role = await _ensure_invite_role(guild)
@@ -1030,6 +1046,8 @@ async def _award_invite_role(
             "[invite tracker WARNING] Cannot assign role '1 Invite' - Ensure "
             "the bot's role is placed ABOVE '1 Invite' in Server Settings > Roles."
         )
+        if raise_on_forbidden:
+            raise
         return False
     except discord.HTTPException as exc:
         print(f"[invite tracker] Could not award {INVITE_ROLE_NAME} to {inviter_id}: {exc}")
@@ -1097,9 +1115,11 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
 
 
 async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | None:
-    """Verify live invite usage on registration and repair the role if needed."""
+    """Verify live invite usage and repair the role during registration."""
     if guild.id != SERVER_ID:
         return False
+
+    print(f"[DEBUG] User ID checking registration: {member_id}")
     role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
     member = guild.get_member(member_id)
     if member is None:
@@ -1110,19 +1130,40 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
     if member is not None and role is not None and role in member.roles:
         return True
 
+    bot_member = guild.me
+    perms = bot_member.guild_permissions if bot_member is not None else discord.Permissions.none()
+    print(
+        "[DEBUG] Bot permissions in guild: "
+        f"manage_roles={perms.manage_roles}, manage_guild={perms.manage_guild}"
+    )
+    if bot_member is None or not perms.manage_guild:
+        print("[ERROR] Missing 'Manage Server' permission to read guild invites!")
+        raise InviteRegistrationError(
+            "❌ Error: Bot lacks 'Manage Server' permission to verify invites."
+        )
+
     # Do not rely on a stale role or cache: verify every invite link created by
     # this user at click time.
-    snapshot = await _invite_snapshot(guild)
-    if snapshot is None:
-        profile = db.get("profiles", {}).get(str(member_id))
-        if profile is not None and int(profile.get("invite_count", 0) or 0) >= 1:
-            await _award_invite_role(
-                guild,
-                member_id,
-                reason="Repair invite eligibility during tournament registration",
-            )
-            return True
-        return None
+    try:
+        invites = await guild.invites()
+        snapshot = {
+            invite.code: {
+                "uses": max(int(invite.uses or 0), 0),
+                "inviter_id": invite.inviter.id if invite.inviter else None,
+            }
+            for invite in invites
+        }
+    except discord.Forbidden:
+        print(
+            "[ERROR 403] Forbidden: Hierarchy issue or missing permissions. "
+            "Bot role must be higher than '1 Invite'."
+        )
+        traceback.print_exc()
+        raise
+    except Exception:
+        print("[ERROR] Failed while fetching guild invites during registration.")
+        traceback.print_exc()
+        raise
 
     async with _invite_cache_lock:
         bot.invite_cache[guild.id] = snapshot
@@ -1133,15 +1174,36 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
         if data.get("inviter_id") is not None
         and int(data["inviter_id"]) == member_id
     )
+    print(f"[DEBUG] Total invite uses calculated for user: {total_uses}")
     if total_uses >= 1:
+        if not perms.manage_roles:
+            print("[ERROR] Missing 'Manage Roles' permission!")
+            raise InviteRegistrationError(
+                "❌ Error: Bot lacks 'Manage Roles' permission."
+            )
+        role = await _ensure_invite_role(guild)
+        if role is None:
+            raise InviteRegistrationError(
+                "❌ Error: Bot could not create the '1 Invite' role. "
+                "Check the bot's role permissions and hierarchy."
+            )
+        bot_role_position = bot_member.top_role.position
+        print(
+            "[DEBUG] Bot highest role position vs '1 Invite' role position: "
+            f"{bot_role_position} vs {role.position}"
+        )
         await _record_invite_totals(guild, snapshot)
         await _award_invite_role(
             guild,
             member_id,
             reason="Grant invite eligibility during tournament registration",
+            raise_on_forbidden=True,
         )
         return True
 
+    print(
+        "[DEBUG] No invite uses found for user; registration eligibility denied."
+    )
     return False
 
 def _tournament_invite_requirement_message() -> str:
@@ -1149,6 +1211,22 @@ def _tournament_invite_requirement_message() -> str:
         "❌ You haven't invited anyone to the server yet!! "
         "Invite just one person to register now!."
     )
+
+
+async def _send_registration_error(
+    interaction: discord.Interaction,
+    message: str,
+) -> None:
+    """Send registration errors even when the initial response was deferred."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except (discord.NotFound, discord.HTTPException):
+        print("[ERROR] Could not send tournament registration error to Discord.")
+        traceback.print_exc()
+
 
 db = {
     "profiles": {},
@@ -5043,64 +5121,91 @@ class TourRegisterView(View):
 
     @discord.ui.button(label="✅ Register 0/32", style=discord.ButtonStyle.green, custom_id="reg_btn")
     async def register(self, interaction: discord.Interaction, button: Button):
-        # Invite reconciliation calls Discord's invite endpoint and can take
-        # longer than the initial interaction response window.
-        await interaction.response.defer(ephemeral=True)
-        t = db.get("tour")
-        if not t:
-            return await interaction.followup.send("❌ No active tournament.", ephemeral=True)
-        modalita = t.get("modalita", "1V1")
-        uid      = str(interaction.user.id)
-        if uid not in t["players"]:
-            invited = await _has_invited_member(interaction.guild, interaction.user.id)
-            if invited is None:
-                return await interaction.followup.send(
-                    "❌ I cannot verify tournament eligibility right now. "
-                    "Staff must grant the bot **Manage Server** permission "
-                    "so invite tracking can work.",
-                    ephemeral=True,
-                )
-            if not invited:
-                return await interaction.followup.send(
-                    _tournament_invite_requirement_message(),
-                    ephemeral=True,
-                )
-        if modalita in TEAM_MODES:
-            user_team = next((tm for tm in db["teams"] if uid in tm["ids"]), None)
-            if not user_team:
-                return await interaction.followup.send(
-                    f"❌ **{modalita}** tournaments require a team. Use `:team @p2 [@p3...]` first.",
-                    ephemeral=True)
-        if uid not in t["players"]:
-            if len(t["players"]) >= t["max"]:
-                return await interaction.followup.send("❌ Tournament is full!", ephemeral=True)
-            # Big-tournament: require SG verified account
-            if t.get("is_big"):
-                has_sg = any(r.id == SG_VERIFIED_ROLE_ID for r in interaction.user.roles)
-                if not has_sg:
-                    link_ch = discord.utils.find(
-                        lambda c: c.name.lower() == "link", interaction.guild.channels
-                    ) if interaction.guild else None
-                    destination = link_ch.mention if link_ch else "#link"
+        try:
+            # Invite reconciliation calls Discord's invite endpoint and can
+            # take longer than the initial interaction response window.
+            await interaction.response.defer(ephemeral=True)
+            t = db.get("tour")
+            if not t:
+                return await interaction.followup.send("❌ No active tournament.", ephemeral=True)
+            modalita = t.get("modalita", "1V1")
+            uid      = str(interaction.user.id)
+            if uid not in t["players"]:
+                invited = await _has_invited_member(interaction.guild, interaction.user.id)
+                if invited is None:
                     return await interaction.followup.send(
-                        f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
-                        f"Connect your account directly in the {destination} channel.",
+                        "❌ I cannot verify tournament eligibility right now. "
+                        "Staff must grant the bot **Manage Server** permission "
+                        "so invite tracking can work.",
+                        ephemeral=True,
+                    )
+                if not invited:
+                    return await interaction.followup.send(
+                        _tournament_invite_requirement_message(),
+                        ephemeral=True,
+                    )
+            if modalita in TEAM_MODES:
+                user_team = next((tm for tm in db["teams"] if uid in tm["ids"]), None)
+                if not user_team:
+                    return await interaction.followup.send(
+                        f"❌ **{modalita}** tournaments require a team. Use `:team @p2 [@p3...]` first.",
                         ephemeral=True)
-            get_profile(interaction.user.id, interaction.user.display_name)["name"] = (
-                interaction.user.display_name
+            if uid not in t["players"]:
+                if len(t["players"]) >= t["max"]:
+                    return await interaction.followup.send("❌ Tournament is full!", ephemeral=True)
+                # Big-tournament: require SG verified account
+                if t.get("is_big"):
+                    has_sg = any(r.id == SG_VERIFIED_ROLE_ID for r in interaction.user.roles)
+                    if not has_sg:
+                        link_ch = discord.utils.find(
+                            lambda c: c.name.lower() == "link", interaction.guild.channels
+                        ) if interaction.guild else None
+                        destination = link_ch.mention if link_ch else "#link"
+                        return await interaction.followup.send(
+                            f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
+                            f"Connect your account directly in the {destination} channel.",
+                            ephemeral=True)
+                get_profile(interaction.user.id, interaction.user.display_name)["name"] = (
+                    interaction.user.display_name
+                )
+                t["players"].append(uid)
+                t["player_names"].append(interaction.user.display_name)
+            count = len(t["players"])
+            max_p = t["max"]
+            save_db()
+            await interaction.followup.send(
+                f"✅ Registered! You are participant **#{count}/{max_p}**.",
+                ephemeral=True,
             )
-            t["players"].append(uid)
-            t["player_names"].append(interaction.user.display_name)
-        count = len(t["players"])
-        max_p = t["max"]
-        save_db()
-        await interaction.followup.send(f"✅ Registered! You are participant **#{count}/{max_p}**.", ephemeral=True)
-        await self._refresh(interaction)
-        # Auto-generate bracket when all slots fill
-        if count >= max_p and not t.get("matches"):
-            t["bracket_channel_id"] = t.get("register_channel_id") or interaction.channel_id
-            await _auto_generate_bracket(interaction.guild, t)
-            await _update_bracket_messages(t)
+            await self._refresh(interaction)
+            # Auto-generate bracket when all slots fill
+            if count >= max_p and not t.get("matches"):
+                t["bracket_channel_id"] = t.get("register_channel_id") or interaction.channel_id
+                await _auto_generate_bracket(interaction.guild, t)
+                await _update_bracket_messages(t)
+        except InviteRegistrationError as exc:
+            print(f"[ERROR] Tournament registration blocked: {exc}")
+            traceback.print_exc()
+            await _send_registration_error(interaction, exc.user_message)
+        except discord.Forbidden:
+            print(
+                "[ERROR 403] Forbidden: Hierarchy issue or missing permissions. "
+                "Bot role must be higher than '1 Invite'."
+            )
+            traceback.print_exc()
+            await _send_registration_error(
+                interaction,
+                "❌ Error: Discord rejected this action. Check Manage Server, "
+                "Manage Roles, and ensure the bot role is above '1 Invite'.",
+            )
+        except Exception as exc:
+            print(f"[ERROR] Tournament registration failed: {exc}")
+            traceback.print_exc()
+            await _send_registration_error(
+                interaction,
+                "❌ Error: Tournament registration failed. Please try again or "
+                "ask staff to check the bot permissions and console logs.",
+            )
 
     @discord.ui.button(label="❌ Unregister", style=discord.ButtonStyle.red, custom_id="unreg_btn")
     async def unregister(self, interaction: discord.Interaction, button: Button):
