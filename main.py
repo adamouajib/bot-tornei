@@ -527,6 +527,13 @@ TOUR_REG_CHANNEL_ID    = CHANNELS["tournament"]
 TOUR_PING_ROLE_ID      = 1508572231326896269
 # Temporary campaign setting: notify everyone for every newly published tournament.
 TOURNAMENT_EVERYONE_PING_ENABLED = True
+TOURNAMENT_INVITE_TUTORIAL = (
+    "❓ **How to get your invite link?**\n"
+    "1️⃣ Go to the `#general` channel 💬\n"
+    "2️⃣ Open channel options / click the invite icon ➕\n"
+    "3️⃣ Press **\"Invite Members\"** 👤\n"
+    "4️⃣ Click **\"Copy Link\"** 🔗 & send it to your friends!"
+)
 TOURNAMENT_RULES_TEXT = (
     "• You must have the **1 Invite** role to register.\n"
     "• Register only for yourself, or use a completed team for team formats.\n"
@@ -1208,8 +1215,8 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
 
 def _tournament_invite_requirement_message() -> str:
     return (
-        "❌ You haven't invited anyone to the server yet!! "
-        "Invite just one person to register now!."
+        "❌ You haven't invited anyone yet! You need at least 1 invite to register.\n\n"
+        f"{TOURNAMENT_INVITE_TUTORIAL}"
     )
 
 
@@ -9326,8 +9333,8 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
             "🏆 **Match Code:** When your match starts, Tournament Hosts send the "
             "room code directly to your DMs. Keep your Discord DMs open so you do "
             "not miss it.\n\n"
-            "📨 **Entry Requirement:** A minimum of **1 invite** is required to "
-            "participate in tournaments.\n\n"
+            "📌 **Requirement:** At least 1 Total Server Invite\n"
+            f"{TOURNAMENT_INVITE_TUTORIAL}\n\n"
             "Help us grow this community and make it even better! 🌱✨"
         ),
     },
