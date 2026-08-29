@@ -395,6 +395,7 @@ bot = commands.Bot(command_prefix=":", intents=intents, help_command=None)
 
 SERVER_ID = 1046154910368014417
 SERVER_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
+INVITE_ROLE_NAME = "1 Invite"
 
 EMOJIS = {
     "ruby": "<:ruby:1542674594454970448>",
@@ -525,6 +526,13 @@ TOUR_REG_CHANNEL_ID    = CHANNELS["tournament"]
 TOUR_PING_ROLE_ID      = 1508572231326896269
 # Temporary campaign setting: notify everyone for every newly published tournament.
 TOURNAMENT_EVERYONE_PING_ENABLED = True
+TOURNAMENT_RULES_TEXT = (
+    "• You must have the **1 Invite** role to register.\n"
+    "• Register only for yourself, or use a completed team for team formats.\n"
+    "• Follow the host's room, map, ability and match instructions.\n"
+    "• Be respectful, be ready on time and do not leave an active match.\n"
+    "• Staff decisions and tournament results are final."
+)
 EVENT_INFO_CHANNEL_ID  = CHANNELS["community_event"]
 EVENT_START_CHANNEL_ID = CHANNELS["community_event"]
 
@@ -794,15 +802,15 @@ def format_ai_error(exc: Exception) -> str:
     error_text = str(exc).casefold()
     if "timeout" in error_text or "timed out" in error_text:
         return (
-            "⏳ **La risposta sta impiegando troppo tempo.**\n\n"
-            "Riprova tra poco."
+            "⏳ **The response is taking too long.**\n\n"
+            "Please try again shortly."
         )
     if isinstance(exc, GeminiRateLimitError):
-        return "⚠️ Il servizio è momentaneamente occupato. Riprova tra poco."
+        return "⚠️ The service is temporarily busy. Please try again shortly."
     if isinstance(exc, GeminiPromptTooLargeError):
         return (
-            "⚠️ La conoscenza richiesta è temporaneamente troppo estesa. "
-            "Prova a fare una domanda più specifica."
+            "⚠️ The requested knowledge is temporarily too large. "
+            "Please try a more specific question."
         )
     return (
         "⚠️ **The assistant couldn't complete this request.**\n\n"
@@ -904,35 +912,144 @@ def display_with_rank(name: str) -> str:
     return f"{rank_emoji} {player_name}{purchased_w}"
 
 
-async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | None:
-    """Check whether a member has used one of their invites in this server.
+_invite_cache: dict[int, dict[str, dict[str, int | None]]] = {}
+_invite_cache_lock = asyncio.Lock()
 
-    ``None`` means Discord did not allow the bot to verify the invite list.
-    Registration must be denied in that case rather than silently bypassing
-    the tournament requirement.
+
+async def _invite_snapshot(
+    guild: discord.Guild,
+) -> dict[str, dict[str, int | None]] | None:
+    """Fetch the current invite usage snapshot for a guild.
+
+    The Manage Server permission is required by Discord for this endpoint.
+    ``None`` means that the bot could not verify the invite list.
     """
     try:
         invites = await guild.invites()
     except discord.Forbidden:
-        print(f"[tournament invites] Missing Manage Server permission in guild {guild.id}")
+        print(f"[invite tracker] Missing Manage Server permission in guild {guild.id}")
         return None
     except discord.HTTPException as exc:
-        print(f"[tournament invites] Could not fetch invites for guild {guild.id}: {exc}")
+        print(f"[invite tracker] Could not fetch invites for guild {guild.id}: {exc}")
+        return None
+    return {
+        invite.code: {
+            "uses": max(int(invite.uses or 0), 0),
+            "inviter_id": invite.inviter.id if invite.inviter else None,
+        }
+        for invite in invites
+    }
+
+
+async def _ensure_invite_role(guild: discord.Guild) -> discord.Role | None:
+    """Return the exact invite eligibility role, creating it when necessary."""
+    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    if role:
+        return role
+    try:
+        return await guild.create_role(
+            name=INVITE_ROLE_NAME,
+            color=discord.Color.green(),
+            reason="Create invite eligibility role",
+        )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[invite tracker] Could not create {INVITE_ROLE_NAME} in {guild.id}: {exc}")
         return None
 
-    return any(
-        invite.inviter is not None
-        and invite.inviter.id == member_id
-        and (invite.uses or 0) > 0
-        for invite in invites
+
+async def _award_invite_role(
+    guild: discord.Guild,
+    inviter_id: int,
+    *,
+    reason: str,
+) -> bool:
+    """Give the invite role to an inviter, if the bot can manage the role."""
+    role = await _ensure_invite_role(guild)
+    member = guild.get_member(inviter_id)
+    if not role or not member:
+        return False
+    if role in member.roles:
+        return True
+    try:
+        await member.add_roles(role, reason=reason)
+        print(f"[invite tracker] Awarded {INVITE_ROLE_NAME} to {member} in {guild.id}")
+        return True
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[invite tracker] Could not award {INVITE_ROLE_NAME} to {inviter_id}: {exc}")
+        return False
+
+
+async def _refresh_invite_cache(
+    guild: discord.Guild,
+    *,
+    reconcile_roles: bool = False,
+) -> None:
+    """Cache invite uses and optionally backfill the role for existing inviters."""
+    snapshot = await _invite_snapshot(guild)
+    if snapshot is None:
+        return
+    async with _invite_cache_lock:
+        _invite_cache[guild.id] = snapshot
+    if reconcile_roles:
+        inviter_ids = {
+            int(data["inviter_id"])
+            for data in snapshot.values()
+            if data["inviter_id"] is not None and int(data["uses"] or 0) > 0
+        }
+        for inviter_id in inviter_ids:
+            await _award_invite_role(
+                guild,
+                inviter_id,
+                reason="Backfill invite eligibility role",
+            )
+
+
+async def _track_joining_member_invite(member: discord.Member) -> int | None:
+    """Detect which invite gained a use for a newly joined member."""
+    snapshot = await _invite_snapshot(member.guild)
+    if snapshot is None:
+        return None
+    async with _invite_cache_lock:
+        previous = _invite_cache.get(member.guild.id, {})
+        _invite_cache[member.guild.id] = snapshot
+
+    candidates = []
+    for code, current in snapshot.items():
+        old = previous.get(code, {})
+        delta = int(current["uses"] or 0) - int(old.get("uses", 0) or 0)
+        inviter_id = current["inviter_id"]
+        if delta > 0 and inviter_id is not None:
+            candidates.append((delta, int(inviter_id)))
+    if not candidates:
+        return None
+    _, inviter_id = max(candidates)
+    await _award_invite_role(
+        member.guild,
+        inviter_id,
+        reason=f"Invited new member {member.id}",
     )
+    return inviter_id
+
+
+async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | None:
+    """Use the live ``1 Invite`` role as the fast tournament eligibility check."""
+    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    if role is None:
+        return False
+    member = guild.get_member(member_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(member_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return False
+    return role in member.roles
 
 def _tournament_invite_requirement_message() -> str:
-    """Return the Italian explanation shown when a member has no used invite."""
+    """Return the English explanation shown when a member lacks the role."""
     return (
-        "❌ Per partecipare a un torneo devi prima aver invitato almeno "
-        "una persona in questo server.\n"
-        "Crea un invito qui e fallo usare a una persona: "
+        f"❌ You need the **{INVITE_ROLE_NAME}** role to register for a tournament.\n"
+        "Invite at least one person to this server and the role will be assigned "
+        "automatically when the invite is used.\n"
         f"{TOURNAMENT_INVITE_URL}"
     )
 
@@ -1013,7 +1130,7 @@ GEMINI_PROMPT_TOKEN_BUDGET = 200_000
 GEMINI_CHARS_PER_TOKEN_ESTIMATE = 4
 GEMINI_RATE_LIMIT_RETRY_DELAYS = (2.0, 2.0)
 if not GEMINI_CONFIGURED:
-    print("[GEMINI WARNING] GEMINI_API_KEY non trovata nelle variabili d'ambiente!")
+    print("[GEMINI WARNING] GEMINI_API_KEY was not found in the environment!")
 ALERT_RECIPIENT_ID = 1338274535325175810
 ALERT_RECIPIENT_IDS = OWNER_USER_IDS
 AI_CATEGORY_NAME = "💬 AI CHATS"
@@ -1232,7 +1349,7 @@ class PrivateAIChatView(View):
     async def close_chat(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message(
-                "❌ Questa chat privata appartiene a un altro utente.", ephemeral=True
+                "❌ This private chat belongs to another user.", ephemeral=True
             )
         channel = interaction.channel
         await interaction.response.send_message("🗑️ Chat closed. The private channel will be deleted…")
@@ -1394,8 +1511,8 @@ async def _process_private_ai_batch(
                 conversation.pop()
                 await _safe_log_ai_exception(message.guild, "Private AI context", exc)
                 await channel.send(
-                    "⚠️ Non riesco a preparare la conoscenza completa del server in questo momento. "
-                    "Riprova tra poco."
+                    "⚠️ I cannot prepare the complete server knowledge right now. "
+                    "Please try again shortly."
                 )
                 return True
             reply_text = ""
@@ -1411,23 +1528,23 @@ async def _process_private_ai_batch(
             except asyncio.TimeoutError as exc:
                 traceback.print_exc()
                 print(
-                    "[GEMINI TIMEOUT] La richiesta ha superato il tempo massimo "
+                    "[GEMINI TIMEOUT] The request exceeded the maximum time of "
                     f"di {AI_REQUEST_TIMEOUT_SECONDS:.0f} secondi."
                 )
                 await _safe_log_ai_exception(message.guild, "Private AI timeout", exc)
                 await channel.send(
-                    "⏳ La risposta ha impiegato troppo tempo (timeout). Riprova tra poco!"
+                    "⏳ The response took too long (timeout). Please try again shortly."
                 )
                 return True
             except Exception as exc:
                 traceback.print_exc()
-                print(f"[GEMINI ERROR] Errore dettagliato: {exc}")
+                print(f"[GEMINI ERROR] Detailed error: {exc}")
                 await _safe_log_ai_exception(message.guild, "Private AI completion", exc)
                 await channel.send(format_ai_error(exc))
                 return True
             if not reply_text:
                 await channel.send(
-                    "⚠️ Non riesco a generare una risposta in questo momento. Riprova tra poco."
+                    "⚠️ I cannot generate a response right now. Please try again shortly."
                 )
                 return True
             sent_chunks = 0
@@ -2304,8 +2421,8 @@ def build_ai_system_instruction() -> str:
         "users there to choose the right button for support, reports or staff "
         "applications. `:add-ticket` is only an admin maintenance command.\n\n"
         "PRIVATE CHAT CONTROL:\n"
-        "- :start — apre una sessione con l'Official PCF™ Assistant e mostra il messaggio di benvenuto.\n"
-        "- :close — chiude la sessione; i messaggi successivi non ricevono risposte IA finché non viene usato di nuovo :start.\n\n"
+        "- :start — opens a session with the Official PCF™ Assistant and shows the welcome message.\n"
+        "- :close — closes the session; later messages receive no AI replies until :start is used again.\n\n"
         "MODERATION:\n"
         "- Analyze every user message. If it contains severe profanity, insults, sexual/NSFW content, "
          "requests to nuke or raid the server, or malicious behavior, start the response with [ALERT], "
@@ -3665,17 +3782,17 @@ async def on_command_error(ctx, error):
             "give": "`:give @member <currency> <amount>`",
             "drop": "`:drop <people> <amount> <currency>`",
         }.get(getattr(ctx.command, "qualified_name", ""), "")
-        suffix = f"\nUso: {usage}" if usage else ""
-        await ctx.send(f"❌ Manca l'argomento: `{error.param.name}`.{suffix}", delete_after=7.0)
+        suffix = f"\nUsage: {usage}" if usage else ""
+        await ctx.send(f"❌ Missing argument: `{error.param.name}`.{suffix}", delete_after=7.0)
     elif isinstance(error, (commands.BadArgument, commands.TooManyArguments)):
         usage = {
             "give": "`:give @member <currency> <amount>`",
             "drop": "`:drop <people> <amount> <currency>`",
         }.get(getattr(ctx.command, "qualified_name", ""), "")
         if usage:
-            await ctx.send(f"❌ Formato non valido. Usa: {usage}", delete_after=7.0)
+            await ctx.send(f"❌ Invalid format. Use: {usage}", delete_after=7.0)
         else:
-            await ctx.send("❌ Formato non valido. Controlla gli argomenti e riprova.", delete_after=6.0)
+            await ctx.send("❌ Invalid format. Check the arguments and try again.", delete_after=6.0)
     elif isinstance(error, commands.CommandNotFound):
         pass
     else:
@@ -3733,7 +3850,7 @@ async def send_setup_notifications():
         ),
         color=discord.Color.gold(),
     )
-    embed.add_field(name="⚙️ Comandi setup", value="\n".join(rows), inline=False)
+    embed.add_field(name="⚙️ Setup commands", value="\n".join(rows), inline=False)
     embed.set_footer(text="PCF™ Bot • Setup")
     failures = []
     # Setup instructions are private to Adam only. Piccolofe receives
@@ -3767,9 +3884,9 @@ async def on_ready():
             await initialize_gemini_model()
         except Exception as exc:
             traceback.print_exc()
-            print(f"[GEMINI STARTUP ERROR] Impossibile inizializzare Gemini: {exc}")
+            print(f"[GEMINI STARTUP ERROR] Could not initialize Gemini: {exc}")
     else:
-        print("[GEMINI WARNING] IA non inizializzata: GEMINI_API_KEY mancante.")
+        print("[GEMINI WARNING] AI not initialized: GEMINI_API_KEY is missing.")
     try:
         await bot.tree.sync()
         print("[on_ready] Slash commands synced")
@@ -3865,14 +3982,18 @@ async def on_ready():
                         )
                     except (discord.Forbidden, discord.HTTPException) as exc:
                         print(f"[on_ready] Could not sync booster perk for {member.id}: {exc}")
+        await _refresh_invite_cache(guild, reconcile_roles=True)
 
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = member.guild
+    # Discord does not include the used invite in MemberJoin. Compare the
+    # cached startup snapshot with the current invite usage to identify it.
+    await _track_joining_member_invite(member)
     member_role = guild.get_role(MEMBER_ROLE_ID)
     if member_role:
         try:
-            await member.add_roles(member_role, reason="Auto-assegna ruolo Member")
+            await member.add_roles(member_role, reason="Automatically assign Member role")
         except Exception:
             pass
     cid = db.get("welcome_channel_id")
@@ -4728,8 +4849,8 @@ async def team(ctx, *args):
         del pending_invites[team_id]
         return await ctx.send("❌ I cannot DM the users (their DMs are closed).", delete_after=8.0)
     await ctx.send(
-        f"📨 Invito **{mode}** inviato a **{', '.join(m.display_name for m in real_members)}**! "
-        f"Il team si forma quando tutti accettano.",
+        f"📨 **{mode}** invite sent to **{', '.join(m.display_name for m in real_members)}**! "
+        "The team will be created when everyone accepts.",
         delete_after=12.0
     )
     await asyncio.sleep(120)
@@ -4797,9 +4918,9 @@ class TourRegisterView(View):
             invited = await _has_invited_member(interaction.guild, interaction.user.id)
             if invited is None:
                 return await interaction.response.send_message(
-                    "❌ Non posso verificare i tuoi inviti in questo momento. "
-                    "Lo staff deve concedere al bot il permesso **Manage Server** "
-                    "per permettere l'iscrizione ai tornei.",
+                    "❌ I cannot verify tournament eligibility right now. "
+                    "Staff must grant the bot **Manage Server** permission "
+                    "so invite tracking can work.",
                     ephemeral=True,
                 )
             if not invited:
@@ -5118,8 +5239,9 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     if data.get("regione"):
         info_val += f"\n🌍 **Region:** {data['regione']}"
     if is_big:
-        info_val += "\n🔗 A verified SG account is required to register!"
+        info_val += "\n🔗 A verified SG account and the **1 Invite** role are required to register!"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
+    embed.add_field(name="📜 Tournament Rules", value=TOURNAMENT_RULES_TEXT, inline=False)
     status_val = (
         f"⏳ Registration open — **0/{default_max}**\n"
         f"**Host:** {interaction.user.mention}\n"
@@ -5146,7 +5268,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         if is_big:
             content = (
                 f"{announcement_ping} <@&{TOUR_PING_ROLE_ID}> "
-                "🌟 **BIG TOURNAMENT** annunciato!"
+                "🌟 **BIG TOURNAMENT** announced!"
             ).strip()
         else:
             content = (
@@ -5432,8 +5554,8 @@ async def assign_hosts(ctx):
         for h in hosts
     )
     embed = discord.Embed(
-        title="✅ Match Distribuiti!",
-        description=f"Distribuzione completata per **{sent}** host:\n\n{summary}",
+        title="✅ Matches Distributed!",
+        description=f"Distribution completed for **{sent}** host(s):\n\n{summary}",
         color=discord.Color.green()
     )
     embed.set_image(url=STUMBLE_IMG)
@@ -5456,6 +5578,8 @@ async def setup_tour_hub(ctx):
             "*Admin only — 9 / 27-player brackets*\n\n"
             "🌍 **World Cup** — Bracket tournament, earn 🌐 **WC Points**\n"
             "*Admin only*\n\n"
+            "📜 **Rules:** Players need the **1 Invite** role to register. "
+            "Follow the host's instructions, be ready on time and respect staff decisions.\n\n"
             "─────────────────────────────────────\n\n"
             "📐 Bracket **auto-generates** when slots fill\n"
             "📬 Hosts are **notified via DM** with their matches"
@@ -6982,8 +7106,7 @@ async def on_message(message: discord.Message):
             guild = await _get_ai_main_guild()
             if guild is None:
                 await message.channel.send(
-                    "⚠️ Non riesco ad accedere al server principale in questo momento. "
-                    "Riprova tra poco."
+                    "⚠️ I cannot access the main server right now. Please try again shortly."
                 )
                 return
             try:
@@ -6992,7 +7115,7 @@ async def on_message(message: discord.Message):
                     ai_private_channels[message.author.id] = existing.id
                     ai_channel_last_activity[message.author.id] = datetime.utcnow()
                     await message.channel.send(
-                        f"✅ La tua chat privata con l'assistente PCF™ è già aperta: {existing.mention}"
+                        f"✅ Your private chat with the PCF™ Assistant is already open: {existing.mention}"
                     )
                     return
 
@@ -7004,7 +7127,7 @@ async def on_message(message: discord.Message):
                         member = None
                 if member is None:
                     await message.channel.send(
-                        "⚠️ Devi essere membro del server PCF™ per aprire la chat privata."
+                        "⚠️ You must be a member of the PCF™ server to open a private chat."
                     )
                     await _log_dm(message, "OUT", "PRIVATE AI CHAT DENIED — user is not a server member")
                     return
@@ -7065,29 +7188,30 @@ async def on_message(message: discord.Message):
                 await _safe_log_ai_exception(guild, "Private AI channel permissions", exc)
                 if _is_discord_two_factor_required(exc):
                     await message.channel.send(
-                        "⚠️ Discord sta bloccando la creazione del canale perché nel server "
-                        "è obbligatoria la **verifica in due passaggi (2FA)** per le azioni "
-                        "di moderazione. I permessi del bot risultano presenti.\n\n"
-                        "Un amministratore deve disattivare questa richiesta nelle "
-                        "impostazioni di sicurezza del server; poi riprova `:start`."
+                        "⚠️ Discord is blocking channel creation because **two-factor "
+                        "authentication (2FA)** is required for moderation actions in "
+                        "this server. The bot permissions are present.\n\n"
+                        "An administrator must disable this requirement in the server "
+                        "security settings, then try `:start` again."
                     )
                 else:
                     await message.channel.send(
-                        "⚠️ Non posso creare la chat privata: verifica che il bot abbia "
-                        "il permesso **Gestisci canali** sul server e sulla categoria AI."
+                        "⚠️ I cannot create the private chat. Check that the bot has "
+                        "**Manage Channels** permission in the server and AI category."
                     )
             except discord.HTTPException as exc:
                 print(f"[AI START] Discord API error for {message.author.id}: {exc}")
                 await _safe_log_ai_exception(guild, "Private AI channel creation", exc)
                 await message.channel.send(
-                    "⚠️ Discord non ha permesso di creare la chat privata. Riprova tra poco."
+                    "⚠️ Discord did not allow the private chat to be created. "
+                    "Please try again shortly."
                 )
             except Exception as exc:
                 traceback.print_exc()
                 await _safe_log_ai_exception(guild, "Private AI start", exc)
                 await message.channel.send(
-                    "⚠️ Si è verificato un errore durante la creazione della chat privata. "
-                    "Riprova tra poco."
+                    "⚠️ An error occurred while creating the private chat. "
+                    "Please try again shortly."
                 )
             return
 
@@ -7196,8 +7320,8 @@ async def on_message(message: discord.Message):
         # Direct DMs never use Gemini. :start opens the private server
         # channel where the AI conversation takes place.
         await message.channel.send(
-            "👋 Se vuoi parlare con me, usa `:start`.\n"
-            "Ti aprirò una chat privata nel server."
+            "👋 To talk with me, use `:start`.\n"
+            "I will open a private chat for you in the server."
         )
         await _log_dm(message, "OUT", "DM AI disabled — use :start")
         await bot.process_commands(message)
@@ -7209,7 +7333,7 @@ async def on_message(message: discord.Message):
         if private_channel and private_channel.id == message.channel.id:
             ai_private_channels[message.author.id] = private_channel.id
             if message.content.strip().casefold() == ":close":
-                await message.channel.send("🗑️ Chat chiusa. Il canale privato verrà eliminato…")
+                await message.channel.send("🗑️ Chat closed. The private channel will be deleted…")
                 ai_private_channels.pop(message.author.id, None)
                 ai_channel_last_activity.pop(message.author.id, None)
                 active_ai_sessions.discard(message.author.id)
@@ -8500,8 +8624,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # so a user can run a command without opening the source code.
     commands_by_page = [
         [
-            (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
-            (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires a verified SG account for registration.", "No text arguments; admin access.", ":big-tour"),
+            (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons. Players need the 1 Invite role to register.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
+            (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires the 1 Invite role plus a verified SG account for registration.", "No text arguments; admin access.", ":big-tour"),
             (":assign-hosts (alias :assign_hosts)", "Distributes the active tournament’s matches among registered hosts.", "No arguments; hoster/admin access.", ":assign-hosts"),
             (":add_bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :add_bot afterwards.", ":add_bot 2"),
             (":bracket", "Creates the first bracket or advances the tournament to a later round after matches are complete.", "[round] optional target round number; at least two players are required.", ":bracket 2"),
@@ -8524,14 +8648,14 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":profile", "Shows a member’s rank, Ranked Points, Ruby, Crystals, Gems, level, W Items and tournament wins.", "[@user] optional member mention; defaults to the person using the command.", ":profile @Player"),
             (":set-leaderboard (alias :set_leaderboard)", "Sets the channel where the automatic leaderboard message is posted or refreshed.", "<#channel> text-channel mention; admin access.", ":set-leaderboard #leaderboard"),
             (":hoster-lb (aliases :hosterlb, :hoster_lb, :staff-lb, :stafflb, :staff_lb, :classifica-staff)", "Shows the staff/hoster leaderboard for weekly and all-time hosted tournaments.", "No arguments.", ":hoster-lb"),
-            (":give (alias :add)", "Gives a selected currency to a member.", "<@user> <ruby|cristalli|punti> <amount>; admin access.", ":give @Player ruby 5000"),
+            (":give (alias :add)", "Gives a selected currency to a member.", "<@user> <ruby|crystals|ranked-points> <amount>; admin access.", ":give @Player ruby 5000"),
             (":add-rubini (alias :add_rubini)", "Adds Ruby to a member’s profile.", "<@user> <amount>; admin access.", ":add-rubini @Player 1000"),
             (":remove-rubini (alias :remove_rubini)", "Removes Ruby from a member’s profile.", "<@user> <amount>; admin access.", ":remove-rubini @Player 250"),
             (":add-cristalli (alias :add_cristalli)", "Adds Crystals to a member’s profile.", "<@user> <amount>; admin access.", ":add-cristalli @Player 100"),
             (":add-gems (alias :add_gems)", "Adds Stumble Guys Gems directly to a member’s profile.", "<@user> <amount>; admin access.", ":add-gems @Player 50"),
             (":add-punti (alias :add_punti)", "Adds Ranked Points to a member and updates their rank where applicable.", "<@user> <amount>; admin access.", ":add-punti @Player 250"),
              (":set-rank (alias :set_rank)", "Force-sets a member’s rank by rank name.", "<@user> <rank name>; admin access, for example Gold or Platinum.", ":set-rank @Player Gold"),
-             (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|cristalli|punti|gems or supported stat>; admin access.", ":reset @Player ruby"),
+            (":reset", "Resets one selected currency/stat for a member.", "<@user> <ruby|crystals|ranked-points|gems or supported stat>; admin access.", ":reset @Player ruby"),
             (":drop", "Releases a limited prize drop; exactly the requested number of different users can claim it, then it closes automatically.", "<people> <amount> <currency>; currency: Ruby, Crystals, Gems or Ranked Points.", ":drop 5 100 Ruby"),
             (":machine", "Publishes the owner-only persistent Slot Machine panel; members spin using its 100-Ruby button.", "No arguments; members use the button in the published panel.", ":machine"),
              (":chest", "Publishes the owner-only persistent Mystery Chest panel; members open it using its 250-Ruby button.", "No arguments; members use the button in the published panel.", ":chest"),
@@ -8541,7 +8665,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":myteam", "Shows the team you currently belong to, including its members and leader.", "No arguments.", ":myteam"),
             (":teamleave", "Removes you from your current team.", "No arguments.", ":teamleave"),
             (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
-            (":boost", "Mostra allo Staff i vantaggi Ruby, Cristalli e ruolo assegnati ai booster.", "Nessun argomento; richiede un ruolo Staff.", ":boost"),
+            (":boost", "Shows the Ruby, Crystals and role benefits awarded to server boosters.", "No arguments; available to members.", ":boost"),
             (":vipclaim", "Claims the VIP crystal reward.", "No arguments; requires the VIP role. One claim every 14 days.", ":vipclaim"),
             (":link", "Shows the Stumble Guys account-linking setup; it does not link the account directly.", "Go to <#1542227301322719314>, press the account-link button, then follow the modal and DM screenshot instructions.", ":link"),
             (":supporter", "Shows or starts the Supporter verification flow and opens a staff ticket when needed.", "[@user] optional member mention; defaults to yourself.", ":supporter"),
@@ -8561,7 +8685,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":announcement (aliases :announce, :official-announcement, :annuncio)", "Publishes the official five-embed server announcement with clickable channel and role mentions plus a persistent language button.", "No arguments; owner access.", ":announcement"),
             (":reset-all", "Permanently clears profiles, points, ranks, tournaments, teams and event data after confirmation.", "No arguments; administrator access. The confirmation action is irreversible.", ":reset-all"),
             (":reset-staff-week (alias :reset_staff_week)", "Resets the weekly staff/hoster tournament counters.", "No arguments; staff/admin access.", ":reset-staff-week"),
-            (":clear (alias :purge)", "Elimina i messaggi recenti del canale.", "<quantità> da 1 a 100; richiede un ruolo Staff.", ":clear 25"),
+            (":clear (alias :purge)", "Deletes recent messages from the current channel.", "<amount> from 1 to 100; staff access.", ":clear 25"),
         ],
     ]
 
@@ -8962,8 +9086,7 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
             "not miss it.\n\n"
             "📨 **Entry Requirement:** A minimum of **1 invite** is required to "
             "participate in tournaments.\n\n"
-            "Vogliamo fare crescere questa community e ci serve il vostro aiuto! "
-            "🌱✨"
+            "Help us grow this community and make it even better! 🌱✨"
         ),
     },
     {
@@ -9082,7 +9205,7 @@ async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
     return _build_announcement_embeds(parsed)
 
 
-class SetTongueModal(Modal, title="🌐 Set Language / Cambia Lingua"):
+class SetTongueModal(Modal, title="🌐 Set Language"):
     language = TextInput(
         label="Enter your language:",
         placeholder="Italian, English, Spanish, Deutsch...",
@@ -9119,7 +9242,7 @@ class OfficialAnnouncementView(View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="🌐 Set Language / Cambia Lingua",
+        label="🌐 Set Language",
         style=discord.ButtonStyle.primary,
         custom_id="set_tongue_btn",
     )
@@ -9342,17 +9465,17 @@ class SGLinkChannelView(View):
 async def link_cmd(ctx, nome_personalizzato: str = None):
     if nome_personalizzato:
         return await ctx.send(
-                "🔁 Per cambiare il nome Stumble Guys devi usare il pulsante "
-                "nel canale link, inserire di nuovo il nome e inviare una nuova "
-                "foto del menu di gioco con la skin visibile. Lo staff dovrà "
-                "verificare nuovamente l'account.",
+                "🔁 To change your Stumble Guys name, use the button in the link "
+                "channel, enter the new name and send a new screenshot of the "
+                "in-game menu with the equipped skin visible. Staff will verify "
+                "the account again.",
             delete_after=8.0,
         )
     embed = discord.Embed(
         title="🔗 Link your Stumble Guys account",
         description=(
             "Want to receive **real Stumble Guys Gems** by winning a **Big Tournament**? 💎\n\n"
-            "**Come funziona:**\n"
+            "**How it works:**\n"
             "① Press **Link my SG account**\n"
             "② Enter your in-game name\n"
             "③ You will receive a DM to send your screenshot\n"
@@ -9831,8 +9954,8 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
                 embed=build_drop_embed(drop, ended=remaining == 0),
                 view=self)
             await interaction.followup.send(
-                f"✅ Hai reclamato **{prize}**! "
-                f"{'Il drop è terminato.' if remaining == 0 else f'Restano {remaining} posti.'}",
+                f"✅ You claimed **{prize}**! "
+                f"{'The drop has ended.' if remaining == 0 else f'{remaining} spot(s) remaining.'}",
                 ephemeral=True,
             )
 
@@ -10951,7 +11074,7 @@ async def stumble_top(ctx):
         description="\n\n".join(lines) or "No data available yet.",
         color=discord.Color.gold()
     )
-    em.set_footer(text=f"Top per vittorie 1v1 + Stumble Machine · PCF™")
+    em.set_footer(text="Top 1v1 wins + Stumble Machine · PCF™")
     em.set_image(url=STUMBLE_IMG)
     await ctx.send(embed=em)
 
