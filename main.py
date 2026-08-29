@@ -468,7 +468,7 @@ E_CRYSTAL = EMOJIS["crystal"]
 E_RUBY    = EMOJIS["ruby"]
 E_XP      = "<:xp:1543345017173844049>"
 E_RP      = "<:rp:1543349903042814044>"
-E_CROWN   = "<:stumble_guys_crown:1505322344338427986>"
+E_CROWN   = "<:crownsg:1543389477114871909>"
 E_TROPHY  = EMOJIS["trophy"]
 E_NO_RANK = EMOJIS["rank_no_rank"]
 E_GOLD    = EMOJIS["gold_medal"]
@@ -2641,7 +2641,7 @@ BOOSTER_PERK_ROLE_NAME      = "[W]"
 BIO_SUPPORTER_ROLE_NAME     = "[S]"
 VIP_ROLE_NAME               = "VIP"
 SLOT_MACHINE_MIN_BET = 200
-SLOT_EMOJIS = ["👑", "💎", "🍒", "🐔"]
+SLOT_EMOJIS = [E_CROWN, "💎", "🍒", "🐔"]
 
 # ── In-memory: duels ───────────────────────────────────────────────────────
 active_duels: dict = {}
@@ -2995,34 +2995,56 @@ def grant_prize(
 # ==========================================
 # 📊 LEADERBOARD & BRACKET
 # ==========================================
-def build_leaderboard_embeds() -> list:
-    profiles = list(db["profiles"].values())
+def _leaderboard_username(user_id: str, profile: dict) -> str:
+    """Return a Discord handle, never a server nickname or numeric ID."""
+    try:
+        numeric_id = int(user_id)
+    except (TypeError, ValueError):
+        numeric_id = None
+
+    user = bot.get_user(numeric_id) if numeric_id is not None else None
+    if user is None and numeric_id is not None:
+        guild = bot.get_guild(SERVER_ID)
+        user = guild.get_member(numeric_id) if guild else None
+    username = getattr(user, "name", None) or profile.get("username")
+    if not username:
+        return "@unknown-user"
+    return f"@{str(username).lstrip('@')}"
+
+
+def build_leaderboard_embeds(updated_at: datetime | None = None) -> list:
+    profiles = list(db["profiles"].items())
     embeds   = []
     categories = [
-        (f"{E_RP} Top 10 — Ranked Points",  "punti",    E_RP,      discord.Color.blurple()),
-        (f"{E_RUBY} Top 10 — Ruby",          "rubini",   E_RUBY,    discord.Color.red()),
-        (f"{E_CRYSTAL} Top 10 — Crystals",   "cristalli",E_CRYSTAL, discord.Color.teal()),
-        (f"{E_CROWN} Top 10 — Tournaments Won", "tornei_v", E_CROWN,   discord.Color.gold()),
-        (f"{E_TROPHY} Top 10 — Events Won",     "eventi_v", E_TROPHY,  discord.Color.purple()),
-        (f"{E_LEVEL} Top 10 — Chat Levels",     "level_msg",E_LEVEL,   discord.Color.from_rgb(255, 165, 0)),
+        (f"{E_CROWN} {E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
+        (f"{E_CROWN} {E_RUBY} Top 10 — Ruby", "rubini", E_RUBY, discord.Color.red()),
+        (f"{E_CROWN} {E_CRYSTAL} Top 10 — Crystals", "cristalli", E_CRYSTAL, discord.Color.teal()),
+        (f"{E_CROWN} Top 10 — 1v1 Wins", "duel_wins", E_CROWN, discord.Color.gold()),
+        (f"{E_CROWN} Top 10 — Tournaments Won", "tornei_v", E_CROWN, discord.Color.gold()),
+        (f"{E_CROWN} {E_TROPHY} Top 10 — Events Won", "eventi_v", E_TROPHY, discord.Color.purple()),
+        (f"{E_CROWN} {E_LEVEL} Top 10 — Chat Levels", "level_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
     ]
+    updated_at = updated_at or datetime.now().astimezone()
+    updated_label = updated_at.strftime("%d/%m/%Y %H:%M:%S")
     for title, key, icon, color in categories:
-        ranked = sorted(profiles, key=lambda p: p.get(key, 0), reverse=True)[:10]
+        ranked = sorted(profiles, key=lambda item: item[1].get(key, 0), reverse=True)[:10]
         desc   = ""
         medals = ["🥇", "🥈", "🥉"]
-        for i, p in enumerate(ranked):
+        for i, (uid, p) in enumerate(ranked):
             medal = medals[i] if i < 3 else f"**#{i+1}**"
             rk    = get_rank_emoji(p.get("punti", 0))
             val   = p.get(key, 0)
+            username = _leaderboard_username(uid, p)
             if key == "level_msg":
                 xp_tot = p.get("xp_msg", 0)
-                desc += f"{medal} {rk} **{p['name']}** — {icon} Lv.**{val}** `({xp_tot} XP)`\n"
+                desc += f"{medal} {rk} **{username}** — {icon} Lv.**{val}** `({xp_tot} XP)`\n\n"
             else:
-                desc += f"{medal} {rk} **{p['name']}** — {icon} {format_num(val)}\n"
+                desc += f"{medal} {rk} **{username}** — {icon} {format_num(val)}\n\n"
         if not desc:
             desc = "No data yet."
         embed = discord.Embed(title=title, description=desc, color=color)
-        embed.set_footer(text=f"Updated: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        embed.timestamp = updated_at
+        embed.set_footer(text=f"Last updated: {updated_label}")
         embeds.append(embed)
     return embeds
 
@@ -3149,25 +3171,25 @@ def generate_bracket_embeds() -> list[tuple]:
                 s1 = f"~~{d1}~~" if p1 in losers else (f"**{d1}**" if p1 == win else d1)
                 s2 = f"~~{d2}~~" if p2 in losers else (f"**{d2}**" if p2 == win else d2)
                 s3 = f"~~{d3}~~" if p3 in losers else (f"**{d3}**" if p3 == win else d3)
-                match_lines.append(f"✅ **Match #{m_id}** — FFA Done\n　{s1} ⚔️ {s2} ⚔️ {s3}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"✅ **Match #{m_id}** — FFA Done\n　{s1} ⚔️ {s2} ⚔️ {s3}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
             elif in_prog:
-                match_lines.append(f"💥 **Match #{m_id}** — FFA In Progress\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"💥 **Match #{m_id}** — FFA In Progress\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n\n")
             else:
-                match_lines.append(f"⏳ **Match #{m_id}** — FFA\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"⏳ **Match #{m_id}** — FFA\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n\n")
         else:
             d2 = display_with_rank(p2) if p2 != "BYE" else "~~BYE~~"
             if p2 == "BYE":
-                match_lines.append(f"✅ **Match #{m_id}** — Done\n　**{d1}** ⚔️ {d2}\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"✅ **Match #{m_id}** — Done\n　**{d1}** ⚔️ {d2}\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n\n")
             elif win:
                 los = m_data.get("loser")
                 s1  = f"~~{d1}~~" if los == p1 else f"**{d1}**"
                 s2  = f"~~{d2}~~" if los == p2 else f"**{d2}**"
                 dw  = display_with_rank(win)
-                match_lines.append(f"✅ **Match #{m_id}** — Done\n　{s1} ⚔️ {s2}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"✅ **Match #{m_id}** — Done\n　{s1} ⚔️ {s2}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
             elif in_prog:
-                match_lines.append(f"💥 **Match #{m_id}** — In Progress\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"💥 **Match #{m_id}** — In Progress\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
             else:
-                match_lines.append(f"⏳ **Match #{m_id}**\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n")
+                match_lines.append(f"⏳ **Match #{m_id}**\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
 
     if not match_lines:
         match_lines = ["*No matches yet.*\n"]
@@ -3200,7 +3222,7 @@ def generate_bracket_embeds() -> list[tuple]:
 
         pg_label = f" (Page {pg+1}/{total_pgs})" if total_pgs > 1 else ""
         embed = discord.Embed(
-            title=f"🏆 Tournament — {modalita}{pg_label}",
+            title=f"{E_CROWN} Tournament — {modalita}{pg_label}",
             description=desc[:4096],
             color=discord.Color.gold()
         )
@@ -3841,26 +3863,30 @@ async def twitch_live_dashboard():
 # ==========================================
 # 🔄 BACKGROUND TASKS
 # ==========================================
-@tasks.loop(hours=1)
+@tasks.loop(minutes=5)
 async def auto_leaderboard():
-    cid = db.get("leaderboard_channel_id")
-    if not cid:
-        return
-    channel = bot.get_channel(cid)
-    if not channel:
-        return
-    embeds = build_leaderboard_embeds()
-    for mid in db.get("leaderboard_msg_ids", []):
-        try:
-            msg = await channel.fetch_message(mid)
-            await msg.delete()
-        except Exception:
-            pass
-    new_ids = []
-    for embed in embeds:
-        m = await channel.send(embed=embed)
-        new_ids.append(m.id)
-    db["leaderboard_msg_ids"] = new_ids
+    try:
+        cid = db.get("leaderboard_channel_id")
+        if not cid:
+            return
+        channel = bot.get_channel(cid)
+        if not channel:
+            return
+        embeds = build_leaderboard_embeds(updated_at=datetime.now().astimezone())
+        for mid in db.get("leaderboard_msg_ids", []):
+            try:
+                msg = await channel.fetch_message(mid)
+                await msg.delete()
+            except Exception:
+                pass
+        new_ids = []
+        for embed in embeds:
+            message = await channel.send(embed=embed)
+            new_ids.append(message.id)
+        db["leaderboard_msg_ids"] = new_ids
+        save_db()
+    except Exception as exc:
+        print(f"[LEADERBOARD] Refresh failed: {type(exc).__name__}: {exc}")
 
 @tasks.loop(minutes=5)
 async def auto_save():
@@ -6470,7 +6496,7 @@ async def team_winner(ctx):
 async def set_leaderboard(ctx, channel: discord.TextChannel):
     db["leaderboard_channel_id"] = channel.id
     save_db()
-    await ctx.send(f"✅ Leaderboard set to {channel.mention}. It will update every hour.")
+    await ctx.send(f"✅ Leaderboard set to {channel.mention}. It will update every 5 minutes.")
     await auto_leaderboard()
 
 @bot.command(name="setup-result", aliases=["setup_result"])
