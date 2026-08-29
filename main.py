@@ -6760,7 +6760,7 @@ def _manager_or_admin_access(member) -> bool:
 
 @bot.tree.command(
     name="stumble-top",
-    description="Show the Ranked Points, Ruby and Crystals leaderboards.",
+    description="Show only the 1v1 leaderboard.",
 )
 async def stumble_top_slash(interaction: discord.Interaction):
     if interaction.guild is None or not _manager_or_admin_access(interaction.user):
@@ -9328,7 +9328,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
         ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
         ":1v1": "Invia a un altro membro una sfida 1v1 gratuita in una stanza privata, senza trasferimenti di valuta.",
-        ":stumble-top": "Mostra le classifiche principali di Ranked Points, Ruby e Cristalli.",
+        ":stumble-top": "Mostra esclusivamente la classifica 1v1 con partite giocate, vittorie e Ruby ottenuti.",
         ":1v1-leaderboard": "Mostra la classifica separata delle vittorie 1v1.",
         ":set-1v1-leaderboard": "Imposta il canale separato per la classifica automatica delle vittorie 1v1.",
         ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
@@ -9389,7 +9389,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":myteam": "आपकी टीम, उसके नेता और सदस्यों को दिखाता है।",
         ":teamleave": "आपको आपकी वर्तमान टीम से निकालता है।",
         ":1v1": "दूसरे सदस्य को 1v1 चुनौती भेजता है।",
-        ":stumble-top": "Ranked Points, Ruby और Crystals की मुख्य सर्वर लीडरबोर्ड दिखाता है।",
+        ":stumble-top": "केवल 1v1 लीडरबोर्ड दिखाता है, जिसमें खेले गए मैच, जीत और अर्जित Ruby शामिल हैं।",
         ":1v1-leaderboard": "अलग 1v1 जीत लीडरबोर्ड दिखाता है।",
         ":set-1v1-leaderboard": "अलग स्वचालित 1v1 जीत लीडरबोर्ड चैनल सेट करता है।",
         ":boost": "सर्वर boost के Ruby, Crystals और role पुरस्कार दिखाता है।",
@@ -9966,11 +9966,16 @@ class SGLinkVerifyView(View):
         linked_role = guild.get_role(LINKED_ROLE_ID)
         linked_role_error = None
         if linked_role is None:
-            linked_role_error = f"Linked role {LINKED_ROLE_ID} was not found in guild {guild.id}"
+            linked_role_error = (
+                f"Linked role {LINKED_ROLE_ID} was not found in guild {guild.id}"
+            )
             print(f"[sg_verify role] {linked_role_error}")
         else:
             try:
-                await member.add_roles(linked_role, reason="Staff approved SG account link")
+                await member.add_roles(
+                    guild.get_role(LINKED_ROLE_ID),
+                    reason="Staff approved SG account link",
+                )
             except discord.Forbidden as exc:
                 linked_role_error = (
                     f"Bot lacks permission to assign Linked role {LINKED_ROLE_ID}: {exc}"
@@ -11667,7 +11672,7 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
 
 
 # ==========================================
-# 🏆 :stumble-top ECONOMY LEADERBOARD
+# ⚔️ :stumble-top 1v1 LEADERBOARD
 # ==========================================
 
 @bot.command(name="stumble-top", aliases=["stumbletop"])
