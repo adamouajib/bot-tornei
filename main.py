@@ -5045,34 +5045,37 @@ class TourRegisterView(View):
 
     @discord.ui.button(label="✅ Register 0/32", style=discord.ButtonStyle.green, custom_id="reg_btn")
     async def register(self, interaction: discord.Interaction, button: Button):
+        # Invite reconciliation calls Discord's invite endpoint and can take
+        # longer than the initial interaction response window.
+        await interaction.response.defer(ephemeral=True)
         t = db.get("tour")
         if not t:
-            return await interaction.response.send_message("❌ No active tournament.", ephemeral=True)
+            return await interaction.followup.send("❌ No active tournament.", ephemeral=True)
         modalita = t.get("modalita", "1V1")
         uid      = str(interaction.user.id)
         if uid not in t["players"]:
             invited = await _has_invited_member(interaction.guild, interaction.user.id)
             if invited is None:
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     "❌ I cannot verify tournament eligibility right now. "
                     "Staff must grant the bot **Manage Server** permission "
                     "so invite tracking can work.",
                     ephemeral=True,
                 )
             if not invited:
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     _tournament_invite_requirement_message(),
                     ephemeral=True,
                 )
         if modalita in TEAM_MODES:
             user_team = next((tm for tm in db["teams"] if uid in tm["ids"]), None)
             if not user_team:
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     f"❌ **{modalita}** tournaments require a team. Use `:team @p2 [@p3...]` first.",
                     ephemeral=True)
         if uid not in t["players"]:
             if len(t["players"]) >= t["max"]:
-                return await interaction.response.send_message("❌ Tournament is full!", ephemeral=True)
+                return await interaction.followup.send("❌ Tournament is full!", ephemeral=True)
             # Big-tournament: require SG verified account
             if t.get("is_big"):
                 has_sg = any(r.id == SG_VERIFIED_ROLE_ID for r in interaction.user.roles)
@@ -5081,7 +5084,7 @@ class TourRegisterView(View):
                         lambda c: c.name.lower() == "link", interaction.guild.channels
                     ) if interaction.guild else None
                     destination = link_ch.mention if link_ch else "#link"
-                    return await interaction.response.send_message(
+                    return await interaction.followup.send(
                         f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
                         f"Connect your account directly in the {destination} channel.",
                         ephemeral=True)
@@ -5093,7 +5096,7 @@ class TourRegisterView(View):
         count = len(t["players"])
         max_p = t["max"]
         save_db()
-        await interaction.response.send_message(f"✅ Registered! You are participant **#{count}/{max_p}**.", ephemeral=True)
+        await interaction.followup.send(f"✅ Registered! You are participant **#{count}/{max_p}**.", ephemeral=True)
         await self._refresh(interaction)
         # Auto-generate bracket when all slots fill
         if count >= max_p and not t.get("matches"):
