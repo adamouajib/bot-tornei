@@ -1025,7 +1025,13 @@ async def _award_invite_role(
         await member.add_roles(role, reason=reason)
         print(f"[invite tracker] Awarded {INVITE_ROLE_NAME} to {member} in {guild.id}")
         return True
-    except (discord.Forbidden, discord.HTTPException) as exc:
+    except discord.Forbidden:
+        print(
+            "[invite tracker WARNING] Cannot assign role '1 Invite' - Ensure "
+            "the bot's role is placed ABOVE '1 Invite' in Server Settings > Roles."
+        )
+        return False
+    except discord.HTTPException as exc:
         print(f"[invite tracker] Could not award {INVITE_ROLE_NAME} to {inviter_id}: {exc}")
         return False
 
@@ -1091,7 +1097,7 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
 
 
 async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | None:
-    """Check the role or persisted invite total, repairing missed role awards."""
+    """Verify live invite usage on registration and repair the role if needed."""
     if guild.id != SERVER_ID:
         return False
     role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
@@ -1104,53 +1110,45 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
     if member is not None and role is not None and role in member.roles:
         return True
 
-    profile = db.get("profiles", {}).get(str(member_id))
-    if profile is not None and int(profile.get("invite_count", 0) or 0) >= 1:
-        if role is None or member is None or role not in member.roles:
+    # Do not rely on a stale role or cache: verify every invite link created by
+    # this user at click time.
+    snapshot = await _invite_snapshot(guild)
+    if snapshot is None:
+        profile = db.get("profiles", {}).get(str(member_id))
+        if profile is not None and int(profile.get("invite_count", 0) or 0) >= 1:
             await _award_invite_role(
                 guild,
                 member_id,
                 reason="Repair invite eligibility during tournament registration",
             )
-        return True
-
-    # A live reconciliation repairs users whose historical invite was recorded
-    # by Discord but whose role assignment failed during a previous join.
-    snapshot = await _invite_snapshot(guild)
-    if snapshot is None:
+            return True
         return None
+
     async with _invite_cache_lock:
         bot.invite_cache[guild.id] = snapshot
-    await _record_invite_totals(guild, snapshot)
-    for inviter_id, data in (
-        (int(data["inviter_id"]), data)
+
+    total_uses = sum(
+        int(data.get("uses", 0) or 0)
         for data in snapshot.values()
         if data.get("inviter_id") is not None
-    ):
-        inviter_profile = db.get("profiles", {}).get(str(inviter_id))
-        if (
-            inviter_profile is not None
-            and int(inviter_profile.get("invite_count", 0) or 0) >= 1
-        ):
-            await _award_invite_role(
-                guild,
-                inviter_id,
-                reason="Repair invite eligibility during registration sync",
-            )
-
-    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
-    member = member or guild.get_member(member_id)
-    profile = db.get("profiles", {}).get(str(member_id))
-    return bool(
-        (member is not None and role is not None and role in member.roles)
-        or (
-            profile is not None
-            and int(profile.get("invite_count", 0) or 0) >= 1
-        )
+        and int(data["inviter_id"]) == member_id
     )
+    if total_uses >= 1:
+        await _record_invite_totals(guild, snapshot)
+        await _award_invite_role(
+            guild,
+            member_id,
+            reason="Grant invite eligibility during tournament registration",
+        )
+        return True
+
+    return False
 
 def _tournament_invite_requirement_message() -> str:
-    return "❌ You need at least 1 server invite to register for tournaments!"
+    return (
+        "❌ You haven't invited anyone to the server yet!! "
+        "Invite just one person to register now!."
+    )
 
 db = {
     "profiles": {},
