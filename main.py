@@ -180,6 +180,7 @@ class SQLiteProfileStore(MutableMapping):
 def _normalise_legacy_profile(profile: dict, username: str) -> dict:
     normalized = dict(profile or {})
     normalized.setdefault("name", username)
+    normalized.setdefault("username", normalized.get("name", username))
     for key in (
         "punti", "tornei_v", "eventi_v", "gemme", "rubini", "cristalli",
         "xp_msg", "level_msg", "staff_tours", "staff_matches", "staff_rounds",
@@ -199,6 +200,8 @@ def _legacy_state(data: dict) -> dict:
     state = {
         "leaderboard_channel_id": data.get("leaderboard_channel_id"),
         "leaderboard_msg_ids": data.get("leaderboard_msg_ids", []),
+        "duel_leaderboard_channel_id": data.get("duel_leaderboard_channel_id"),
+        "duel_leaderboard_msg_ids": data.get("duel_leaderboard_msg_ids", []),
         "welcome_channel_id": data.get("welcome_channel_id"),
         "level_channel_id": data.get("level_channel_id"),
         "supporter_channel_id": data.get("supporter_channel_id"),
@@ -284,7 +287,9 @@ def _persist_state() -> None:
     state = {
         key: db.get(key)
         for key in (
-            "leaderboard_channel_id", "leaderboard_msg_ids", "welcome_channel_id",
+            "leaderboard_channel_id", "leaderboard_msg_ids",
+            "duel_leaderboard_channel_id", "duel_leaderboard_msg_ids",
+            "welcome_channel_id",
             "level_channel_id", "supporter_channel_id", "supporter_msg_id",
             "result_channel_id", "log_channel_id",
             "canale_dashboard_twitch", "twitch_live", "supporters", "gems",
@@ -725,7 +730,8 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
 # prevents a command that forgot a decorator (or only checked a Discord
 # permission) from becoming available to ordinary community members.
 OWNER_COMMANDS = {
-    "set-log", "set-welcome", "set-lvl", "set-leaderboard", "setup-result",
+    "set-log", "set-welcome", "set-lvl", "set-leaderboard",
+    "set-1v1-leaderboard", "setup-result",
     "reset-all", "pex", "setup", "big-tour",
     "chest", "announcement",
 }
@@ -733,7 +739,8 @@ ADMIN_COMMANDS = {
     "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
-    "linked", "leaderboard", "gems", "stumble-top", "set-tw", "setup-shop",
+    "linked", "leaderboard", "gems", "stumble-top", "1v1-leaderboard",
+    "set-tw", "setup-shop",
     "set-perks", "setup-p", "set-p",
 }
 STAFF_COMMANDS = {
@@ -747,7 +754,10 @@ def _prefix_access_allowed(ctx) -> bool:
     if name in OWNER_COMMANDS:
         return ctx.author.id in OWNER_USER_IDS
     if name in ADMIN_COMMANDS:
-        return _has_admin_access(ctx.author)
+        return (
+            _has_admin_access(ctx.author)
+            or any(role.id in MANAGER_ROLE_IDS for role in ctx.author.roles)
+        )
     if name in STAFF_COMMANDS:
         return (
             ctx.author.id in OWNER_USER_IDS
@@ -1249,6 +1259,8 @@ db = {
     "teams": [],
     "leaderboard_channel_id": None,
     "leaderboard_msg_ids": [],
+    "duel_leaderboard_channel_id": None,
+    "duel_leaderboard_msg_ids": [],
     "welcome_channel_id": None,
     "level_channel_id": None,
     "supporter_channel_id": None,
@@ -2464,7 +2476,7 @@ def build_ai_system_instruction() -> str:
         }
         manager_commands = {
             "giveaway", "set-rank", "add-gems", "linked", "leaderboard",
-            "gems", "stumble-top",
+            "gems", "stumble-top", "1v1-leaderboard",
         }
         admin_commands = {
             "warn", "time", "give", "reset", "add-punti", "big-event",
@@ -2641,7 +2653,7 @@ BOOSTER_PERK_ROLE_NAME      = "[W]"
 BIO_SUPPORTER_ROLE_NAME     = "[S]"
 VIP_ROLE_NAME               = "VIP"
 SLOT_MACHINE_MIN_BET = 200
-SLOT_EMOJIS = [E_CROWN, "💎", "🍒", "🐔"]
+SLOT_EMOJIS = ["⭐", "💎", "🍒", "🐔"]
 
 # ── In-memory: duels ───────────────────────────────────────────────────────
 active_duels: dict = {}
@@ -2803,9 +2815,15 @@ async def _ensure_perk_role(
 def get_profile(user_id, username):
     uid = str(user_id)
     profiles = db["profiles"]
+    cached_user = bot.get_user(int(uid)) if uid.isdigit() else None
+    if cached_user is None and uid.isdigit():
+        cached_guild = bot.get_guild(SERVER_ID)
+        cached_user = cached_guild.get_member(int(uid)) if cached_guild else None
+    canonical_username = getattr(cached_user, "name", None) or str(username)
     if uid not in profiles:
         profiles[uid] = {
-            "name": username,
+            "name": canonical_username,
+            "username": canonical_username,
             "punti": 0,
             "tornei_v": 0,
             "eventi_v": 0,
@@ -2836,12 +2854,15 @@ def get_profile(user_id, username):
         "slot_ruby_won": 0,
         "duel_wins": 0,
         "boost_count": 0,
+        "username": "",
     }
     for key, default in defaults.items():
         if key not in prof:
             prof[key] = default
-    if prof.get("name") != username:
-        prof["name"] = username
+    if prof.get("name") != canonical_username:
+        prof["name"] = canonical_username
+    if prof.get("username") != canonical_username:
+        prof["username"] = canonical_username
     return prof
 
 def parse_orario_timestamp(orario_str: str):
@@ -2939,12 +2960,12 @@ def format_tournament_prizes(prize_text: str) -> str:
 
 def _record_gems(member: discord.Member, amount: int) -> None:
     """Keep both the profile balance and the richer gems leaderboard in sync."""
-    prof = get_profile(member.id, member.display_name)
+    prof = get_profile(member.id, member.name)
     prof["gemme"] = prof.get("gemme", 0) + amount
     uid = str(member.id)
     gems = db.setdefault("gems", {})
-    row = gems.setdefault(uid, {"name": member.display_name, "sg_name": "", "total": 0})
-    row["name"] = member.display_name
+    row = gems.setdefault(uid, {"name": member.name, "sg_name": "", "total": 0})
+    row["name"] = member.name
     row["sg_name"] = db.get("sg_links", {}).get(uid, prof.get("sg_name", "")) or row.get("sg_name", "")
     row["total"] = row.get("total", 0) + amount
 
@@ -2966,7 +2987,7 @@ def grant_prize(
         prize_text or "",
         flags=re.IGNORECASE,
     )
-    prof = get_profile(member.id, member.display_name)
+    prof = get_profile(member.id, member.name)
     for match in reward_matches:
         amount_text, currency_text = match.groups()
         try:
@@ -2995,54 +3016,110 @@ def grant_prize(
 # ==========================================
 # 📊 LEADERBOARD & BRACKET
 # ==========================================
-def _leaderboard_username(user_id: str, profile: dict) -> str:
-    """Return a Discord handle, never a server nickname or numeric ID."""
-    try:
-        numeric_id = int(user_id)
-    except (TypeError, ValueError):
-        numeric_id = None
+MAIN_LEADERBOARD_CATEGORIES = [
+    (f"{E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
+    (f"{E_RUBY} Top 10 — Ruby", "rubini", E_RUBY, discord.Color.red()),
+    (f"{E_CRYSTAL} Top 10 — Crystals", "cristalli", E_CRYSTAL, discord.Color.teal()),
+]
+DUEL_LEADERBOARD_CATEGORIES = [
+    ("⚔️ Top 10 — 1v1 Wins", "duel_wins", "⚔️", discord.Color.gold()),
+]
+FULL_LEADERBOARD_CATEGORIES = [
+    *MAIN_LEADERBOARD_CATEGORIES,
+    *DUEL_LEADERBOARD_CATEGORIES,
+    ("🏆 Top 10 — Tournaments Won", "tornei_v", E_TROPHY, discord.Color.gold()),
+    (f"{E_TROPHY} Top 10 — Events Won", "eventi_v", E_TROPHY, discord.Color.purple()),
+    (f"{E_LEVEL} Top 10 — Chat Levels", "level_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
+]
 
-    user = bot.get_user(numeric_id) if numeric_id is not None else None
-    if user is None and numeric_id is not None:
-        guild = bot.get_guild(SERVER_ID)
-        user = guild.get_member(numeric_id) if guild else None
-    username = getattr(user, "name", None) or profile.get("username")
+
+def _stored_leaderboard_username(profile: dict) -> str | None:
+    username = profile.get("username") or profile.get("name")
     if not username:
-        return "@unknown-user"
-    return f"@{str(username).lstrip('@')}"
+        return None
+    return str(username).lstrip("@").strip() or None
 
 
-def build_leaderboard_embeds(updated_at: datetime | None = None) -> list:
-    profiles = list(db["profiles"].items())
-    embeds   = []
-    categories = [
-        (f"{E_CROWN} {E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
-        (f"{E_CROWN} {E_RUBY} Top 10 — Ruby", "rubini", E_RUBY, discord.Color.red()),
-        (f"{E_CROWN} {E_CRYSTAL} Top 10 — Crystals", "cristalli", E_CRYSTAL, discord.Color.teal()),
-        (f"{E_CROWN} Top 10 — 1v1 Wins", "duel_wins", E_CROWN, discord.Color.gold()),
-        (f"{E_CROWN} Top 10 — Tournaments Won", "tornei_v", E_CROWN, discord.Color.gold()),
-        (f"{E_CROWN} {E_TROPHY} Top 10 — Events Won", "eventi_v", E_TROPHY, discord.Color.purple()),
-        (f"{E_CROWN} {E_LEVEL} Top 10 — Chat Levels", "level_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
-    ]
+async def _leaderboard_profiles() -> list[tuple[str, dict, str]]:
+    """Resolve current server members and return usernames with DB fallback.
+
+    A cached member is used when available, but every uncached ID is resolved
+    through Discord before it is shown. A 404 means the account left the
+    configured server and is excluded; transient API failures retain the
+    username stored when the profile last changed.
+    """
+    guild = bot.get_guild(SERVER_ID)
+    resolved = []
+    for uid, profile in db["profiles"].items():
+        try:
+            numeric_id = int(uid)
+        except (TypeError, ValueError):
+            continue
+
+        member = guild.get_member(numeric_id) if guild else None
+        if guild and member is None:
+            try:
+                member = await guild.fetch_member(numeric_id)
+            except discord.NotFound:
+                continue
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[LEADERBOARD] Could not fetch member {numeric_id}: {exc}")
+
+        if member is None and guild is None:
+            try:
+                member = await bot.fetch_user(numeric_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[LEADERBOARD] Could not fetch user {numeric_id}: {exc}")
+
+        username = getattr(member, "name", None) or _stored_leaderboard_username(profile)
+        if not username:
+            continue
+        username = str(username).lstrip("@")
+        if profile.get("username") != username:
+            profile["username"] = username
+        if profile.get("name") != username:
+            profile["name"] = username
+        resolved.append((str(uid), profile, f"@{username}"))
+    return resolved
+
+
+async def build_leaderboard_embeds(
+    updated_at: datetime | None = None,
+    categories: list | None = None,
+) -> list:
+    profiles = await _leaderboard_profiles()
+    embeds = []
+    categories = MAIN_LEADERBOARD_CATEGORIES if categories is None else categories
     updated_at = updated_at or datetime.now().astimezone()
     updated_label = updated_at.strftime("%d/%m/%Y %H:%M:%S")
     for title, key, icon, color in categories:
-        ranked = sorted(profiles, key=lambda item: item[1].get(key, 0), reverse=True)[:10]
-        desc   = ""
+        ranked = sorted(
+            profiles,
+            key=lambda item: item[1].get(key, 0),
+            reverse=True,
+        )[:10]
+        desc = ""
         medals = ["🥇", "🥈", "🥉"]
-        for i, (uid, p) in enumerate(ranked):
+        for i, (_uid, profile, username) in enumerate(ranked):
             medal = medals[i] if i < 3 else f"**#{i+1}**"
-            rk    = get_rank_emoji(p.get("punti", 0))
-            val   = p.get(key, 0)
-            username = _leaderboard_username(uid, p)
+            rank_emoji = get_rank_emoji(profile.get("punti", 0))
+            value = profile.get(key, 0)
             if key == "level_msg":
-                xp_tot = p.get("xp_msg", 0)
-                desc += f"{medal} {rk} **{username}** — {icon} Lv.**{val}** `({xp_tot} XP)`\n\n"
+                xp_total = profile.get("xp_msg", 0)
+                desc += (
+                    f"{medal} {rank_emoji} **{username}** — {icon} "
+                    f"Lv.**{value}** `({xp_total} XP)`\n\n"
+                )
             else:
-                desc += f"{medal} {rk} **{username}** — {icon} {format_num(val)}\n\n"
-        if not desc:
-            desc = "No data yet."
-        embed = discord.Embed(title=title, description=desc, color=color)
+                desc += (
+                    f"{medal} {rank_emoji} **{username}** — {icon} "
+                    f"{format_num(value)}\n\n"
+                )
+        embed = discord.Embed(
+            title=title,
+            description=desc or "No data yet.",
+            color=color,
+        )
         embed.timestamp = updated_at
         embed.set_footer(text=f"Last updated: {updated_label}")
         embeds.append(embed)
@@ -3872,7 +3949,10 @@ async def auto_leaderboard():
         channel = bot.get_channel(cid)
         if not channel:
             return
-        embeds = build_leaderboard_embeds(updated_at=datetime.now().astimezone())
+        embeds = await build_leaderboard_embeds(
+            updated_at=datetime.now().astimezone(),
+            categories=MAIN_LEADERBOARD_CATEGORIES,
+        )
         for mid in db.get("leaderboard_msg_ids", []):
             try:
                 msg = await channel.fetch_message(mid)
@@ -3887,6 +3967,36 @@ async def auto_leaderboard():
         save_db()
     except Exception as exc:
         print(f"[LEADERBOARD] Refresh failed: {type(exc).__name__}: {exc}")
+
+
+@tasks.loop(minutes=5)
+async def auto_duel_leaderboard():
+    try:
+        cid = db.get("duel_leaderboard_channel_id")
+        if not cid:
+            return
+        channel = bot.get_channel(cid)
+        if not channel:
+            return
+        embeds = await build_leaderboard_embeds(
+            updated_at=datetime.now().astimezone(),
+            categories=DUEL_LEADERBOARD_CATEGORIES,
+        )
+        for mid in db.get("duel_leaderboard_msg_ids", []):
+            try:
+                msg = await channel.fetch_message(mid)
+                await msg.delete()
+            except Exception:
+                pass
+        new_ids = []
+        for embed in embeds:
+            message = await channel.send(embed=embed)
+            new_ids.append(message.id)
+        db["duel_leaderboard_msg_ids"] = new_ids
+        save_db()
+    except Exception as exc:
+        print(f"[1V1 LEADERBOARD] Refresh failed: {type(exc).__name__}: {exc}")
+
 
 @tasks.loop(minutes=5)
 async def auto_save():
@@ -4162,6 +4272,8 @@ async def on_ready():
     await send_setup_notifications()
     if not auto_leaderboard.is_running():
         auto_leaderboard.start()
+    if not auto_duel_leaderboard.is_running():
+        auto_duel_leaderboard.start()
     if not auto_save.is_running():
         auto_save.start()
     if not check_supporters.is_running():
@@ -4748,7 +4860,7 @@ async def profile(ctx, member: discord.Member = None):
         value=f"{E_CRYSTAL} **{format_num(prof['cristalli'])}** Crystals · {E_RUBY} **{format_num(prof['rubini'])}** Ruby · {E_GEMS} **{format_num(prof.get('gemme', 0))}** Gems",
         inline=False)
     embed.add_field(name="🏅 Statistics",
-         value=f"{E_CROWN} **{prof['tornei_v']}** tournaments won · {E_TROPHY} **{prof['eventi_v']}** events won",
+         value=f"{E_TROPHY} **{prof['tornei_v']}** tournaments won · {E_TROPHY} **{prof['eventi_v']}** events won",
         inline=False)
     embed.add_field(name=f"{E_XP} Chat Level",
          value=f"Level **{level_msg}** · {format_num(prof.get('xp_msg',0))} {E_XP} XP",
@@ -4765,7 +4877,7 @@ GIVE_KEYS  = {
     "gemme":"gemme","gems":"gemme","gem":"gemme",
     "tornei":"tornei_v","eventi":"eventi_v",
 }
-GIVE_ICONS = {"punti":E_RP,"rubini":E_RUBY,"cristalli":E_CRYSTAL,"tornei_v":E_CROWN,"eventi_v":E_TROPHY}
+GIVE_ICONS = {"punti":E_RP,"rubini":E_RUBY,"cristalli":E_CRYSTAL,"tornei_v":E_TROPHY,"eventi_v":E_TROPHY}
 
 @bot.command(name="give", aliases=["add"])
 @admin_only()
@@ -6499,6 +6611,19 @@ async def set_leaderboard(ctx, channel: discord.TextChannel):
     await ctx.send(f"✅ Leaderboard set to {channel.mention}. It will update every 5 minutes.")
     await auto_leaderboard()
 
+
+@bot.command(name="set-1v1-leaderboard", aliases=["set_1v1_leaderboard", "set-duel-leaderboard"])
+@owner_only()
+async def set_1v1_leaderboard(ctx, channel: discord.TextChannel):
+    db["duel_leaderboard_channel_id"] = channel.id
+    save_db()
+    await ctx.send(
+        f"✅ 1v1 leaderboard set to {channel.mention}. "
+        "It will update every 5 minutes."
+    )
+    await auto_duel_leaderboard()
+
+
 @bot.command(name="setup-result", aliases=["setup_result"])
 @owner_only()
 async def setup_result(ctx, channel: discord.TextChannel):
@@ -6510,8 +6635,56 @@ async def setup_result(ctx, channel: discord.TextChannel):
 @bot.command(name="leaderboard")
 @manager_or_admin_only()
 async def leaderboard(ctx):
-    for embed in build_leaderboard_embeds():
+    for embed in await build_leaderboard_embeds(
+        categories=FULL_LEADERBOARD_CATEGORIES,
+    ):
         await ctx.send(embed=embed)
+
+
+def _manager_or_admin_access(member) -> bool:
+    return (
+        member.id in OWNER_USER_IDS
+        or any(
+            role.id in MANAGER_ROLE_IDS | ADMIN_ROLE_IDS
+            for role in getattr(member, "roles", ())
+        )
+        or getattr(getattr(member, "guild_permissions", None), "administrator", False)
+    )
+
+
+@bot.tree.command(
+    name="stumble-top",
+    description="Show the Ranked Points, Ruby and Crystals leaderboards.",
+)
+async def stumble_top_slash(interaction: discord.Interaction):
+    if interaction.guild is None or not _manager_or_admin_access(interaction.user):
+        return await interaction.response.send_message(
+            "❌ Managers and admins only.",
+            ephemeral=True,
+        )
+    embeds = await build_leaderboard_embeds(
+        categories=MAIN_LEADERBOARD_CATEGORIES,
+    )
+    await interaction.response.send_message(embed=embeds[0])
+    for embed in embeds[1:]:
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(
+    name="1v1-leaderboard",
+    description="Show the dedicated 1v1 wins leaderboard.",
+)
+async def duel_leaderboard_slash(interaction: discord.Interaction):
+    if interaction.guild is None or not _manager_or_admin_access(interaction.user):
+        return await interaction.response.send_message(
+            "❌ Managers and admins only.",
+            ephemeral=True,
+        )
+    embed = (await build_leaderboard_embeds(
+        categories=DUEL_LEADERBOARD_CATEGORIES,
+    ))[0]
+    await interaction.response.send_message(embed=embed)
+
 
 # ==========================================
 # ⚡ EVENTI FLASH
@@ -6933,7 +7106,9 @@ class ResetConfirmView(View):
         db["profiles"].clear()
         db["tour"] = None
         db["event"] = None
-        db["teams"] = []; db["leaderboard_msg_ids"] = []
+        db["teams"] = []
+        db["leaderboard_msg_ids"] = []
+        db["duel_leaderboard_msg_ids"] = []
         save_db()
         for child in self.children:
             child.disabled = True
@@ -8930,7 +9105,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ],
         [
             (":profile", "Shows a member’s rank, Ranked Points, Ruby, Crystals, Gems, level, W Items and tournament wins.", "[@user] optional member mention; defaults to the person using the command.", ":profile @Player"),
-            (":set-leaderboard (alias :set_leaderboard)", "Sets the channel where the automatic leaderboard message is posted or refreshed.", "<#channel> text-channel mention; admin access.", ":set-leaderboard #leaderboard"),
+            (":set-leaderboard (alias :set_leaderboard)", "Sets the channel for the automatic Ranked Points, Ruby and Crystals leaderboards.", "<#channel> text-channel mention; owner access.", ":set-leaderboard #leaderboard"),
+            (":set-1v1-leaderboard (aliases :set_1v1_leaderboard, :set-duel-leaderboard)", "Sets a separate channel for the automatic 1v1 wins leaderboard.", "<#channel> text-channel mention; owner access.", ":set-1v1-leaderboard #1v1-leaderboard"),
+            (":1v1-leaderboard (aliases :1v1_top, :duel-leaderboard, :duel-top)", "Shows the dedicated 1v1 wins leaderboard.", "No arguments; manager/admin access.", ":1v1-leaderboard"),
             (":hoster-lb (aliases :hosterlb, :hoster_lb, :staff-lb, :stafflb, :staff_lb, :classifica-staff)", "Shows the staff/hoster leaderboard for weekly and all-time hosted tournaments.", "No arguments.", ":hoster-lb"),
             (":give (alias :add)", "Gives a selected currency to a member.", "<@user> <ruby|crystals|ranked-points> <amount>; admin access.", ":give @Player ruby 5000"),
             (":add-rubini (alias :add_rubini)", "Adds Ruby to a member’s profile.", "<@user> <amount>; admin access.", ":add-rubini @Player 1000"),
@@ -8986,7 +9163,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     }
     admin_names = {
         "big-tour", "big-event", "big-start", "big-event-winner",
-        "leaderboard", "gems", "stumble-top", "set-leaderboard", "hoster-lb", "give", "add-rubini",
+        "leaderboard", "gems", "stumble-top", "1v1-leaderboard",
+        "set-leaderboard", "set-1v1-leaderboard", "hoster-lb", "give", "add-rubini",
         "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
         "setup-shop", "set-perks", "setup-p", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
@@ -9046,7 +9224,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
         ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
         ":1v1": "Invia a un altro membro una sfida 1v1 gratuita in una stanza privata, senza trasferimenti di valuta.",
-        ":stumble-top": "Mostra i giocatori migliori nella classifica dell’attività PCF™.",
+        ":stumble-top": "Mostra le classifiche principali di Ranked Points, Ruby e Cristalli.",
+        ":1v1-leaderboard": "Mostra la classifica separata delle vittorie 1v1.",
+        ":set-1v1-leaderboard": "Imposta il canale separato per la classifica automatica delle vittorie 1v1.",
         ":boost": "Spiega i premi ottenuti con i boost del server, inclusi Ruby, Cristalli e ruolo booster.",
         ":link": "Mostra il setup per collegare l’account Stumble Guys, ma non collega direttamente l’account. Vai nel canale <#1542227301322719314>, premi il pulsante di collegamento e segui le istruzioni del modal e del DM.",
         ":supporter": "Mostra o avvia la verifica Supporter; quando necessario apre un ticket staff per controllare il link del server nella bio di Discord.",
@@ -9105,7 +9285,9 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":myteam": "आपकी टीम, उसके नेता और सदस्यों को दिखाता है।",
         ":teamleave": "आपको आपकी वर्तमान टीम से निकालता है।",
         ":1v1": "दूसरे सदस्य को 1v1 चुनौती भेजता है।",
-        ":stumble-top": "Stumble गतिविधि के शीर्ष खिलाड़ियों की सूची दिखाता है।",
+        ":stumble-top": "Ranked Points, Ruby और Crystals की मुख्य सर्वर लीडरबोर्ड दिखाता है।",
+        ":1v1-leaderboard": "अलग 1v1 जीत लीडरबोर्ड दिखाता है।",
+        ":set-1v1-leaderboard": "अलग स्वचालित 1v1 जीत लीडरबोर्ड चैनल सेट करता है।",
         ":boost": "सर्वर boost के Ruby, Crystals और role पुरस्कार दिखाता है।",
         ":link": "Stumble Guys खाता जोड़ने और staff सत्यापन की प्रक्रिया शुरू करता है।",
         ":supporter": "Supporter सत्यापन दिखाता या शुरू करता है और ज़रूरत पर ticket खोलता है।",
@@ -9800,13 +9982,13 @@ async def linked_cmd(ctx):
 @bot.command(name="gems")
 @manager_or_admin_only()
 async def gems_cmd(ctx):
-    profiles = db.get("profiles", {})
+    profiles = await _leaderboard_profiles()
     gems_list = []
-    for uid, prof in profiles.items():
+    for uid, prof, username in profiles:
         g = prof.get("gemme", 0)
         if g > 0:
             sg = prof.get("sg_name", "") or "—"
-            gems_list.append((prof["name"], sg, g, int(uid)))
+            gems_list.append((username, sg, g))
     gems_list.sort(key=lambda x: x[2], reverse=True)
     embed = discord.Embed(
         title="💎 Stumble Guys Gems — Leaderboard",
@@ -9817,10 +9999,10 @@ async def gems_cmd(ctx):
     else:
         medals = ["🥇", "🥈", "🥉"]
         lines  = []
-        for i, (name, sg, gems, uid) in enumerate(gems_list[:20]):
+        for i, (username, sg, gems) in enumerate(gems_list[:20]):
             med  = medals[i] if i < 3 else f"**#{i+1}**"
             sg_s = f" • `{sg}`" if sg != "—" else ""
-            lines.append(f"{med} <@{uid}>{sg_s} — **{format_num(gems)} 💎**")
+            lines.append(f"{med} **{username}**{sg_s} — **{format_num(gems)} 💎**")
         embed.description = "\n".join(lines)
     embed.set_image(url=STUMBLE_IMG)
     embed.set_footer(text=f"Updated: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
@@ -11275,7 +11457,7 @@ class DuelView(View):
     async def _declare_winner(self, interaction: discord.Interaction, winner: discord.Member, loser: discord.Member):
         if not self._is_staff(interaction.user):
             return await interaction.response.send_message("❌ Only **Staff** can arbitrate!", ephemeral=True)
-        prof_w = get_profile(winner.id, winner.display_name)
+        prof_w = get_profile(winner.id, winner.name)
         prof_w["duel_wins"] = prof_w.get("duel_wins", 0) + 1
         save_db()
         for child in self.children:
@@ -11324,45 +11506,27 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
 
 
 # ==========================================
-# 🏆 :stumble-top CLASSIFICA SPECIALE
+# 🏆 :stumble-top ECONOMY LEADERBOARD
 # ==========================================
 
 @bot.command(name="stumble-top", aliases=["stumbletop"])
 @manager_or_admin_only()
 async def stumble_top(ctx):
-    """🏆 Top 10 for 1v1 wins and Ruby won at the Stumble Machine."""
-    profiles = db.get("profiles", {})
-    if not profiles:
-        return await ctx.send("❌ No profiles found.", delete_after=5.0)
+    """Show only the main Ranked Points, Ruby, and Crystals leaderboards."""
+    for embed in await build_leaderboard_embeds(
+        categories=MAIN_LEADERBOARD_CATEGORIES,
+    ):
+        await ctx.send(embed=embed)
 
-    # Sort by duel wins desc, then slot_ruby_won desc
-    ranked = sorted(
-        profiles.items(),
-        key=lambda kv: (kv[1].get("duel_wins", 0), kv[1].get("slot_ruby_won", 0)),
-        reverse=True
-    )[:3]
 
-    medals = [EMOJIS["gold_medal"], EMOJIS["silver_medal"], EMOJIS["bronze_medal"]]
-    lines  = []
-    for i, (uid, p) in enumerate(ranked):
-        name        = p.get("name", uid)
-        duel_wins   = p.get("duel_wins", 0)
-        slot_ruby   = p.get("slot_ruby_won", 0)
-        slot_wins   = p.get("slot_wins", 0)
-        lines.append(
-            f"{medals[i]} **{name}**\n"
-            f"  ⚔️ 1v1 wins: `{duel_wins}` · 🎰 Machine wins: `{slot_wins}` · "
-            f"Ruby won: `{format_num(slot_ruby)}` {E_RUBY}"
-        )
-
-    em = discord.Embed(
-        title="🏆 Stumble Top — Special Leaderboard",
-        description="\n\n".join(lines) or "No data available yet.",
-        color=discord.Color.gold()
-    )
-    em.set_footer(text="Top 1v1 wins + Stumble Machine · PCF™")
-    em.set_image(url=STUMBLE_IMG)
-    await ctx.send(embed=em)
+@bot.command(name="1v1-leaderboard", aliases=["1v1_top", "duel-leaderboard", "duel-top"])
+@manager_or_admin_only()
+async def duel_leaderboard(ctx):
+    """Show the dedicated 1v1 wins leaderboard."""
+    for embed in await build_leaderboard_embeds(
+        categories=DUEL_LEADERBOARD_CATEGORIES,
+    ):
+        await ctx.send(embed=embed)
 
 
 # --- AVVIO DEL BOT ---
