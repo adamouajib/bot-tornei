@@ -386,6 +386,7 @@ def _set_cooldown_timestamp(user_id: int, action: str, timestamp: float | None =
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.invites = True
 intents.presences = True
 
 # Keep this explicit next to Bot initialization: prefix commands and on_message
@@ -914,6 +915,9 @@ def display_with_rank(name: str) -> str:
 
 _invite_cache: dict[int, dict[str, dict[str, int | None]]] = {}
 _invite_cache_lock = asyncio.Lock()
+# Keep the cache available on the bot instance for event handlers and
+# integrations that need to inspect the current invite snapshot.
+bot.invite_cache = _invite_cache
 
 
 async def _invite_snapshot(
@@ -941,6 +945,48 @@ async def _invite_snapshot(
     }
 
 
+async def _record_invite_totals(
+    guild: discord.Guild,
+    snapshot: dict[str, dict[str, int | None]],
+) -> None:
+    """Persist the highest invite total observed for each inviter."""
+    totals: dict[int, int] = {}
+    for data in snapshot.values():
+        inviter_id = data.get("inviter_id")
+        if inviter_id is None:
+            continue
+        totals[int(inviter_id)] = totals.get(int(inviter_id), 0) + int(
+            data.get("uses", 0) or 0
+        )
+
+    for inviter_id, observed_total in totals.items():
+        uid = str(inviter_id)
+        profile = db.get("profiles", {}).get(uid)
+        if profile is None:
+            member = guild.get_member(inviter_id)
+            profile = get_profile(
+                inviter_id,
+                member.display_name if member is not None else uid,
+            )
+        stored_total = int(profile.get("invite_count", 0) or 0)
+        if observed_total > stored_total:
+            profile["invite_count"] = observed_total
+
+
+async def _record_invite_use(guild: discord.Guild, inviter_id: int, amount: int = 1) -> int:
+    """Increment and persist an inviter's historical invite total."""
+    uid = str(inviter_id)
+    profile = db.get("profiles", {}).get(uid)
+    if profile is None:
+        member = guild.get_member(inviter_id)
+        profile = get_profile(
+            inviter_id,
+            member.display_name if member is not None else uid,
+        )
+    profile["invite_count"] = int(profile.get("invite_count", 0) or 0) + max(amount, 1)
+    return int(profile["invite_count"])
+
+
 async def _ensure_invite_role(guild: discord.Guild) -> discord.Role | None:
     """Return the exact invite eligibility role, creating it when necessary."""
     role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
@@ -966,6 +1012,11 @@ async def _award_invite_role(
     """Give the invite role to an inviter, if the bot can manage the role."""
     role = await _ensure_invite_role(guild)
     member = guild.get_member(inviter_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(inviter_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            member = None
     if not role or not member:
         return False
     if role in member.roles:
@@ -990,6 +1041,7 @@ async def _refresh_invite_cache(
         return
     async with _invite_cache_lock:
         _invite_cache[guild.id] = snapshot
+    await _record_invite_totals(guild, snapshot)
     if reconcile_roles:
         inviter_ids = {
             int(data["inviter_id"])
@@ -1015,43 +1067,90 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
 
     candidates = []
     for code, current in snapshot.items():
-        old = previous.get(code, {})
+        if code not in previous:
+            continue
+        old = previous[code]
         delta = int(current["uses"] or 0) - int(old.get("uses", 0) or 0)
         inviter_id = current["inviter_id"]
         if delta > 0 and inviter_id is not None:
             candidates.append((delta, int(inviter_id)))
     if not candidates:
         return None
-    _, inviter_id = max(candidates)
+    delta, inviter_id = max(candidates)
+    total = await _record_invite_use(member.guild, inviter_id, delta)
     await _award_invite_role(
         member.guild,
         inviter_id,
         reason=f"Invited new member {member.id}",
     )
+    print(
+        f"[invite tracker] {inviter_id} now has {total} recorded invite(s) "
+        f"in guild {member.guild.id}"
+    )
     return inviter_id
 
 
 async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | None:
-    """Use the live ``1 Invite`` role as the fast tournament eligibility check."""
-    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
-    if role is None:
+    """Check the role or persisted invite total, repairing missed role awards."""
+    if guild.id != SERVER_ID:
         return False
+    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
     member = guild.get_member(member_id)
     if member is None:
         try:
             member = await guild.fetch_member(member_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            return False
-    return role in member.roles
+            member = None
+    if member is not None and role is not None and role in member.roles:
+        return True
+
+    profile = db.get("profiles", {}).get(str(member_id))
+    if profile is not None and int(profile.get("invite_count", 0) or 0) >= 1:
+        if role is None or member is None or role not in member.roles:
+            await _award_invite_role(
+                guild,
+                member_id,
+                reason="Repair invite eligibility during tournament registration",
+            )
+        return True
+
+    # A live reconciliation repairs users whose historical invite was recorded
+    # by Discord but whose role assignment failed during a previous join.
+    snapshot = await _invite_snapshot(guild)
+    if snapshot is None:
+        return None
+    async with _invite_cache_lock:
+        bot.invite_cache[guild.id] = snapshot
+    await _record_invite_totals(guild, snapshot)
+    for inviter_id, data in (
+        (int(data["inviter_id"]), data)
+        for data in snapshot.values()
+        if data.get("inviter_id") is not None
+    ):
+        inviter_profile = db.get("profiles", {}).get(str(inviter_id))
+        if (
+            inviter_profile is not None
+            and int(inviter_profile.get("invite_count", 0) or 0) >= 1
+        ):
+            await _award_invite_role(
+                guild,
+                inviter_id,
+                reason="Repair invite eligibility during registration sync",
+            )
+
+    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    member = member or guild.get_member(member_id)
+    profile = db.get("profiles", {}).get(str(member_id))
+    return bool(
+        (member is not None and role is not None and role in member.roles)
+        or (
+            profile is not None
+            and int(profile.get("invite_count", 0) or 0) >= 1
+        )
+    )
 
 def _tournament_invite_requirement_message() -> str:
-    """Return the English explanation shown when a member lacks the role."""
-    return (
-        f"❌ You need the **{INVITE_ROLE_NAME}** role to register for a tournament.\n"
-        "Invite at least one person to this server and the role will be assigned "
-        "automatically when the invite is used.\n"
-        f"{TOURNAMENT_INVITE_URL}"
-    )
+    return "❌ You need at least 1 server invite to register for tournaments!"
 
 db = {
     "profiles": {},
@@ -2628,6 +2727,7 @@ def get_profile(user_id, username):
             "level_msg": 0,
             "staff_tours": 0,
             "staff_matches": 0,
+            "invite_count": 0,
             "sg_name": "",
         }
     prof = profiles[uid]
@@ -2640,6 +2740,7 @@ def get_profile(user_id, username):
         "staff_week_tours": 0,
         "staff_week_matches": 0,
         "staff_week_rounds": 0,
+        "invite_count": 0,
         "sg_name": "",
         "w_owned": [],
         "slot_wins": 0,
@@ -3877,8 +3978,13 @@ async def on_ready():
         f"{guild.name} ({guild.id})" for guild in bot.guilds
     ) or "none"
     print(f"[on_ready] Connected servers: {connected_guilds}")
-    if bot.get_guild(SERVER_ID) is None:
+    target_guild = bot.get_guild(SERVER_ID)
+    if target_guild is None:
         print(f"[on_ready WARNING] Configured server {SERVER_ID} is not in the guild cache")
+    else:
+        # Discord invite usage is only available through the guild invite
+        # endpoint, so take a fresh baseline every time the bot is ready.
+        await _refresh_invite_cache(target_guild, reconcile_roles=True)
     if GEMINI_CONFIGURED:
         try:
             await initialize_gemini_model()
@@ -3982,14 +4088,44 @@ async def on_ready():
                         )
                     except (discord.Forbidden, discord.HTTPException) as exc:
                         print(f"[on_ready] Could not sync booster perk for {member.id}: {exc}")
-        await _refresh_invite_cache(guild, reconcile_roles=True)
+        if guild.id != SERVER_ID:
+            continue
+        # The configured guild was refreshed above; keep this guard so invite
+        # tracking never assigns roles in an unrelated guild.
+        if guild.id not in bot.invite_cache:
+            await _refresh_invite_cache(guild, reconcile_roles=True)
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    """Keep the configured guild's invite cache current when an invite is made."""
+    guild = invite.guild
+    if guild is None or guild.id != SERVER_ID:
+        return
+    async with _invite_cache_lock:
+        bot.invite_cache.setdefault(guild.id, {})[invite.code] = {
+            "uses": max(int(invite.uses or 0), 0),
+            "inviter_id": invite.inviter.id if invite.inviter else None,
+        }
+
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    """Remove deleted invites from the configured guild's cache."""
+    guild = invite.guild
+    if guild is None or guild.id != SERVER_ID:
+        return
+    async with _invite_cache_lock:
+        bot.invite_cache.setdefault(guild.id, {}).pop(invite.code, None)
 
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = member.guild
-    # Discord does not include the used invite in MemberJoin. Compare the
-    # cached startup snapshot with the current invite usage to identify it.
-    await _track_joining_member_invite(member)
+    if guild.id == SERVER_ID:
+        # Discord does not include the used invite in MemberJoin. Compare the
+        # cached startup/event snapshot with current usage and persist the
+        # inviter's historical total before assigning their role.
+        await _track_joining_member_invite(member)
     member_role = guild.get_role(MEMBER_ROLE_ID)
     if member_role:
         try:
