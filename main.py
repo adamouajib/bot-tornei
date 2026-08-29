@@ -410,7 +410,7 @@ EMOJIS = {
     "w_pink": "<:W_pink:1542344837876023366>",
     "w_red": "<:W_red:1541579235691597899>",
     "w_yellow": "<:W_yell:1542343645259243572>",
-    "w_sky": "<:W_sky:1542348083147575336>",
+    "w_blue": "<:W_blue:1542343130257428500>",
     "w_green": "<:W_green:1542345097314574427>",
     "w_purple": "<:W_purple:1542343337204387850>",
     "w_orange": "<:W_org:1542344614999228538>",
@@ -534,11 +534,16 @@ TOURNAMENT_INVITE_TUTORIAL = (
     "3️⃣ Press **\"Invite Members\"** 👤\n"
     "4️⃣ Click **\"Copy Link\"** 🔗 & send it to your friends!"
 )
+TOURNAMENT_REQUIREMENT_BLOCK = (
+    "📌 **Requirement:** At least 1 Total Server Invite\n\n"
+    f"{TOURNAMENT_INVITE_TUTORIAL}"
+)
 TOURNAMENT_RULES_TEXT = (
-    "• You must have the **1 Invite** role to register.\n"
-    "• Register only for yourself, or use a completed team for team formats.\n"
-    "• Follow the host's room, map, ability and match instructions.\n"
-    "• Be respectful, be ready on time and do not leave an active match.\n"
+    f"{TOURNAMENT_REQUIREMENT_BLOCK}\n\n"
+    "📜 **Rules:**\n\n"
+    "• Register only for yourself, or use a completed team for team formats.\n\n"
+    "• Follow the host's room, map, ability and match instructions.\n\n"
+    "• Be respectful, be ready on time and do not leave an active match.\n\n"
     "• Staff decisions and tournament results are final."
 )
 EVENT_INFO_CHANNEL_ID  = CHANNELS["community_event"]
@@ -911,10 +916,11 @@ def display_with_rank(name: str) -> str:
     if not profile:
         return f"{E_NO_RANK} {player_name}"
     rank_emoji = get_rank_emoji(profile.get("punti", 0))
+    owned_names = set(profile.get("w_owned", []))
     owned_w_items = [
-        W_ITEMS[item_name]["emoji"]
-        for item_name in profile.get("w_owned", [])
-        if item_name in W_ITEMS
+        data["emoji"]
+        for item_name, data in _sorted_w_items()
+        if item_name in owned_names
     ]
     purchased_w = f" {''.join(owned_w_items)}" if owned_w_items else ""
     return f"{rank_emoji} {player_name}{purchased_w}"
@@ -2106,7 +2112,7 @@ def build_ai_server_knowledge() -> str:
     )
     w_item_lines = "\n".join(
         f"  - W {name}: {data['price']:,} Crystals"
-        for name, data in W_ITEMS.items()
+        for name, data in _sorted_w_items()
     )
     gem_package_lines = "\n".join(
         f"  - {gems:,} Gems: {price:,} Crystals"
@@ -3183,10 +3189,10 @@ def generate_bracket_embeds() -> list[tuple]:
             info = (
                 f"**Round {cur_round}"
                 + (f"/{total_rounds}" if total_rounds != "?" else "")
-                + f"**\n🗺️ **Map:** {t['mappa']}\n⚡ **Ability:** {t['emote']}\n🎁 **Prizes:**\n{format_tournament_prizes(t['premio'])}\n"
+                + f"**\n\n🗺️ **Map:** {t['mappa']}\n\n⚡ **Ability:** {t['emote']}\n\n🎁 **Prizes:**\n\n{format_tournament_prizes(t['premio'])}\n\n"
             )
             if modalita not in TEAM_MODES:
-                info += f"👥 **Players:** {len(t['players'])}/{t['max']}\n"
+                info += f"👥 **Players:** {len(t['players'])}/{t['max']}\n\n"
             info += "─────────────────────\n\n"
             desc = info + "".join(chunk)
         else:
@@ -5479,16 +5485,19 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
 
     embed = discord.Embed(title=f"🏆 {'BIG — ' if is_big else ''}{nome}", color=color)
     info_val = (
-        f"🎮 **Format:** {actual}\n"
-        f"🗺️ **Map:** {data['mappa']}\n"
-        f"⚡ **Ability:** {emote_s}\n"
-        f"🎁 **Prizes:**\n{format_tournament_prizes(data['premio'])}\n"
+        f"🎮 **Format:** {actual}\n\n"
+        f"🗺️ **Map:** {data['mappa']}\n\n"
+        f"⚡ **Ability:** {emote_s}\n\n"
+        f"🎁 **Prizes:**\n\n{format_tournament_prizes(data['premio'])}\n\n"
         f"⏰ **Start:** {time_str}"
     )
     if data.get("regione"):
-        info_val += f"\n🌍 **Region:** {data['regione']}"
+        info_val += f"\n\n🌍 **Region:** {data['regione']}"
     if is_big:
-        info_val += "\n🔗 A verified SG account and the **1 Invite** role are required to register!"
+        info_val += (
+            "\n\n🔗 **Big Tournament requirement:** A verified SG account.\n\n"
+            f"{TOURNAMENT_REQUIREMENT_BLOCK}"
+        )
     embed.add_field(name="📋 Info", value=info_val, inline=False)
     embed.add_field(name="📜 Tournament Rules", value=TOURNAMENT_RULES_TEXT, inline=False)
     status_val = (
@@ -9303,10 +9312,9 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
             "tournament podiums (1st: **100**, 2nd: **50**, 3rd: **25**), jackpot "
             "drops, or the shop exchange. Use Crystals to buy Stumble Guys Gems "
             "(**100, 250, or 800**) and **W Roles**:\n"
-            "• Green / Yellow\n"
-            "• Red / Orange / Light Blue\n"
-            "• Pink / Purple\n"
-            "• Twitch Purple\n\n"
+            "• Pink / Purple — **2.000 Crystals**\n"
+            "• Blue / Red / Orange / Azzurro — **1.200 Crystals**\n"
+            "• Green / Yellow — **600 Crystals**\n\n"
             "Each W Role grants the matching colored Discord role and the bracket "
             '"W".\n\n'
             "🛒 **Shop:** Visit [[SHOP_CHANNEL]] for Gems, W Roles, and currency "
@@ -9333,8 +9341,7 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
             "🏆 **Match Code:** When your match starts, Tournament Hosts send the "
             "room code directly to your DMs. Keep your Discord DMs open so you do "
             "not miss it.\n\n"
-            "📌 **Requirement:** At least 1 Total Server Invite\n"
-            f"{TOURNAMENT_INVITE_TUTORIAL}\n\n"
+            f"{TOURNAMENT_REQUIREMENT_BLOCK}\n\n"
             "Help us grow this community and make it even better! 🌱✨"
         ),
     },
@@ -10217,16 +10224,20 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
 # 🛒 :TEST SHOP (hidden from :help)
 # ==========================================
 W_ITEMS = {
-    "Blue":    {"emoji": EMOJIS["w_sky"],    "price": 1200, "color": 0x5865F2},
-    "Purple":  {"emoji": EMOJIS["w_purple"], "price": 2000, "color": 0x9B59B6},
-    "Twitch Purple": {"emoji": EMOJIS["w_purple"], "price": 3500, "color": 0x9B59B6},
-    "Red":     {"emoji": EMOJIS["w_red"],    "price": 1200, "color": 0xE74C3C},
     "Pink":    {"emoji": EMOJIS["w_pink"],   "price": 2000, "color": 0xFF69B4},
-    "Yellow":  {"emoji": EMOJIS["w_yellow"], "price": 600,  "color": 0xF1C40F},
-    "Azzurro": {"emoji": EMOJIS["w_sky"],    "price": 1200, "color": 0x5DADE2},
-    "Green":   {"emoji": EMOJIS["w_green"],  "price": 600,  "color": 0x2ECC71},
+    "Purple":  {"emoji": EMOJIS["w_purple"], "price": 2000, "color": 0x9B59B6},
+    "Blue":    {"emoji": EMOJIS["w_blue"],   "price": 1200, "color": 0x5865F2},
+    "Red":     {"emoji": EMOJIS["w_red"],    "price": 1200, "color": 0xE74C3C},
     "Orange":  {"emoji": EMOJIS["w_orange"], "price": 1200, "color": 0xE67E22},
+    "Azzurro": {"emoji": EMOJIS["w_blue"],   "price": 1200, "color": 0x5DADE2},
+    "Green":   {"emoji": EMOJIS["w_green"],  "price": 600,  "color": 0x2ECC71},
+    "Yellow":  {"emoji": EMOJIS["w_yellow"], "price": 600,  "color": 0xF1C40F},
 }
+
+
+def _sorted_w_items() -> list[tuple[str, dict]]:
+    """Return shop items in display order: highest price first."""
+    return sorted(W_ITEMS.items(), key=lambda item: item[1]["price"], reverse=True)
 
 GEM_PACKAGES = [
     (100, 1000),
@@ -10263,7 +10274,7 @@ def _shop_main_embed(prof: dict) -> discord.Embed:
 def _w_items_embed(prof: dict) -> discord.Embed:
     owned = prof.get("w_owned", [])
     lines = []
-    for name, data in W_ITEMS.items():
+    for name, data in _sorted_w_items():
         tag = " ✅" if name in owned else ""
         price = format_shop_amount(data["price"])
         lines.append(f"{data['emoji']} **W {name}** • {price} {E_CRYSTAL}{tag}")
@@ -10378,7 +10389,7 @@ class WShopSelect(discord.ui.Select):
     def __init__(self, user_id: int):
         self.user_id = user_id
         options = []
-        for name, data in W_ITEMS.items():
+        for name, data in _sorted_w_items():
             m = re.match(r"<:(\w+):(\d+)>", data["emoji"])
             emoji = discord.PartialEmoji(name=m.group(1), id=int(m.group(2))) if m else None
             options.append(discord.SelectOption(
