@@ -482,7 +482,7 @@ E_BRONZE  = EMOJIS["bronze_medal"]
 E_RANKING = "<:ranking:1505323647827710223>"
 E_RULES   = "<:Rules:1506777190166167613>"
 E_LEVEL   = E_XP
-E_GEMS    = "<:gems:1507509442286190652>"
+E_GEMS    = "<:gems:1542599127450521692>"
 E_W       = EMOJIS["w_pink"]
 
 TICKET_SUPPORT_CAT  = TICKETS["general_support"]
@@ -914,26 +914,108 @@ def get_profile_by_name(name: str):
             return prof
     return None
 
-def display_with_rank(name: str) -> str:
-    """Return a bracket name as rank emoji, username, then purchased W items."""
+def _bracket_name_key(name: str) -> str:
+    return re.sub(r"\s+", " ", str(name).strip()).casefold()
+
+
+def _bracket_member_map(t: dict) -> dict[str, discord.Member]:
+    """Map stored bracket names and IDs to current Discord members."""
+    guild = bot.get_guild(SERVER_ID)
+    if guild is None:
+        return {}
+
+    members: dict[str, discord.Member] = {}
+
+    def add_member(member, stored_name: str | None = None):
+        if member is None:
+            return
+        for candidate in (stored_name, member.name, member.display_name):
+            if candidate:
+                members[_bracket_name_key(candidate)] = member
+
+    for user_id, stored_name in zip(t.get("players", []), t.get("player_names", [])):
+        try:
+            member = guild.get_member(int(user_id))
+        except (TypeError, ValueError):
+            member = None
+        add_member(member, stored_name)
+
+    # Team brackets store a combined "name × name" slot, so also index each
+    # member from the team's durable ID/name pairs.
+    for team in db.get("teams", []):
+        for user_id, stored_name in zip(team.get("ids", []), team.get("names", [])):
+            try:
+                member = guild.get_member(int(user_id))
+            except (TypeError, ValueError):
+                member = None
+            add_member(member, stored_name)
+    return members
+
+
+def _active_w_role_emojis(member: discord.Member | None) -> list[str]:
+    """Return the distinct purchased W emojis represented by active roles."""
+    if member is None:
+        return []
+    role_labels = {
+        re.sub(r"[^a-z0-9]", "", role.name.casefold().removeprefix("w"))
+        for role in getattr(member, "roles", ())
+        if role.name.casefold().strip().startswith("w")
+    }
+    aliases = {
+        "Pink": {"pink", "rosa"},
+        "Purple": {"purple", "viola"},
+        "Blue": {"blue", "blu", "azzurro"},
+        "Red": {"red", "rosso"},
+        "Orange": {"orange", "arancio"},
+        "Green": {"green", "verde"},
+        "Yellow": {"yellow", "giallo"},
+    }
+    emojis = []
+    seen = set()
+    for item_name, data in _sorted_w_items():
+        if any(alias in role_labels for alias in aliases.get(item_name, {item_name.casefold()})):
+            emoji = data["emoji"]
+            if emoji not in seen:
+                seen.add(emoji)
+                emojis.append(emoji)
+    return emojis
+
+
+def display_with_rank(
+    name: str,
+    member_map: dict[str, discord.Member] | None = None,
+) -> str:
+    """Return a bracket slot using live usernames and active W role emojis."""
     player_name = str(name)
     if " × " in player_name:
         return " × ".join(
-            display_with_rank(part.strip())
+            display_with_rank(part.strip(), member_map)
             for part in player_name.split(" × ")
         )
-    profile = get_profile_by_name(player_name)
-    if not profile:
-        return f"{E_NO_RANK} {player_name}"
-    rank_emoji = get_rank_emoji(profile.get("punti", 0))
-    owned_names = set(profile.get("w_owned", []))
-    owned_w_items = [
-        data["emoji"]
-        for item_name, data in _sorted_w_items()
-        if item_name in owned_names
-    ]
+
+    member = (member_map or {}).get(_bracket_name_key(player_name))
+    profile = get_profile(member.id, member.display_name) if member else get_profile_by_name(player_name)
+    username = member.name if member else (
+        _stored_leaderboard_username(profile) if profile else player_name
+    )
+    # Never publish a raw Discord ID when an old bracket cannot be resolved.
+    if str(username).strip().isdigit():
+        username = "Unknown player"
+    if str(username).casefold().startswith("bot "):
+        formatted_name = f"🤖 {username}"
+    else:
+        formatted_name = f"@{str(username).lstrip('@')}"
+    rank_emoji = get_rank_emoji(profile.get("punti", 0)) if profile else E_NO_RANK
+    owned_w_items = _active_w_role_emojis(member)
+    if not owned_w_items and profile and member is None:
+        owned_names = set(profile.get("w_owned", []))
+        owned_w_items = [
+            data["emoji"]
+            for item_name, data in _sorted_w_items()
+            if item_name in owned_names
+        ]
     purchased_w = f" {''.join(owned_w_items)}" if owned_w_items else ""
-    return f"{rank_emoji} {player_name}{purchased_w}"
+    return f"{rank_emoji} {formatted_name}{purchased_w}"
 
 
 _invite_cache: dict[int, dict[str, dict[str, int | None]]] = {}
@@ -3017,20 +3099,20 @@ def grant_prize(
 # 📊 LEADERBOARD & BRACKET
 # ==========================================
 MAIN_LEADERBOARD_CATEGORIES = [
-    (f"{E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
     (f"{E_RUBY} Top 10 — Ruby", "rubini", E_RUBY, discord.Color.red()),
     (f"{E_CRYSTAL} Top 10 — Crystals", "cristalli", E_CRYSTAL, discord.Color.teal()),
+    (f"{E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
 ]
 DUEL_LEADERBOARD_CATEGORIES = [
     ("⚔️ Top 10 — 1v1 Wins", "duel_wins", "⚔️", discord.Color.gold()),
 ]
-FULL_LEADERBOARD_CATEGORIES = [
-    *MAIN_LEADERBOARD_CATEGORIES,
-    *DUEL_LEADERBOARD_CATEGORIES,
+LEADERBOARD_CATEGORIES = [
+    ("🏆 Top 10 — Chat XP", "xp_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
     ("🏆 Top 10 — Tournaments Won", "tornei_v", E_TROPHY, discord.Color.gold()),
     (f"{E_TROPHY} Top 10 — Events Won", "eventi_v", E_TROPHY, discord.Color.purple()),
-    (f"{E_LEVEL} Top 10 — Chat Levels", "level_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
+    *MAIN_LEADERBOARD_CATEGORIES,
 ]
+FULL_LEADERBOARD_CATEGORIES = [*LEADERBOARD_CATEGORIES, *DUEL_LEADERBOARD_CATEGORIES]
 
 
 def _stored_leaderboard_username(profile: dict) -> str | None:
@@ -3104,11 +3186,11 @@ async def build_leaderboard_embeds(
             medal = medals[i] if i < 3 else f"**#{i+1}**"
             rank_emoji = get_rank_emoji(profile.get("punti", 0))
             value = profile.get(key, 0)
-            if key == "level_msg":
-                xp_total = profile.get("xp_msg", 0)
+            if key == "xp_msg":
+                level = profile.get("level_msg", 0)
                 desc += (
                     f"{medal} {rank_emoji} **{username}** — {icon} "
-                    f"Lv.**{value}** `({xp_total} XP)`\n\n"
+                    f"**{format_num(value)} XP** `(Lv. {level})`\n\n"
                 )
             else:
                 desc += (
@@ -3230,6 +3312,7 @@ def generate_bracket_embeds() -> list[tuple]:
     cur_round    = t.get("round", 1)
     total_rounds = t.get("total_rounds", "?")
     modalita     = t.get("modalita", "1V1")
+    member_map   = _bracket_member_map(t)
 
     match_lines: list[str] = []
     for m_id, m_data in t["matches"].items():
@@ -3238,12 +3321,12 @@ def generate_bracket_embeds() -> list[tuple]:
         p3  = m_data.get("p3")
         win = m_data.get("winner")
         in_prog = m_data.get("in_progress", False)
-        d1  = display_with_rank(p1)
+        d1  = display_with_rank(p1, member_map)
         if _is_ffa_match(m_data):
-            d2 = display_with_rank(p2) if p2 not in (None, "BYE") else "~~BYE~~"
-            d3 = display_with_rank(p3) if p3 not in (None, "BYE") else "~~BYE~~"
+            d2 = display_with_rank(p2, member_map) if p2 not in (None, "BYE") else "~~BYE~~"
+            d3 = display_with_rank(p3, member_map) if p3 not in (None, "BYE") else "~~BYE~~"
             if win:
-                dw     = display_with_rank(win)
+                dw     = display_with_rank(win, member_map)
                 losers = m_data.get("losers", [])
                 s1 = f"~~{d1}~~" if p1 in losers else (f"**{d1}**" if p1 == win else d1)
                 s2 = f"~~{d2}~~" if p2 in losers else (f"**{d2}**" if p2 == win else d2)
@@ -3254,14 +3337,14 @@ def generate_bracket_embeds() -> list[tuple]:
             else:
                 match_lines.append(f"⏳ **Match #{m_id}** — FFA\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n\n")
         else:
-            d2 = display_with_rank(p2) if p2 != "BYE" else "~~BYE~~"
+            d2 = display_with_rank(p2, member_map) if p2 != "BYE" else "~~BYE~~"
             if p2 == "BYE":
                 match_lines.append(f"✅ **Match #{m_id}** — Done\n　**{d1}** ⚔️ {d2}\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n\n")
             elif win:
                 los = m_data.get("loser")
                 s1  = f"~~{d1}~~" if los == p1 else f"**{d1}**"
                 s2  = f"~~{d2}~~" if los == p2 else f"**{d2}**"
-                dw  = display_with_rank(win)
+                dw  = display_with_rank(win, member_map)
                 match_lines.append(f"✅ **Match #{m_id}** — Done\n　{s1} ⚔️ {s2}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
             elif in_prog:
                 match_lines.append(f"💥 **Match #{m_id}** — In Progress\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
@@ -3951,7 +4034,7 @@ async def auto_leaderboard():
             return
         embeds = await build_leaderboard_embeds(
             updated_at=datetime.now().astimezone(),
-            categories=MAIN_LEADERBOARD_CATEGORIES,
+            categories=LEADERBOARD_CATEGORIES,
         )
         for mid in db.get("leaderboard_msg_ids", []):
             try:
@@ -6663,7 +6746,7 @@ async def stumble_top_slash(interaction: discord.Interaction):
             ephemeral=True,
         )
     embeds = await build_leaderboard_embeds(
-        categories=MAIN_LEADERBOARD_CATEGORIES,
+        categories=[*MAIN_LEADERBOARD_CATEGORIES, *DUEL_LEADERBOARD_CATEGORIES],
     )
     await interaction.response.send_message(embed=embeds[0])
     for embed in embeds[1:]:
@@ -9949,9 +10032,17 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
         ),
         color=discord.Color.purple()
     )
+    embed.add_field(
+        name="🌐 PCF™ Server Invite",
+        value=(
+            f"[Click here to join the server]({SERVER_INVITE_URL})\n"
+            f"`{SERVER_INVITE_URL}`"
+        ),
+        inline=False,
+    )
     embed.set_image(url=LINK_EMBED_IMAGE_URL)
     embed.set_footer(text="PCF™ SG Account System")
-    view = SGLinkChannelView(guild_id=ctx.guild.id)
+    view = SGLinkChannelView()
     await ctx.send(embed=embed, view=view)
 
 
@@ -10565,7 +10656,7 @@ class ShopMainView(View):
 
     @discord.ui.button(
         label="Gems",
-        emoji="<:gems:1507509442286190652>",
+        emoji=E_GEMS,
         style=discord.ButtonStyle.success,
         custom_id="shop_main_gems",
     )
@@ -11512,9 +11603,9 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
 @bot.command(name="stumble-top", aliases=["stumbletop"])
 @manager_or_admin_only()
 async def stumble_top(ctx):
-    """Show only the main Ranked Points, Ruby, and Crystals leaderboards."""
+    """Show the economy leaderboards and 1v1 wins."""
     for embed in await build_leaderboard_embeds(
-        categories=MAIN_LEADERBOARD_CATEGORIES,
+        categories=[*MAIN_LEADERBOARD_CATEGORIES, *DUEL_LEADERBOARD_CATEGORIES],
     ):
         await ctx.send(embed=embed)
 
