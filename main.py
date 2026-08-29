@@ -185,13 +185,20 @@ def _normalise_legacy_profile(profile: dict, username: str) -> dict:
         "punti", "tornei_v", "eventi_v", "gemme", "rubini", "cristalli",
         "xp_msg", "level_msg", "staff_tours", "staff_matches", "staff_rounds",
         "staff_week_tours", "staff_week_matches", "staff_week_rounds",
-        "slot_wins", "slot_ruby_won", "duel_wins", "boost_count",
+        "slot_wins", "slot_ruby_won", "duel_matches", "duel_wins",
+        "duel_rubies_won", "boost_count",
     ):
         try:
             normalized[key] = int(normalized.get(key, 0) or 0)
         except (TypeError, ValueError):
             normalized[key] = 0
     normalized.setdefault("sg_name", "")
+    linked = normalized.get("linked", False)
+    normalized["linked"] = (
+        linked.strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(linked, str)
+        else bool(linked)
+    )
     normalized.setdefault("w_owned", [])
     return normalized
 
@@ -558,6 +565,7 @@ ADMIN_TOUR_ROLE_ID  = 1510189891361837167   # can host FFA / World Cup
 BOOSTER_ROLE_ID     = 1164660692134150184   # [W] role given on boost
 VIP_ROLE_ID         = 1201072892398547004   # Twitch VIP role
 SG_VERIFIED_ROLE_ID = 1510193637785473185   # given after SG account link
+LINKED_ROLE_ID      = 1541556626392219739   # given after staff approves SG account link
 SG_LINK_TICKET_CAT  = TICKETS["verify_account"]  # category for SG link tickets
 SG_LINK_CHANNEL_ID  = CHANNELS["account_link"]  # channel containing the SG link setup button
 TICKET_PANEL_CHANNEL_ID = CHANNELS["ticket_panel"]  # channel containing the support ticket buttons
@@ -2918,6 +2926,9 @@ def get_profile(user_id, username):
             "staff_matches": 0,
             "invite_count": 0,
             "sg_name": "",
+            "linked": False,
+            "duel_matches": 0,
+            "duel_rubies_won": 0,
         }
     prof = profiles[uid]
     defaults = {
@@ -2934,9 +2945,12 @@ def get_profile(user_id, username):
         "w_owned": [],
         "slot_wins": 0,
         "slot_ruby_won": 0,
+        "duel_matches": 0,
         "duel_wins": 0,
+        "duel_rubies_won": 0,
         "boost_count": 0,
         "username": "",
+        "linked": False,
     }
     for key, default in defaults.items():
         if key not in prof:
@@ -3104,11 +3118,11 @@ MAIN_LEADERBOARD_CATEGORIES = [
     (f"{E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
 ]
 DUEL_LEADERBOARD_CATEGORIES = [
-    ("⚔️ Top 10 — 1v1 Wins", "duel_wins", "⚔️", discord.Color.gold()),
+    ("⚔️ Top 10 — 1v1 Leaderboard", "duel_wins", "⚔️", discord.Color.gold()),
 ]
 LEADERBOARD_CATEGORIES = [
     ("🏆 Top 10 — Chat XP", "xp_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
-    ("🏆 Top 10 — Tournaments Won", "tornei_v", E_TROPHY, discord.Color.gold()),
+    (f"{E_CROWN} Top 10 — Tournaments Won", "tornei_v", E_CROWN, discord.Color.gold()),
     (f"{E_TROPHY} Top 10 — Events Won", "eventi_v", E_TROPHY, discord.Color.purple()),
     *MAIN_LEADERBOARD_CATEGORIES,
 ]
@@ -3191,6 +3205,15 @@ async def build_leaderboard_embeds(
                 desc += (
                     f"{medal} {rank_emoji} **{username}** — {icon} "
                     f"**{format_num(value)} XP** `(Lv. {level})`\n\n"
+                )
+            elif key == "duel_wins":
+                matches = profile.get("duel_matches", 0)
+                rubies = profile.get("duel_rubies_won", 0)
+                desc += (
+                    f"{medal} **{username}**\n"
+                    f"> 1v1 Matches: **{format_num(matches)}**\n"
+                    f"> 1v1 Wins: **{format_num(value)}**\n"
+                    f"> Rubies Won: **{format_num(rubies)}** {E_RUBY}\n\n"
                 )
             else:
                 desc += (
@@ -6746,11 +6769,9 @@ async def stumble_top_slash(interaction: discord.Interaction):
             ephemeral=True,
         )
     embeds = await build_leaderboard_embeds(
-        categories=[*MAIN_LEADERBOARD_CATEGORIES, *DUEL_LEADERBOARD_CATEGORIES],
+        categories=DUEL_LEADERBOARD_CATEGORIES,
     )
     await interaction.response.send_message(embed=embeds[0])
-    for embed in embeds[1:]:
-        await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(
@@ -9905,7 +9926,7 @@ class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
                     "5. **Send it here!** ⬇️\n\n"
                     "If you changed your in-game name, enter the new name here and "
                     "send a new screenshot so staff can verify the change.\n\n"
-                    "⏳ Staff will verify it and give you the **Verified SG** role!"
+                    "⏳ Staff will verify it and give you the **Linked** role!"
                 ),
                 color=discord.Color.purple()
             )
@@ -9937,30 +9958,71 @@ class SGLinkVerifyView(View):
         if sg_role:
             try:
                 await member.add_roles(sg_role, reason="SG Account Verified")
-            except Exception as e:
-                print(f"[sg_verify role] {e}")
+            except discord.Forbidden as exc:
+                print(f"[sg_verify role] Bot lacks permission to assign Verified SG: {exc}")
+            except discord.HTTPException as exc:
+                print(f"[sg_verify role] Discord rejected Verified SG assignment: {exc}")
+
+        linked_role = guild.get_role(LINKED_ROLE_ID)
+        linked_role_error = None
+        if linked_role is None:
+            linked_role_error = f"Linked role {LINKED_ROLE_ID} was not found in guild {guild.id}"
+            print(f"[sg_verify role] {linked_role_error}")
+        else:
+            try:
+                await member.add_roles(linked_role, reason="Staff approved SG account link")
+            except discord.Forbidden as exc:
+                linked_role_error = (
+                    f"Bot lacks permission to assign Linked role {LINKED_ROLE_ID}: {exc}"
+                )
+                print(f"[sg_verify role] {linked_role_error}")
+            except discord.HTTPException as exc:
+                linked_role_error = (
+                    f"Discord rejected Linked role {LINKED_ROLE_ID} assignment: {exc}"
+                )
+                print(f"[sg_verify role] {linked_role_error}")
+
         prof = get_profile(self.user_id, member.display_name)
         prof["sg_name"] = self.sg_name
+        prof["linked"] = True
         db["sg_links"][str(self.user_id)] = self.sg_name
         save_db()
+        notification = (
+            f"Your Stumble Guys account **{self.sg_name}** has been linked successfully!\n"
+            "You now have access to the shop features."
+        )
         try:
             embed = discord.Embed(
-                title="✅ SG Account Verified!",
+                title="✅ SG Account Linked!",
                 description=(
                     f"Congratulations {member.mention}! 🎉\n\n"
-                    f"Your Stumble Guys account **{self.sg_name}** has been verified!\n"
-                    "You now have access to **Gem rewards** from Big Tournaments! 💎"
+                    f"{notification}\n"
+                    "You can now use the available shop features. 🛒"
                 ),
                 color=discord.Color.green()
             )
             embed.set_image(url=LINK_EMBED_IMAGE_URL)
             await member.send(embed=embed)
-        except Exception:
-            pass
+        except discord.Forbidden as exc:
+            print(f"[sg_verify notification] Could not DM {member.id}: {exc}")
+        except discord.HTTPException as exc:
+            print(f"[sg_verify notification] Discord rejected DM to {member.id}: {exc}")
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(
-            content=f"✅ **{member.display_name}** verified as `{self.sg_name}`!", view=self)
+            content=f"✅ **{member.display_name}** linked as `{self.sg_name}`!", view=self)
+        staff_status = (
+            f" Linked role <@&{LINKED_ROLE_ID}> assigned."
+            if linked_role_error is None
+            else f" ⚠️ Linked role assignment failed; check the bot role hierarchy and console logs."
+        )
+        try:
+            await interaction.followup.send(
+                f"✅ {member.mention} is linked and has shop access.{staff_status}",
+                ephemeral=True,
+            )
+        except discord.HTTPException:
+            pass
         await asyncio.sleep(5)
         try:
             await interaction.channel.delete()
@@ -10026,7 +10088,7 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
             "① Press **Link my SG account**\n"
             "② Enter your in-game name\n"
             "③ You will receive a DM to send your screenshot\n"
-            "④ Staff verifies it and assigns the **Verified SG** role ✅\n\n"
+            "④ Staff verifies it and assigns the **Linked** role ✅\n\n"
             "If you change your in-game name, press the button again, enter the "
             "new name, and send a new screenshot for verification."
         ),
@@ -11548,8 +11610,16 @@ class DuelView(View):
     async def _declare_winner(self, interaction: discord.Interaction, winner: discord.Member, loser: discord.Member):
         if not self._is_staff(interaction.user):
             return await interaction.response.send_message("❌ Only **Staff** can arbitrate!", ephemeral=True)
+        if self.state != "arbiting":
+            return await interaction.response.send_message(
+                "❌ This 1v1 has already been completed.", ephemeral=True
+            )
+        self.state = "finished"
+        prof_l = get_profile(loser.id, loser.name)
         prof_w = get_profile(winner.id, winner.name)
+        prof_w["duel_matches"] = prof_w.get("duel_matches", 0) + 1
         prof_w["duel_wins"] = prof_w.get("duel_wins", 0) + 1
+        prof_l["duel_matches"] = prof_l.get("duel_matches", 0) + 1
         save_db()
         for child in self.children:
             child.disabled = True
@@ -11603,11 +11673,11 @@ async def duel_cmd(ctx, opponent: discord.Member = None):
 @bot.command(name="stumble-top", aliases=["stumbletop"])
 @manager_or_admin_only()
 async def stumble_top(ctx):
-    """Show the economy leaderboards and 1v1 wins."""
-    for embed in await build_leaderboard_embeds(
-        categories=[*MAIN_LEADERBOARD_CATEGORIES, *DUEL_LEADERBOARD_CATEGORIES],
-    ):
-        await ctx.send(embed=embed)
+    """Show only the 1v1 leaderboard."""
+    embed = (await build_leaderboard_embeds(
+        categories=DUEL_LEADERBOARD_CATEGORIES,
+    ))[0]
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="1v1-leaderboard", aliases=["1v1_top", "duel-leaderboard", "duel-top"])
