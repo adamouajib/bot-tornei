@@ -4213,6 +4213,7 @@ async def on_command_error(ctx, error):
         usage = {
             "give": "`:give @member <currency> <amount>`",
             "drop": "`:drop <people> <amount> <currency>`",
+            "1v1": "`:1v1 @member <ruby_amount>`",
         }.get(getattr(ctx.command, "qualified_name", ""), "")
         suffix = f"\nUsage: {usage}" if usage else ""
         await ctx.send(f"❌ Missing argument: `{error.param.name}`.{suffix}", delete_after=7.0)
@@ -4220,6 +4221,7 @@ async def on_command_error(ctx, error):
         usage = {
             "give": "`:give @member <currency> <amount>`",
             "drop": "`:drop <people> <amount> <currency>`",
+            "1v1": "`:1v1 @member <ruby_amount>`",
         }.get(getattr(ctx.command, "qualified_name", ""), "")
         if usage:
             await ctx.send(f"❌ Invalid format. Use: {usage}", delete_after=7.0)
@@ -4246,11 +4248,28 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 async def on_interaction(interaction: discord.Interaction):
     """Audit slash commands and component/modal interactions."""
     try:
+        if interaction.type == discord.InteractionType.component:
+            data = getattr(interaction, "data", None) or {}
+            custom_id = data.get("custom_id", "Unknown_Button")
+            created_at = getattr(interaction, "created_at", None)
+            timestamp = (
+                created_at.strftime("%H:%M:%S")
+                if created_at is not None
+                else "--:--:--"
+            )
+            user = interaction.user
+            print(
+                f"[{timestamp}] [BUTTON CLICK] User {user.name} ({user.id}) "
+                f"clicked button: {custom_id}"
+            )
         if interaction.guild:
             name = getattr(interaction.command, "name", None) or interaction.data.get("custom_id", "component")
             await _log_event(interaction.guild, "INTERACTION", str(name), actor=interaction.user)
     except Exception as exc:
         await _log_exception(interaction.guild, "interaction audit", exc)
+    process_application_commands = getattr(bot, "process_application_commands", None)
+    if process_application_commands:
+        await process_application_commands(interaction)
 
 
 @bot.event
@@ -5008,6 +5027,10 @@ async def give(ctx, member: discord.Member, cosa: str, quantita: int):
         except Exception as e:
             print(f"[give rank update] {e}")
     save_db()
+    print(
+        f"[ECONOMY ADMIN] Staff {ctx.author.name} ({ctx.author.id}) "
+        f"added {quantita} {cosa.upper()} to user {member.name} ({member.id})"
+    )
     icon = GIVE_ICONS.get(key, "")
     embed = discord.Embed(
         title="✅ Currency Given!",
@@ -9229,7 +9252,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":team", "Creates a tournament team and optionally invites multiple members.", "<@member1> [@member2…]; the author becomes the team leader.", ":team @Alice @Bob"),
             (":myteam", "Shows the team you currently belong to, including its members and leader.", "No arguments.", ":myteam"),
             (":teamleave", "Removes you from your current team.", "No arguments.", ":teamleave"),
-            (":1v1", "Challenges another member to a 1v1 match using the bot’s duel flow.", "[@opponent] optional member mention.", ":1v1 @Opponent"),
+            (":1v1", "Challenges another member to a 1v1 match with an equal Ruby stake from both players.", "[@opponent] <ruby_amount>; the winner receives the full pot.", ":1v1 @Opponent 500"),
             (":boost", "Shows the Ruby, Crystals and role benefits awarded to server boosters.", "No arguments; available to members.", ":boost"),
             (":vipclaim", "Claims the VIP crystal reward.", "No arguments; requires the VIP role. One claim every 14 days.", ":vipclaim"),
             (":link", "Shows the Stumble Guys account-linking setup; it does not link the account directly.", "Go to <#1542227301322719314>, press the account-link button, then follow the modal and DM screenshot instructions.", ":link"),
@@ -9327,7 +9350,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":team": "Crea una squadra per i tornei a squadre; chi esegue il comando diventa leader e può invitare i membri menzionati.",
         ":myteam": "Mostra la squadra a cui appartieni, con leader e membri attualmente registrati.",
         ":teamleave": "Rimuove l’autore dalla squadra a cui appartiene e aggiorna l’elenco dei membri.",
-        ":1v1": "Invia a un altro membro una sfida 1v1 gratuita in una stanza privata, senza trasferimenti di valuta.",
+        ":1v1": "Invia a un altro membro una sfida 1v1 con una puntata Ruby uguale per entrambi; il vincitore riceve l’intero piatto.",
         ":stumble-top": "Mostra esclusivamente la classifica 1v1 con partite giocate, vittorie e Ruby ottenuti.",
         ":1v1-leaderboard": "Mostra la classifica separata delle vittorie 1v1.",
         ":set-1v1-leaderboard": "Imposta il canale separato per la classifica automatica delle vittorie 1v1.",
@@ -9663,7 +9686,8 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
             "🎁 **Minigames:** Play Chests in [[CHEST_CHANNEL]] and Slots in "
             "[[MACHINE_CHANNEL]].\n\n"
             "⚔️ **1v1 Battles:** Play in [[DUELS_CHANNEL]] using "
-            "`:1v1 <user>` to bet Rubies against another member.\n\n"
+            "`:1v1 <user> <ruby_amount>` to stake the same number of Rubies "
+            "against another member. The winner receives the full pot.\n\n"
             "📊 **Leaderboards:** Compete for the top spots in 1v1, Rubies, "
             "Tournaments Won, Events Won, Crystals, and Chat XP.\n\n"
             "✨ **Perks Note:** Booster, Subscriber, and Bio link perks are listed "
@@ -11469,18 +11493,27 @@ async def chest_cmd(ctx):
 
 
 # ==========================================
-# ⚔️  :1v1 SFIDE
+# ⚔️  :1v1 CHALLENGE
 # ==========================================
 
 class DuelView(View):
-    """Full lifecycle view for a 1v1 duel — persists across all phases."""
+    """Full lifecycle view for a staked 1v1 duel."""
 
-    def __init__(self, challenger: discord.Member, challenged: discord.Member, channel_id: int, guild_id: int):
+    def __init__(
+        self,
+        challenger: discord.Member,
+        challenged: discord.Member,
+        channel_id: int,
+        guild_id: int,
+        ruby_stake: int,
+    ):
         super().__init__(timeout=600)
         self.challenger  = challenger
         self.challenged  = challenged
         self.channel_id  = channel_id
         self.guild_id    = guild_id
+        self.ruby_stake  = ruby_stake
+        self.stake_paid  = False
         self.state       = "pending"    # pending → arbiting
         self.confirmed: set  = set()    # ids who confirmed
         self.duel_thread: discord.Thread | None = None
@@ -11496,8 +11529,29 @@ class DuelView(View):
         e = discord.Embed(title=title, description=desc, color=color)
         e.add_field(name="⚔️ Challenger",  value=self.challenger.mention, inline=True)
         e.add_field(name="🛡️ Challenged",   value=self.challenged.mention, inline=True)
+        e.add_field(
+            name=f"{E_RUBY} Ruby Stake",
+            value=f"**{format_num(self.ruby_stake)}** each",
+            inline=True,
+        )
         e.set_image(url=STUMBLE_IMG)
         return e
+
+    def _refund_stake(self) -> None:
+        if not self.stake_paid:
+            return
+        challenger_profile = get_profile(
+            self.challenger.id,
+            self.challenger.display_name,
+        )
+        challenged_profile = get_profile(
+            self.challenged.id,
+            self.challenged.display_name,
+        )
+        challenger_profile["rubini"] += self.ruby_stake
+        challenged_profile["rubini"] += self.ruby_stake
+        self.stake_paid = False
+        save_db()
 
     async def _set_buttons(self, *buttons):
         self.clear_items()
@@ -11545,9 +11599,36 @@ class DuelView(View):
             return await interaction.response.send_message(
                 "❌ This duel is no longer awaiting acceptance.", ephemeral=True
             )
+        self.state = "accepting"
+        challenger_profile = get_profile(
+            self.challenger.id,
+            self.challenger.display_name,
+        )
+        challenged_profile = get_profile(
+            self.challenged.id,
+            self.challenged.display_name,
+        )
+        if challenger_profile.get("rubini", 0) < self.ruby_stake:
+            self.state = "pending"
+            return await interaction.response.send_message(
+                f"❌ The challenger no longer has enough {E_RUBY} Ruby for this stake.",
+                ephemeral=True,
+            )
+        if challenged_profile.get("rubini", 0) < self.ruby_stake:
+            self.state = "pending"
+            return await interaction.response.send_message(
+                f"❌ You need at least **{format_num(self.ruby_stake)}** {E_RUBY} Ruby to accept this duel.",
+                ephemeral=True,
+            )
+        challenger_profile["rubini"] -= self.ruby_stake
+        challenged_profile["rubini"] -= self.ruby_stake
+        self.stake_paid = True
+        save_db()
         try:
             self.duel_thread = await self._create_duel_thread(interaction)
         except discord.Forbidden:
+            self._refund_stake()
+            self.state = "pending"
             return await interaction.response.send_message(
                 "❌ I couldn't create the private duel thread. "
                 "Please give me permission to create and manage private threads.",
@@ -11555,6 +11636,8 @@ class DuelView(View):
             )
         except (discord.HTTPException, RuntimeError) as exc:
             print(f"[1v1 thread error] {exc}")
+            self._refund_stake()
+            self.state = "pending"
             return await interaction.response.send_message(
                 "❌ I couldn't create the private duel thread. Please try again "
                 "or ask staff to check the channel permissions.",
@@ -11592,6 +11675,7 @@ class DuelView(View):
                 await self.duel_thread.delete(reason="Duel control message setup failed")
             except (discord.Forbidden, discord.HTTPException):
                 pass
+            self._refund_stake()
             self.duel_thread = None
             self.state = "pending"
             return await interaction.response.send_message(
@@ -11622,8 +11706,11 @@ class DuelView(View):
         self.state = "finished"
         prof_l = get_profile(loser.id, loser.name)
         prof_w = get_profile(winner.id, winner.name)
+        pot = self.ruby_stake * 2
         prof_w["duel_matches"] = prof_w.get("duel_matches", 0) + 1
         prof_w["duel_wins"] = prof_w.get("duel_wins", 0) + 1
+        prof_w["rubini"] = prof_w.get("rubini", 0) + pot
+        prof_w["duel_rubies_won"] = prof_w.get("duel_rubies_won", 0) + pot
         prof_l["duel_matches"] = prof_l.get("duel_matches", 0) + 1
         save_db()
         for child in self.children:
@@ -11632,7 +11719,8 @@ class DuelView(View):
             title="🏆 Duel Finished!",
             description=(
                 f"**Winner:** {winner.mention}\n"
-                "**No currency was exchanged.**\n\n"
+                f"**Payout:** {format_num(pot)} {E_RUBY} Ruby\n"
+                f"**Stake:** {format_num(self.ruby_stake)} {E_RUBY} each\n\n"
                 f"Arbiter: {interaction.user.mention}"
             ),
             color=discord.Color.gold()
@@ -11645,22 +11733,52 @@ class DuelView(View):
 
 
 @bot.command(name="1v1")
-async def duel_cmd(ctx, opponent: discord.Member = None):
-    """⚔️ Challenge a member to a 1v1 match."""
+async def duel_cmd(
+    ctx,
+    opponent: discord.Member = None,
+    ruby_amount: int = None,
+):
+    """⚔️ Challenge a member to a 1v1 match for a Ruby stake."""
     if opponent is None:
-        return await ctx.send("❌ Use: `:1v1 @user`", delete_after=5.0)
+        return await ctx.send(
+            "❌ Use: `:1v1 @user <ruby_amount>`",
+            delete_after=5.0,
+        )
+    if ruby_amount is None or ruby_amount < 1:
+        return await ctx.send(
+            "❌ Enter a Ruby stake of at least **1**. "
+            "Use: `:1v1 @user <ruby_amount>`",
+            delete_after=7.0,
+        )
     if opponent.id == ctx.author.id:
         return await ctx.send("❌ You cannot challenge yourself!", delete_after=5.0)
     if opponent.bot:
         return await ctx.send("❌ You cannot challenge a bot!", delete_after=5.0)
-    view = DuelView(ctx.author, opponent, ctx.channel.id, ctx.guild.id)
+    challenger_profile = get_profile(ctx.author.id, ctx.author.display_name)
+    if challenger_profile.get("rubini", 0) < ruby_amount:
+        return await ctx.send(
+            f"❌ You need at least **{format_num(ruby_amount)}** {E_RUBY} Ruby "
+            f"to make this challenge. Your balance: "
+            f"**{format_num(challenger_profile.get('rubini', 0))}** {E_RUBY}.",
+            delete_after=7.0,
+        )
+    view = DuelView(
+        ctx.author,
+        opponent,
+        ctx.channel.id,
+        ctx.guild.id,
+        ruby_amount,
+    )
     em = discord.Embed(
-        title="⚔️ Sfida 1v1!",
+        title="⚔️ 1v1 Challenge!",
         description=(
-            f"{ctx.author.mention} challenged {opponent.mention} to a duel!\n\n"
+            f"{ctx.author.mention} challenged {opponent.mention} to a 1v1 match!\n\n"
+            f"**Ruby stake:** {format_num(ruby_amount)} {E_RUBY} each\n"
+            f"**Total pot:** {format_num(ruby_amount * 2)} {E_RUBY}\n\n"
             f"**{opponent.display_name}**, do you accept the challenge?\n\n"
-            f"After acceptance, a private thread will be created so you can "
-            f"choose the map together. No currency is involved."
+            "If you accept, both players will stake the amount shown above. "
+            "A private English-language thread will be created for the match, "
+            "and the winner will receive the full pot."
         ),
         color=discord.Color.blue()
     )
