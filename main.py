@@ -11730,6 +11730,21 @@ class DuelView(View):
         em.set_image(url=STUMBLE_IMG)
         await interaction.response.edit_message(embed=em, view=self)
         self.stop()
+        duel_channel = self.duel_thread or interaction.channel
+        if duel_channel is not None:
+            try:
+                await duel_channel.send(
+                    f"🏆 {winner.mention} has won the 1v1!\n"
+                    f"💰 Total Rubies awarded: **{format_num(pot)}** {E_RUBY}"
+                )
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[1v1 winner announcement error] {exc}")
+        await asyncio.sleep(10)
+        if isinstance(duel_channel, discord.Thread):
+            try:
+                await duel_channel.delete(reason="1v1 completed")
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound) as exc:
+                print(f"[1v1 thread close error] {exc}")
 
 
 @bot.command(name="1v1")
