@@ -36,7 +36,7 @@ import traceback
 import aiohttp
 from collections.abc import MutableMapping
 
-SQLITE_DB_FILE = "pcf.sqlite3"
+SQLITE_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pcf.sqlite3")
 LEGACY_DB_FILE = "db.json"
 _sqlite_connection: sqlite3.Connection | None = None
 _sqlite_lock = threading.RLock()
@@ -70,6 +70,7 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "CREATE TABLE IF NOT EXISTS metadata "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
+            _sqlite_connection.execute("PRAGMA synchronous=FULL")
             _sqlite_connection.commit()
         return _sqlite_connection
 
@@ -909,8 +910,10 @@ async def assign_winner_role(guild: discord.Guild, member: discord.Member) -> No
     except (discord.Forbidden, discord.HTTPException) as exc:
         print(f"[winner role] {exc}")
     prof = get_profile(member.id, member.display_name)
-    if "W" not in prof.setdefault("w_owned", []):
-        prof["w_owned"].append("W")
+    owned_items = list(prof.get("w_owned", []))
+    if "W" not in owned_items:
+        owned_items.append("W")
+        prof["w_owned"] = owned_items
 
 def get_profile_by_name(name: str):
     name_lower = name.lower()
@@ -2902,7 +2905,8 @@ async def _ensure_perk_role(
         return None
 
 
-def get_profile(user_id, username):
+def get_or_create_user(user_id, username):
+    """Load a user from SQLite first, creating defaults only when absent."""
     uid = str(user_id)
     profiles = db["profiles"]
     cached_user = bot.get_user(int(uid)) if uid.isdigit() else None
@@ -2960,6 +2964,12 @@ def get_profile(user_id, username):
     if prof.get("username") != canonical_username:
         prof["username"] = canonical_username
     return prof
+
+
+def get_profile(user_id, username):
+    """Compatibility wrapper for the persistent user store."""
+    return get_or_create_user(user_id, username)
+
 
 def parse_orario_timestamp(orario_str: str):
     """Parse HH:MM as Italy time (UTC+2) and return Unix UTC timestamp."""
@@ -3064,6 +3074,7 @@ def _record_gems(member: discord.Member, amount: int) -> None:
     row["name"] = member.name
     row["sg_name"] = db.get("sg_links", {}).get(uid, prof.get("sg_name", "")) or row.get("sg_name", "")
     row["total"] = row.get("total", 0) + amount
+    save_db()
 
 def grant_prize(
     prize_text: str,
@@ -10134,14 +10145,6 @@ async def link_cmd(ctx, nome_personalizzato: str = None):
         ),
         color=discord.Color.purple()
     )
-    embed.add_field(
-        name="🌐 PCF™ Server Invite",
-        value=(
-            f"[Click here to join the server]({SERVER_INVITE_URL})\n"
-            f"`{SERVER_INVITE_URL}`"
-        ),
-        inline=False,
-    )
     embed.set_image(url=LINK_EMBED_IMAGE_URL)
     embed.set_footer(text="PCF™ SG Account System")
     view = SGLinkChannelView()
@@ -10813,7 +10816,9 @@ class WShopSelect(discord.ui.Select):
                 f"❌ Not enough Crystals! You need **{format_num(w_data['price'])}** {E_CRYSTAL}",
                 ephemeral=True)
         prof["cristalli"] -= w_data["price"]
-        prof.setdefault("w_owned", []).append(w_name)
+        owned_items = list(prof.get("w_owned", []))
+        owned_items.append(w_name)
+        prof["w_owned"] = owned_items
         role = discord.utils.get(interaction.guild.roles, name=f"W {w_name}")
         if not role:
             try:
@@ -11478,6 +11483,10 @@ class ChestPanelView(View):
 
             prof["rubini"] += ruby_reward
             prof["cristalli"] = prof.get("cristalli", 0) + crystal_reward
+            _set_cooldown_timestamp(
+                interaction.user.id,
+                CHEST_COOLDOWN_ACTION,
+            )
 
             role_notice = None
             if rarity == "🟡 Legendary":
@@ -11522,10 +11531,6 @@ class ChestPanelView(View):
             if role_notice:
                 result_lines.extend(["", role_notice])
 
-            _set_cooldown_timestamp(
-                interaction.user.id,
-                CHEST_COOLDOWN_ACTION,
-            )
             embed = discord.Embed(
                 title=f"{CHEST_EMOJI_MARKUP} Mystery Chest — Opened",
                 description="\n".join(result_lines),

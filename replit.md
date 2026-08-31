@@ -47,9 +47,11 @@ Dependencies are managed by `pyproject.toml` and `uv.lock`; the primary runtime 
 ## Runtime data
 
 The bot stores profiles, balances, tournament state, events, economy data, and
-perk cooldowns in the local `pcf.sqlite3` database. Profile and cooldown writes
-commit directly to SQLite; other state is persisted by `save_db()`. SQLite and
-its WAL files are runtime data and are excluded from version control.
+perk cooldowns in the project-root `pcf.sqlite3` database. Profile and cooldown
+writes commit directly to SQLite, including chest cooldown timestamps; the
+remaining state is persisted by `save_db()`. `on_ready()` reloads the stored
+state before handling interactions. SQLite and its WAL files are runtime data
+and are excluded from version control.
 
 The older `db.json` file is read only as a one-time migration source when the
 SQLite schema has not been initialized.
