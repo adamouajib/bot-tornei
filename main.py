@@ -10632,7 +10632,8 @@ def _sorted_w_items() -> list[tuple[str, dict]]:
 GEM_PACKAGES = [
     (100, 1000),
     (250, 2200),
-    (800, 6000),
+    (500, 4500),
+    (1000, 8000),
 ]
 
 # Exchange rates: (ruby_cost, crystal_reward)
@@ -11655,9 +11656,10 @@ class DuelView(View):
             "⚔️ 1v1 Ready!",
             f"{self.challenger.mention} and {self.challenged.mention}, this private "
             f"thread is your match room.\n\n"
-            "Choose the map and match rules together. The bot will not choose "
-            "them.\n\n"
-            "When the match is complete, a Staff member can record the winner.",
+            "📜 **Rules**\n"
+            "• Choose the map and match rules together. The bot will not choose them.\n"
+            "• As soon as the match is finished, ping the Staff team.\n"
+            "• Only Staff may use the winner buttons below to record the result.",
             discord.Color.orange()
         )
         try:
