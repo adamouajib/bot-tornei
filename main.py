@@ -7779,13 +7779,10 @@ async def on_message(message: discord.Message):
                         read_message_history=False,
                     ),
                 }
-                for role in guild.roles:
-                    if not role.is_default():
-                        overwrites[role] = discord.PermissionOverwrite(
-                            view_channel=False,
-                            send_messages=False,
-                            read_message_history=False,
-                        )
+                # Keep the channel private with the @everyone deny plus the
+                # explicit user and bot allows below.  Adding an overwrite
+                # for every guild role is unnecessary and can exceed
+                # Discord's 100-overwrite channel limit on larger servers.
                 overwrites[member] = discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
@@ -7839,7 +7836,11 @@ async def on_message(message: discord.Message):
                         "**Manage Channels** permission in the server and AI category."
                     )
             except discord.HTTPException as exc:
-                print(f"[AI START] Discord API error for {message.author.id}: {exc}")
+                print(
+                    f"[AI START] Discord API error for {message.author.id}: "
+                    f"status={getattr(exc, 'status', '?')} "
+                    f"code={getattr(exc, 'code', '?')} details={exc}"
+                )
                 await _safe_log_ai_exception(guild, "Private AI channel creation", exc)
                 await message.channel.send(
                     "⚠️ Discord did not allow the private chat to be created. "
