@@ -7653,17 +7653,28 @@ class TicketMainView(View):
 @admin_only()
 async def add_ticket(ctx):
     embed = discord.Embed(
-        title="🎫 PCF™ Support",
+        title="🎫 SUPPORT CENTER",
         description=(
-            "Need help? Select a category below!\n\n"
-            "🆘 **Support** — Chat with our staff via DM\n"
-            "👮 **Staff Request** — Apply to become staff\n"
-            "💎 **Gems Transfer** — Info about gem transfers"
+            "Welcome to **PCF™ System** Support! If you need help, wish to process "
+            "a request, or contact our Staff, select one of the options below.\n\n"
+            "──────────────────────────\n\n"
+            "💎 **Gems Transfer**\n"
+            "└ *Request a gem transfer or claim your rewards.*\n\n"
+            "🛡️ **Staff Request**\n"
+            "└ *Request direct assistance from a Staff member or apply for the Team.*\n\n"
+            "❓ **Support General**\n"
+            "└ *General questions, server inquiries, reports, or general assistance.*\n\n"
+            "──────────────────────────\n\n"
+            "⚠️ **RULES TO FOLLOW:**\n"
+            "• Open a ticket **only if necessary**.\n"
+            "• **Do not ping Staff** right after opening a ticket: we will respond as soon as possible!\n"
+            "• Prepare any relevant screenshots or information beforehand to speed up your request.\n\n"
+            "✨ *Click one of the buttons below to open your private channel!*"
         ),
-        color=discord.Color.gold()
+        color=discord.Color(0x5865F2)
     )
     embed.set_image(url=TICKET_PANEL_IMAGE_URL)
-    embed.set_footer(text="PCF™ Support System")
+    embed.set_footer(text="PCF™ System • 24/7 Support")
     await ctx.send(embed=embed, view=TicketMainView())
 
 @bot.event
@@ -11364,6 +11375,13 @@ CHEST_PANEL_DESCRIPTION = (
     "━━━━━━━━━━━━━━━━━━━━━━"
 )
 CHEST_OPEN_BUTTON_LABEL = "📦 Open Chest"
+CHEST_COOLDOWN_ROLE_IDS = {
+    1201072892398547004,
+    1164660692134150184,
+}
+CHEST_DEFAULT_COOLDOWN_SECONDS = 10 * 60
+CHEST_ROLE_COOLDOWN_SECONDS = 20 * 60
+CHEST_COOLDOWN_ACTION = "chest_open"
 _chest_open_lock = asyncio.Lock()
 
 
@@ -11386,6 +11404,21 @@ def _chest_reward() -> tuple[str, int, int]:
     return "🟡 Legendary", 0, random.randint(20, 50)
 
 
+def _chest_cooldown_seconds(member: discord.Member) -> int:
+    """Return the chest cooldown for a member based on their roles."""
+    if any(role.id in CHEST_COOLDOWN_ROLE_IDS for role in member.roles):
+        return CHEST_ROLE_COOLDOWN_SECONDS
+    return CHEST_DEFAULT_COOLDOWN_SECONDS
+
+
+def _format_cooldown_with_seconds(seconds: int) -> str:
+    """Format a cooldown with exact remaining minutes and seconds."""
+    minutes, seconds = divmod(max(0, seconds), 60)
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
 class ChestPanelView(View):
     """Persistent public view used by every published Mystery Chest panel."""
 
@@ -11405,6 +11438,21 @@ class ChestPanelView(View):
             )
 
         async with _chest_open_lock:
+            cooldown_seconds = _chest_cooldown_seconds(interaction.user)
+            last_opened = _cooldown_timestamp(
+                interaction.user.id,
+                CHEST_COOLDOWN_ACTION,
+            )
+            if last_opened is not None:
+                elapsed = datetime.now().timestamp() - last_opened
+                remaining = max(0, math.ceil(cooldown_seconds - elapsed))
+                if remaining:
+                    return await interaction.response.send_message(
+                        "⏳ You can open the Mystery Chest again in "
+                        f"**{_format_cooldown_with_seconds(remaining)}**.",
+                        ephemeral=True,
+                    )
+
             prof = get_profile(
                 interaction.user.id,
                 interaction.user.display_name,
@@ -11474,6 +11522,10 @@ class ChestPanelView(View):
             if role_notice:
                 result_lines.extend(["", role_notice])
 
+            _set_cooldown_timestamp(
+                interaction.user.id,
+                CHEST_COOLDOWN_ACTION,
+            )
             embed = discord.Embed(
                 title=f"{CHEST_EMOJI_MARKUP} Mystery Chest — Opened",
                 description="\n".join(result_lines),
