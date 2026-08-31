@@ -9764,22 +9764,27 @@ STAFF_TUTORIAL_SOURCE = {
     "description": (
         "Welcome to the official **PCF™ Staff & Hoster** guide!\n"
         "Here you will find the channel directory, tournament/event creation procedures, and hoster commands.\n\n"
-        "──────────────────────────\n\n"
         "📌 **STAFF CHANNELS DIRECTORY:**\n"
-        "• 🏆 **Host Leaderboard:** [[HOST_LEADERBOARD_CHANNEL]]\n"
-        "• 🎯 **Create Tournaments:** [[CREATE_TOURNAMENTS_CHANNEL]]\n"
-        "• 🌟 **Create Big Tournaments:** [[CREATE_BIG_TOURNAMENTS_CHANNEL]] *(⚠️ Currently Disabled)*\n"
-        "• 🎉 **Create Events:** [[CREATE_EVENTS_CHANNEL]]\n"
-        "• 🚀 **Create Big Events:** [[CREATE_BIG_EVENTS_CHANNEL]] *(Special occasions)*\n"
-        "• 📢 **Staff News:** [[STAFF_NEWS_CHANNEL]]\n"
-        "• 💡 **Staff Suggestions:** [[STAFF_SUGGESTIONS_CHANNEL]]\n\n"
-        "──────────────────────────\n\n"
+        "\n"
+        "🏆 **Host Leaderboard**\n"
+        "└ [[HOST_LEADERBOARD_CHANNEL]]\n\n"
+        "🎯 **Create Tournaments**\n"
+        "└ [[CREATE_TOURNAMENTS_CHANNEL]]\n\n"
+        "🌟 **Create Big Tournaments** *(⚠️ Currently Disabled)*\n"
+        "└ [[CREATE_BIG_TOURNAMENTS_CHANNEL]]\n\n"
+        "🎉 **Create Events**\n"
+        "└ [[CREATE_EVENTS_CHANNEL]]\n\n"
+        "🚀 **Create Big Events** *(Special Occasions)*\n"
+        "└ [[CREATE_BIG_EVENTS_CHANNEL]]\n\n"
+        "📢 **Staff News**\n"
+        "└ [[STAFF_NEWS_CHANNEL]]\n\n"
+        "💡 **Staff Suggestions**\n"
+        "└ [[STAFF_SUGGESTIONS_CHANNEL]]\n\n"
         "⚙️ **HOW TO CREATE A TOURNAMENT OR EVENT:**\n"
         "1. Go to the designated channel (e.g. [[CREATE_TOURNAMENTS_CHANNEL]] or [[CREATE_EVENTS_CHANNEL]]).\n"
         "2. Click the **Create Tournament** (or **Create Event**) button inside that channel.\n"
         "3. The bot will automatically generate the post and bracket.\n"
         "4. Manage rooms and matches using the Hoster commands below.\n\n"
-        "──────────────────────────\n\n"
         "🎮 **HOSTER COMMANDS:**\n"
         "• `:qual @user` *(or team)* — Qualify a user or team to the next round.\n"
         "• `:match <number> <code>` — Set room code for a specific match.\n"
@@ -9788,7 +9793,6 @@ STAFF_TUTORIAL_SOURCE = {
         "🛡️ **STAFF MODERATION COMMANDS:**\n"
         "• `/warn @user <reason>` — Warn a rule-breaking user (Slash Command).\n"
         "• `/time @user <duration> <reason>` — Timeout a user (Slash Command).\n\n"
-        "──────────────────────────\n\n"
         "🤖 *Have questions or need help? Feel free to ask the AI in the dedicated channel!*\n"
         "🌐 *Click the button below to change the language.*"
     ),
@@ -9856,6 +9860,7 @@ def _build_staff_tutorial_embed(content: dict | None = None) -> discord.Embed:
     description = str(content.get("description", "")).strip()
     if not title or not description:
         raise ValueError("The Staff & Hoster tutorial is missing text.")
+    _validate_staff_tutorial_structure(description)
     for placeholder, replacement in STAFF_TUTORIAL_PLACEHOLDERS.items():
         description = description.replace(placeholder, replacement)
     if "[[" in description or "]]" in description:
@@ -9865,6 +9870,17 @@ def _build_staff_tutorial_embed(content: dict | None = None) -> discord.Embed:
         description=description,
         color=discord.Color(0xF1C40F),
     )
+
+
+def _validate_staff_tutorial_structure(description: str) -> None:
+    """Keep the mobile-friendly channel tree intact in every language."""
+    if "-------------------" in description or "────────────────" in description:
+        raise ValueError("The Staff & Hoster tutorial contains a manual divider.")
+    for placeholder in STAFF_TUTORIAL_PLACEHOLDERS:
+        if description.count(f"└ {placeholder}") != 1:
+            raise ValueError("The Staff & Hoster tutorial has an invalid channel tree.")
+    if description.count("└ ") != len(STAFF_TUTORIAL_PLACEHOLDERS):
+        raise ValueError("The Staff & Hoster tutorial must contain exactly seven tree branches.")
 
 
 async def _translate_staff_tutorial(language: str) -> discord.Embed:
@@ -9877,9 +9893,11 @@ async def _translate_staff_tutorial(language: str) -> discord.Embed:
         f"language: {language!r}.\n\n"
         'Return ONLY valid JSON in this exact shape: {"title":"...","description":"..."}\n\n'
         "Translate natural-language text only. Keep Markdown formatting, every "
-        "channel placeholder, command, number, emoji, and status exactly unchanged. "
+        "line break, tree marker `└`, channel placeholder, command, number, emoji, "
+        "and status exactly unchanged. "
         "Do not translate or modify anything inside [[...]] tokens. Do not add, "
-        "remove, or reorder content. Do not include Markdown code fences or commentary.\n\n"
+        "remove, reorder, or add divider lines. Do not include Markdown code fences "
+        "or commentary.\n\n"
         f"Source guide:\n{json.dumps(STAFF_TUTORIAL_SOURCE, ensure_ascii=False)}"
     )
     translated = await gemini_completion_with_retries(
