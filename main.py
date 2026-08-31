@@ -37,8 +37,12 @@ import traceback
 import aiohttp
 from collections.abc import MutableMapping
 
-SQLITE_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pcf.sqlite3")
-LEGACY_DB_FILE = "db.json"
+SQLITE_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "database.db")
+LEGACY_SQLITE_DB_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "pcf.sqlite3",
+)
+LEGACY_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db.json")
 _sqlite_connection: sqlite3.Connection | None = None
 _sqlite_lock = threading.RLock()
 
@@ -53,10 +57,17 @@ def _sqlite_conn() -> sqlite3.Connection:
                 check_same_thread=False,
             )
             _sqlite_connection.execute("PRAGMA journal_mode=WAL")
-            _sqlite_connection.execute("PRAGMA synchronous=NORMAL")
+            _sqlite_connection.execute("PRAGMA synchronous=FULL")
             _sqlite_connection.execute(
-                "CREATE TABLE IF NOT EXISTS profiles "
-                "(user_id TEXT PRIMARY KEY, data_json TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS users ("
+                "user_id TEXT PRIMARY KEY, "
+                "rubies INTEGER NOT NULL DEFAULT 0, "
+                "crystals INTEGER NOT NULL DEFAULT 0, "
+                "gems INTEGER NOT NULL DEFAULT 0, "
+                "linked INTEGER NOT NULL DEFAULT 0, "
+                "chest_cooldown REAL NOT NULL DEFAULT 0, "
+                "profile_json TEXT NOT NULL DEFAULT '{}'"
+                ")"
             )
             _sqlite_connection.execute(
                 "CREATE TABLE IF NOT EXISTS state "
@@ -71,7 +82,6 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "CREATE TABLE IF NOT EXISTS metadata "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
-            _sqlite_connection.execute("PRAGMA synchronous=FULL")
             _sqlite_connection.commit()
         return _sqlite_connection
 
@@ -79,35 +89,99 @@ def _sqlite_conn() -> sqlite3.Connection:
 def _profile_exists(user_id: str) -> bool:
     with _sqlite_lock:
         return _sqlite_conn().execute(
-            "SELECT 1 FROM profiles WHERE user_id = ?", (user_id,)
+            "SELECT 1 FROM users WHERE user_id = ?", (user_id,)
         ).fetchone() is not None
 
 
 def _read_profile(user_id: str) -> dict:
     with _sqlite_lock:
         row = _sqlite_conn().execute(
-            "SELECT data_json FROM profiles WHERE user_id = ?", (user_id,)
+            "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown "
+            "FROM users WHERE user_id = ?",
+            (user_id,),
         ).fetchone()
     if row is None:
         raise KeyError(user_id)
-    return json.loads(row[0])
+    try:
+        profile = json.loads(row[0] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        profile = {}
+    profile["rubini"] = int(row[1] or 0)
+    profile["cristalli"] = int(row[2] or 0)
+    profile["gemme"] = int(row[3] or 0)
+    profile["linked"] = bool(row[4])
+    profile["chest_cooldown"] = float(row[5] or 0)
+    return profile
+
+
+def _profile_column_values(profile: dict, existing: sqlite3.Row | None = None) -> tuple[int, int, int, int, float]:
+    """Map the bot's legacy profile keys to the normalized users columns."""
+    def integer_value(key: str, fallback: int = 0) -> int:
+        try:
+            return int(profile.get(key, fallback) or 0)
+        except (TypeError, ValueError):
+            return fallback
+
+    try:
+        chest_cooldown = float(
+            profile.get("chest_cooldown", existing[5] if existing else 0) or 0
+        )
+    except (TypeError, ValueError):
+        chest_cooldown = 0.0
+    return (
+        integer_value("rubini"),
+        integer_value("cristalli"),
+        integer_value("gemme"),
+        int(bool(profile.get("linked", False))),
+        chest_cooldown,
+    )
 
 
 def _write_profile(user_id: str, profile: dict) -> None:
-    payload = json.dumps(dict(profile), ensure_ascii=False)
+    user_id = str(user_id)
     with _sqlite_lock:
-        _sqlite_conn().execute(
-            "INSERT INTO profiles(user_id, data_json) VALUES (?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET data_json=excluded.data_json",
-            (user_id, payload),
+        conn = _sqlite_conn()
+        existing = conn.execute(
+            "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown "
+            "FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        profile_data = dict(profile)
+        rubies, crystals, gems, linked, chest_cooldown = _profile_column_values(
+            profile_data,
+            existing,
         )
-        _sqlite_conn().commit()
+        profile_data["rubini"] = rubies
+        profile_data["cristalli"] = crystals
+        profile_data["gemme"] = gems
+        profile_data["linked"] = bool(linked)
+        profile_data["chest_cooldown"] = chest_cooldown
+        conn.execute(
+            "INSERT INTO users("
+            "user_id, rubies, crystals, gems, linked, chest_cooldown, profile_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "rubies=excluded.rubies, crystals=excluded.crystals, gems=excluded.gems, "
+            "linked=excluded.linked, chest_cooldown=excluded.chest_cooldown, "
+            "profile_json=excluded.profile_json",
+            (
+                user_id,
+                rubies,
+                crystals,
+                gems,
+                linked,
+                chest_cooldown,
+                json.dumps(profile_data, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
 
 
 def _delete_profile(user_id: str) -> None:
     with _sqlite_lock:
-        _sqlite_conn().execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
-        _sqlite_conn().commit()
+        conn = _sqlite_conn()
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
 
 
 class SQLiteProfile(MutableMapping):
@@ -160,14 +234,14 @@ class SQLiteProfileStore(MutableMapping):
     def __iter__(self):
         with _sqlite_lock:
             rows = _sqlite_conn().execute(
-                "SELECT user_id FROM profiles ORDER BY user_id"
+                "SELECT user_id FROM users ORDER BY user_id"
             ).fetchall()
         return (row[0] for row in rows)
 
     def __len__(self):
         with _sqlite_lock:
             return _sqlite_conn().execute(
-                "SELECT COUNT(*) FROM profiles"
+                "SELECT COUNT(*) FROM users"
             ).fetchone()[0]
 
     def __contains__(self, user_id):
@@ -175,8 +249,9 @@ class SQLiteProfileStore(MutableMapping):
 
     def clear(self):
         with _sqlite_lock:
-            _sqlite_conn().execute("DELETE FROM profiles")
-            _sqlite_conn().commit()
+            conn = _sqlite_conn()
+            conn.execute("DELETE FROM users")
+            conn.commit()
 
 
 def _normalise_legacy_profile(profile: dict, username: str) -> dict:
@@ -246,10 +321,78 @@ def _legacy_state(data: dict) -> dict:
     return state
 
 
+def _insert_user_profile(
+    conn: sqlite3.Connection,
+    user_id: str,
+    profile: dict,
+) -> None:
+    """Insert one legacy profile into the normalized users table."""
+    normalized = _normalise_legacy_profile(
+        profile,
+        str(profile.get("name", user_id)) if isinstance(profile, dict) else str(user_id),
+    )
+    rubies, crystals, gems, linked, chest_cooldown = _profile_column_values(normalized)
+    normalized["rubini"] = rubies
+    normalized["cristalli"] = crystals
+    normalized["gemme"] = gems
+    normalized["linked"] = bool(linked)
+    normalized["chest_cooldown"] = chest_cooldown
+    conn.execute(
+        "INSERT OR IGNORE INTO users("
+        "user_id, rubies, crystals, gems, linked, chest_cooldown, profile_json"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            str(user_id),
+            rubies,
+            crystals,
+            gems,
+            linked,
+            chest_cooldown,
+            json.dumps(normalized, ensure_ascii=False),
+        ),
+    )
+
+
 def _migrate_legacy_db(conn: sqlite3.Connection) -> None:
-    if conn.execute("SELECT 1 FROM metadata WHERE key = 'schema'").fetchone():
+    schema = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema'"
+    ).fetchone()
+    if schema and schema[0] == "3":
         return
+
     legacy = {}
+    legacy_profiles: list[tuple[str, dict]] = []
+    legacy_state_rows: list[tuple[str, str]] = []
+    legacy_cooldown_rows: list[tuple[str, str, float]] = []
+
+    if os.path.exists(LEGACY_SQLITE_DB_FILE):
+        old_conn = sqlite3.connect(LEGACY_SQLITE_DB_FILE)
+        try:
+            old_tables = {
+                row[0]
+                for row in old_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if "profiles" in old_tables:
+                for uid, data_json in old_conn.execute(
+                    "SELECT user_id, data_json FROM profiles"
+                ):
+                    try:
+                        legacy_profiles.append((str(uid), json.loads(data_json)))
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+            if "state" in old_tables:
+                legacy_state_rows = old_conn.execute(
+                    "SELECT key, value_json FROM state"
+                ).fetchall()
+            if "cooldowns" in old_tables:
+                legacy_cooldown_rows = old_conn.execute(
+                    "SELECT user_id, action, updated_at FROM cooldowns"
+                ).fetchall()
+        finally:
+            old_conn.close()
+
     if os.path.exists(LEGACY_DB_FILE):
         try:
             with open(LEGACY_DB_FILE, "r", encoding="utf-8") as file:
@@ -259,19 +402,32 @@ def _migrate_legacy_db(conn: sqlite3.Connection) -> None:
     with _sqlite_lock:
         try:
             conn.execute("BEGIN")
+            for uid, profile in legacy_profiles:
+                _insert_user_profile(conn, uid, profile)
             for uid, profile in legacy.get("profiles", {}).items():
+                _insert_user_profile(conn, str(uid), profile)
+            for key, value_json in legacy_state_rows:
                 conn.execute(
-                    "INSERT OR REPLACE INTO profiles(user_id, data_json) VALUES (?, ?)",
-                    (str(uid), json.dumps(
-                        _normalise_legacy_profile(profile, str(profile.get("name", uid))),
-                        ensure_ascii=False,
-                    )),
+                    "INSERT OR IGNORE INTO state(key, value_json) VALUES (?, ?)",
+                    (key, value_json),
                 )
             for key, value in _legacy_state(legacy).items():
                 conn.execute(
-                    "INSERT OR REPLACE INTO state(key, value_json) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO state(key, value_json) VALUES (?, ?)",
                     (key, json.dumps(value, ensure_ascii=False)),
                 )
+            for uid, action, timestamp in legacy_cooldown_rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO cooldowns(user_id, action, updated_at) "
+                    "VALUES (?, ?, ?)",
+                    (str(uid), action, timestamp),
+                )
+                if action == "chest_open":
+                    conn.execute(
+                        "UPDATE users SET chest_cooldown = ? "
+                        "WHERE user_id = ? AND chest_cooldown < ?",
+                        (timestamp, str(uid), timestamp),
+                    )
             for uid, actions in legacy.get("perk_cooldowns", {}).items():
                 for action, raw in actions.items():
                     try:
@@ -279,12 +435,12 @@ def _migrate_legacy_db(conn: sqlite3.Connection) -> None:
                     except (TypeError, ValueError, OverflowError):
                         continue
                     conn.execute(
-                        "INSERT OR REPLACE INTO cooldowns(user_id, action, updated_at) "
+                        "INSERT OR IGNORE INTO cooldowns(user_id, action, updated_at) "
                         "VALUES (?, ?, ?)",
                         (str(uid), action, timestamp),
                     )
             conn.execute(
-                "INSERT OR REPLACE INTO metadata(key, value) VALUES ('schema', '2')"
+                "INSERT OR REPLACE INTO metadata(key, value) VALUES ('schema', '3')"
             )
             conn.commit()
         except Exception:
@@ -378,21 +534,39 @@ def load_db():
 
 def _cooldown_timestamp(user_id: int, action: str) -> float | None:
     with _sqlite_lock:
-        row = _sqlite_conn().execute(
-            "SELECT updated_at FROM cooldowns WHERE user_id = ? AND action = ?",
-            (str(user_id), action),
-        ).fetchone()
+        conn = _sqlite_conn()
+        if action == "chest_open":
+            row = conn.execute(
+                "SELECT chest_cooldown FROM users WHERE user_id = ?",
+                (str(user_id),),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT updated_at FROM cooldowns WHERE user_id = ? AND action = ?",
+                (str(user_id), action),
+            ).fetchone()
     return float(row[0]) if row else None
 
 
 def _set_cooldown_timestamp(user_id: int, action: str, timestamp: float | None = None) -> None:
-    timestamp = datetime.now().timestamp() if timestamp is None else timestamp
+    timestamp = (
+        datetime.now(timezone.utc).timestamp()
+        if timestamp is None
+        else timestamp
+    )
     with _sqlite_lock:
-        _sqlite_conn().execute(
+        conn = _sqlite_conn()
+        conn.execute(
             "INSERT OR REPLACE INTO cooldowns(user_id, action, updated_at) VALUES (?, ?, ?)",
             (str(user_id), action, timestamp),
         )
-        _sqlite_conn().commit()
+        if action == "chest_open":
+            conn.execute(
+                "INSERT INTO users(user_id, chest_cooldown) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET chest_cooldown=excluded.chest_cooldown",
+                (str(user_id), timestamp),
+            )
+        conn.commit()
 
 # ==========================================
 # ⚙️ CONFIG E EMOJI
