@@ -676,6 +676,26 @@ def staff_only():
         return any(r.id in STAFF_ROLE_IDS for r in ctx.author.roles)
     return commands.check(predicate)
 
+
+def _has_staff_tutorial_access(member) -> bool:
+    """Allow staff/admin members or anyone with Discord Manage Messages."""
+    permissions = getattr(member, "guild_permissions", None)
+    return (
+        getattr(permissions, "manage_messages", False)
+        or member.id in OWNER_USER_IDS
+        or any(
+            role.id in STAFF_ROLE_IDS | ADMIN_ROLE_IDS | {HOSTER_ROLE_ID}
+            for role in getattr(member, "roles", ())
+        )
+    )
+
+
+def staff_tutorial_only():
+    async def predicate(ctx):
+        return _has_staff_tutorial_access(ctx.author)
+    return commands.check(predicate)
+
+
 def hoster_only():
     async def predicate(ctx):
         return (
@@ -755,11 +775,13 @@ ADMIN_COMMANDS = {
 STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
-    "set-winner", "end-event", "ban-event", "clear", "purge",
+    "set-winner", "end-event", "ban-event", "clear", "purge", "staff-tutorial",
 }
 
 def _prefix_access_allowed(ctx) -> bool:
     name = getattr(ctx.command, "qualified_name", "").lower()
+    if name == "staff-tutorial":
+        return _has_staff_tutorial_access(ctx.author)
     if name in OWNER_COMMANDS:
         return ctx.author.id in OWNER_USER_IDS
     if name in ADMIN_COMMANDS:
@@ -2582,6 +2604,7 @@ def build_ai_system_instruction() -> str:
             "start-event", "assign-hosts", "add-bot", "close-tour",
             "team-winner", "event",
         }
+        staff_commands = {"staff-tutorial"}
         if name in owner_commands:
             permission = "Owner"
         elif name in manager_commands:
@@ -2590,6 +2613,8 @@ def build_ai_system_instruction() -> str:
             permission = "Admin"
         elif name in host_commands:
             permission = "Host"
+        elif name in staff_commands:
+            permission = "Staff / Manage Messages"
         else:
             permission = "User"
         command_lines.append(
@@ -2758,6 +2783,7 @@ _supporter_weekly_view_registered = False
 _sg_link_channel_view_registered = False
 _additional_persistent_views_registered = False
 _announcement_language_view_registered = False
+_staff_tutorial_view_registered = False
 
 
 def _member_has_role_name(member: discord.Member, role_name: str) -> bool:
@@ -4333,6 +4359,7 @@ async def on_ready():
     global _chest_panel_view_registered, _ticket_main_view_registered
     global _supporter_weekly_view_registered, _sg_link_channel_view_registered
     global _additional_persistent_views_registered, _announcement_language_view_registered
+    global _staff_tutorial_view_registered
     load_db()
     print(f"🔥 PCF™ bot ONLINE!")
     connected_guilds = ", ".join(
@@ -4387,6 +4414,10 @@ async def on_ready():
         bot.add_view(OfficialAnnouncementView())
         _announcement_language_view_registered = True
         print("[on_ready] Persistent announcement language view registered")
+    if not _staff_tutorial_view_registered:
+        bot.add_view(StaffTutorialView())
+        _staff_tutorial_view_registered = True
+        print("[on_ready] Persistent Staff & Hoster tutorial language view registered")
     if not _additional_persistent_views_registered:
         # These views either have no per-message state or resolve their
         # routing data from SQLite, so old messages remain actionable after a
@@ -9718,6 +9749,51 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
     },
 )
 
+STAFF_TUTORIAL_PLACEHOLDERS = {
+    "[[HOST_LEADERBOARD_CHANNEL]]": "<#1542476629970911232>",
+    "[[CREATE_TOURNAMENTS_CHANNEL]]": "<#1542472954577682443>",
+    "[[CREATE_BIG_TOURNAMENTS_CHANNEL]]": "<#1542473024706707507>",
+    "[[CREATE_EVENTS_CHANNEL]]": "<#1542473085876174858>",
+    "[[CREATE_BIG_EVENTS_CHANNEL]]": "<#1542473154939584603>",
+    "[[STAFF_NEWS_CHANNEL]]": "<#1176224187610845235>",
+    "[[STAFF_SUGGESTIONS_CHANNEL]]": "<#1280173014197207140>",
+}
+
+STAFF_TUTORIAL_SOURCE = {
+    "title": "🛡️ PCF™ SYSTEM — STAFF & HOSTER GUIDE",
+    "description": (
+        "Welcome to the official **PCF™ Staff & Hoster** guide!\n"
+        "Here you will find the channel directory, tournament/event creation procedures, and hoster commands.\n\n"
+        "──────────────────────────\n\n"
+        "📌 **STAFF CHANNELS DIRECTORY:**\n"
+        "• 🏆 **Host Leaderboard:** [[HOST_LEADERBOARD_CHANNEL]]\n"
+        "• 🎯 **Create Tournaments:** [[CREATE_TOURNAMENTS_CHANNEL]]\n"
+        "• 🌟 **Create Big Tournaments:** [[CREATE_BIG_TOURNAMENTS_CHANNEL]] *(⚠️ Currently Disabled)*\n"
+        "• 🎉 **Create Events:** [[CREATE_EVENTS_CHANNEL]]\n"
+        "• 🚀 **Create Big Events:** [[CREATE_BIG_EVENTS_CHANNEL]] *(Special occasions)*\n"
+        "• 📢 **Staff News:** [[STAFF_NEWS_CHANNEL]]\n"
+        "• 💡 **Staff Suggestions:** [[STAFF_SUGGESTIONS_CHANNEL]]\n\n"
+        "──────────────────────────\n\n"
+        "⚙️ **HOW TO CREATE A TOURNAMENT OR EVENT:**\n"
+        "1. Go to the designated channel (e.g. [[CREATE_TOURNAMENTS_CHANNEL]] or [[CREATE_EVENTS_CHANNEL]]).\n"
+        "2. Click the **Create Tournament** (or **Create Event**) button inside that channel.\n"
+        "3. The bot will automatically generate the post and bracket.\n"
+        "4. Manage rooms and matches using the Hoster commands below.\n\n"
+        "──────────────────────────\n\n"
+        "🎮 **HOSTER COMMANDS:**\n"
+        "• `:qual @user` *(or team)* — Qualify a user or team to the next round.\n"
+        "• `:match <number> <code>` — Set room code for a specific match.\n"
+        "• `:bracket` — Generate and display the updated bracket.\n"
+        "• `:end` — Conclude the active tournament or event.\n\n"
+        "🛡️ **STAFF MODERATION COMMANDS:**\n"
+        "• `/warn @user <reason>` — Warn a rule-breaking user (Slash Command).\n"
+        "• `/time @user <duration> <reason>` — Timeout a user (Slash Command).\n\n"
+        "──────────────────────────\n\n"
+        "🤖 *Have questions or need help? Feel free to ask the AI in the dedicated channel!*\n"
+        "🌐 *Click the button below to change the language.*"
+    ),
+}
+
 _ANNOUNCEMENT_PLACEHOLDERS = {
     "[[ACCOUNT_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["account"],
     "[[ROLES_CHANNEL]]": OFFICIAL_ANNOUNCEMENT_CHANNELS["roles"],
@@ -9771,6 +9847,57 @@ def _build_announcement_embeds(content: tuple[dict, ...] | list[dict]) -> list[d
 
 def _announcement_source_for_translation() -> list[dict]:
     return [dict(item) for item in OFFICIAL_ANNOUNCEMENT_SOURCE]
+
+
+def _build_staff_tutorial_embed(content: dict | None = None) -> discord.Embed:
+    """Build the English or translated Staff & Hoster tutorial embed."""
+    content = content or STAFF_TUTORIAL_SOURCE
+    title = str(content.get("title", "")).strip()
+    description = str(content.get("description", "")).strip()
+    if not title or not description:
+        raise ValueError("The Staff & Hoster tutorial is missing text.")
+    for placeholder, replacement in STAFF_TUTORIAL_PLACEHOLDERS.items():
+        description = description.replace(placeholder, replacement)
+    if "[[" in description or "]]" in description:
+        raise ValueError("The Staff & Hoster tutorial lost a required channel placeholder.")
+    return discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color(0xF1C40F),
+    )
+
+
+async def _translate_staff_tutorial(language: str) -> discord.Embed:
+    """Translate the one-page Staff & Hoster tutorial into any requested language."""
+    if not GEMINI_CONFIGURED:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+
+    prompt = (
+        "Translate the Staff & Hoster Discord guide below into the requested "
+        f"language: {language!r}.\n\n"
+        'Return ONLY valid JSON in this exact shape: {"title":"...","description":"..."}\n\n'
+        "Translate natural-language text only. Keep Markdown formatting, every "
+        "channel placeholder, command, number, emoji, and status exactly unchanged. "
+        "Do not translate or modify anything inside [[...]] tokens. Do not add, "
+        "remove, or reorder content. Do not include Markdown code fences or commentary.\n\n"
+        f"Source guide:\n{json.dumps(STAFF_TUTORIAL_SOURCE, ensure_ascii=False)}"
+    )
+    translated = await gemini_completion_with_retries(
+        [{"role": "user", "content": prompt}],
+        (
+            "You are a precise Discord guide translator. Return exactly one JSON "
+            "object with title and description. Never translate or modify channel "
+            "placeholders, channel IDs, commands, numbers, emojis, or Markdown syntax."
+        ),
+    )
+    parsed = json.loads(clean_ai_response(translated))
+    if not isinstance(parsed, dict):
+        raise ValueError("The translator did not return one guide object.")
+    translated_description = str(parsed.get("description", ""))
+    for placeholder in STAFF_TUTORIAL_PLACEHOLDERS:
+        if translated_description.count(placeholder) != STAFF_TUTORIAL_SOURCE["description"].count(placeholder):
+            raise ValueError("The translator changed a required channel placeholder.")
+    return _build_staff_tutorial_embed(parsed)
 
 
 async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
@@ -9864,6 +9991,62 @@ class OfficialAnnouncementView(View):
         await interaction.response.send_modal(SetTongueModal())
 
 
+class StaffTutorialLanguageModal(Modal, title="🌐 Translate Staff Guide"):
+    language = TextInput(
+        label="Enter your language:",
+        placeholder="Italian, English, Spanish, Deutsch...",
+        min_length=2,
+        max_length=80,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not _has_staff_tutorial_access(interaction.user):
+            return await interaction.response.send_message(
+                "❌ You do not have permission to translate the Staff & Hoster guide.",
+                ephemeral=True,
+            )
+        language = self.language.value.strip()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            embed = await _translate_staff_tutorial(language)
+            await interaction.followup.send(
+                embed=embed,
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(
+                    roles=False,
+                    users=False,
+                    everyone=False,
+                ),
+            )
+        except Exception as exc:
+            print(f"[staff tutorial translation] {exc}")
+            await interaction.followup.send(
+                "❌ I couldn't translate the Staff & Hoster guide right now. "
+                "Please try again shortly.",
+                ephemeral=True,
+            )
+
+
+class StaffTutorialView(View):
+    """Persistent language control attached to every Staff & Hoster guide."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="🌐 Set Language",
+        style=discord.ButtonStyle.primary,
+        custom_id="staff_tutorial_language_btn",
+    )
+    async def set_language(self, interaction: discord.Interaction, button: Button):
+        if not _has_staff_tutorial_access(interaction.user):
+            return await interaction.response.send_message(
+                "❌ This Staff & Hoster guide is available to staff members only.",
+                ephemeral=True,
+            )
+        await interaction.response.send_modal(StaffTutorialLanguageModal())
+
+
 @bot.command(
     name="announcement",
     aliases=["announce", "official-announcement", "official_announcement", "annuncio"],
@@ -9888,6 +10071,29 @@ async def official_announcement(ctx):
         await ctx.send(
             "❌ I couldn't publish the official announcement. "
             "Check Send Messages, Embed Links, and mention permissions.",
+            delete_after=8.0,
+        )
+
+
+@bot.command(name="staff-tutorial", aliases=["hoster-tutorial"])
+@staff_tutorial_only()
+async def staff_tutorial(ctx):
+    """Publish the English Staff & Hoster guide with an any-language translator."""
+    try:
+        await ctx.send(
+            embed=_build_staff_tutorial_embed(),
+            view=StaffTutorialView(),
+            allowed_mentions=discord.AllowedMentions(
+                roles=False,
+                users=False,
+                everyone=False,
+            ),
+        )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[staff tutorial publish] {exc}")
+        await ctx.send(
+            "❌ I couldn't publish the Staff & Hoster guide. "
+            "Check Send Messages and Embed Links permissions.",
             delete_after=8.0,
         )
 
