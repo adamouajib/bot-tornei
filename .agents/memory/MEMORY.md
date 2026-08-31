@@ -8,3 +8,4 @@
 - [Persistent Discord state](persistent-discord-state.md) — Restart-safe views need static IDs plus durable routing context for per-message actions.
 - [Discord server 2FA](discord-server-2fa.md) — Error 60003 can block bot moderation actions even when channel permissions are present.
 - [Private channel permission limits](private-channel-permission-limits.md) — Use minimal member/bot overrides; Discord caps channel permission overwrites at 100.
+- [Discord typing API](discord-typing-api.md) — Use the v2 async typing context instead of the removed trigger_typing method.
