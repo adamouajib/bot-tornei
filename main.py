@@ -712,7 +712,9 @@ TWITCH_REWARD_CURRENCY_NAMES = {
 
 TOUR_HUB_CHANNEL_ID    = CHANNELS["setup_tornei"]
 TOUR_REG_CHANNEL_ID    = CHANNELS["tournament"]
-TOUR_PING_ROLE_ID      = 1508572231326896269
+# Role used for tournament announcements and tournament controls.
+TOURNAMENT_ROLE_ID     = 1287451275708993537
+TOUR_PING_ROLE_ID      = TOURNAMENT_ROLE_ID
 # Temporary campaign setting: notify everyone for every newly published tournament.
 TOURNAMENT_EVERYONE_PING_ENABLED = True
 TOURNAMENT_INVITE_TUTORIAL = (
@@ -737,7 +739,7 @@ TOURNAMENT_RULES_TEXT = (
 EVENT_INFO_CHANNEL_ID  = CHANNELS["community_event"]
 EVENT_START_CHANNEL_ID = CHANNELS["community_event"]
 
-ADMIN_TOUR_ROLE_ID  = 1510189891361837167   # can host FFA / World Cup
+ADMIN_TOUR_ROLE_ID  = TOURNAMENT_ROLE_ID    # can manage tournament flows
 BOOSTER_ROLE_ID     = 1164660692134150184   # [W] role given on boost
 VIP_ROLE_ID         = 1201072892398547004   # Twitch VIP role
 SG_VERIFIED_ROLE_ID = 1510193637785473185   # given after SG account link
@@ -896,7 +898,10 @@ def hoster_only():
     async def predicate(ctx):
         return (
             ctx.author.id in OWNER_USER_IDS
-            or any(r.id == HOSTER_ROLE_ID for r in ctx.author.roles)
+            or any(
+                r.id in {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+                for r in ctx.author.roles
+            )
             or any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
         )
     return commands.check(predicate)
@@ -988,7 +993,14 @@ def _prefix_access_allowed(ctx) -> bool:
     if name in STAFF_COMMANDS:
         return (
             ctx.author.id in OWNER_USER_IDS
-            or any(r.id in ADMIN_ROLE_IDS | STAFF_ROLE_IDS | {HOSTER_ROLE_ID} for r in ctx.author.roles)
+            or any(
+                r.id in (
+                    ADMIN_ROLE_IDS
+                    | STAFF_ROLE_IDS
+                    | {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+                )
+                for r in ctx.author.roles
+            )
         )
     return True
 
@@ -3328,8 +3340,8 @@ def _normalise_currency(value: str) -> str | None:
     return None
 
 def _validate_tournament_prize_input(value: str) -> bool:
-    """Accept numbered prizes or a compact list such as ``500, 300, 100 Ruby``."""
-    return bool(parse_tournament_prizes(value))
+    """Accept a structured prize list or any non-empty custom prize text."""
+    return bool((value or "").strip())
 
 def parse_tournament_prizes(prize_text: str) -> dict[int, str]:
     """Parse numbered prizes and compact amount lists into position prizes."""
@@ -3340,6 +3352,12 @@ def parse_tournament_prizes(prize_text: str) -> dict[int, str]:
         return prizes
     if not text:
         return {}
+    slash_parts = [part.strip() for part in text.split("/") if part.strip()]
+    if len(slash_parts) > 1:
+        return {
+            position: prize
+            for position, prize in enumerate(slash_parts, start=1)
+        }
     currency = _normalise_currency(text)
     if not currency:
         return {}
@@ -3356,7 +3374,7 @@ def parse_tournament_prizes(prize_text: str) -> dict[int, str]:
 def format_tournament_prizes(prize_text: str) -> str:
     prizes = parse_tournament_prizes(prize_text)
     if not prizes:
-        return "—"
+        return _format_prize((prize_text or "").strip()) or "—"
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     ordinals = {1: "1st", 2: "2nd", 3: "3rd"}
     return "\n".join(
@@ -3694,7 +3712,10 @@ class QualifyView(View):
 
     @discord.ui.button(label="🏆 Set winner", style=discord.ButtonStyle.primary, custom_id="bracket_set_final_winner")
     async def set_final_winner(self, interaction: discord.Interaction, button: Button):
-        is_host = any(r.id == HOSTER_ROLE_ID for r in interaction.user.roles)
+        is_host = any(
+            r.id in {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+            for r in interaction.user.roles
+        )
         is_admin = any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
         if not is_host and not is_admin:
             return await interaction.response.send_message("❌ Only hosts/admins can do this.", ephemeral=True)
@@ -5899,7 +5920,10 @@ class TourRegisterView(View):
 
     @discord.ui.button(label="🎙️ Host (0)", style=discord.ButtonStyle.blurple, custom_id="host_btn")
     async def host_btn(self, interaction: discord.Interaction, button: Button):
-        is_staff = any(r.id in STAFF_ROLE_IDS for r in interaction.user.roles)
+        is_staff = any(
+            r.id in STAFF_ROLE_IDS | {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+            for r in interaction.user.roles
+        )
         if not is_staff:
             return await interaction.response.send_message("❌ Only staff can register as host!", ephemeral=True)
         t = db.get("tour")
@@ -5964,7 +5988,8 @@ class _TourStep3View(View):
 
 
 class TourModal1(Modal):
-    """Step 1/3 — Name · Map · Ability (plus prizes for regular tournaments)."""
+    """Step 1/3 — title, description, format, details and prize."""
+
     def __init__(
         self,
         modalita: str,
@@ -5976,40 +6001,78 @@ class TourModal1(Modal):
         self.modalita = modalita
         self.is_big   = is_big
         self.is_custom = is_custom
-        self.nome    = TextInput(label="📛 Tournament Name",       placeholder="e.g. PCF™ Classic #42", max_length=50)
-        self.mappa   = TextInput(label="🗺️ Map",             placeholder="e.g. Laser Dash")
-        self.abilita = TextInput(label="⚡ Ability / Emote",   placeholder="e.g. Slap, Punch, Banana…")
-        self.premio = None
+        self.nome = TextInput(
+            label="📛 Title",
+            placeholder="e.g. PCF™ Classic #42",
+            max_length=50,
+            required=True,
+            style=discord.TextStyle.short,
+        )
+        self.descrizione = TextInput(
+            label="📝 Description",
+            placeholder="Optional tournament description",
+            max_length=500,
+            required=False,
+            style=discord.TextStyle.paragraph,
+        )
+        self.formato = TextInput(
+            label="🎮 Format / Mode",
+            placeholder="e.g. 1v1, 2v2, 3v3",
+            default=modalita,
+            max_length=20,
+            required=True,
+            style=discord.TextStyle.short,
+        )
+        self.dettagli = TextInput(
+            label="🗺️ Map / ⚡ Ability (optional)",
+            placeholder="e.g. Laser Dash | Slap",
+            max_length=200,
+            required=False,
+            style=discord.TextStyle.paragraph,
+        )
+        self.premio = TextInput(
+            label="🏆 Prize / Montepremi",
+            placeholder=(
+                "e.g. 2500,1000 / 1000,700 / 500,400 / "
+                "200,200 / 100,100 or custom text"
+            ),
+            max_length=500,
+            required=False,
+            style=discord.TextStyle.paragraph,
+        )
         self.add_item(self.nome)
-        self.add_item(self.mappa)
-        self.add_item(self.abilita)
-        if not is_big:
-            self.premio = TextInput(
-                label="🎁 Top 3 prizes",
-                placeholder=DEFAULT_TOURNAMENT_PRIZES,
-                default=DEFAULT_TOURNAMENT_PRIZES,
-                max_length=200)
-            self.add_item(self.premio)
+        self.add_item(self.descrizione)
+        self.add_item(self.formato)
+        self.add_item(self.dettagli)
+        self.add_item(self.premio)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if self.premio and not _validate_tournament_prize_input(self.premio.value):
-            return await interaction.response.send_message(
-                f"❌ Invalid prize format. Use `{DEFAULT_TOURNAMENT_PRIZES}` "
-                "or Crystals.",
-                ephemeral=True)
         uid = str(interaction.user.id)
+        details = self.dettagli.value.strip()
+        if "|" in details:
+            mappa, abilita = (
+                part.strip() or "—"
+                for part in details.split("|", 1)
+            )
+        else:
+            mappa, abilita = details or "—", "—"
+        format_value = self.formato.value.strip() or self.modalita
+        prize_value = self.premio.value.strip()
         _pending_tour_setup[uid] = {
             "nome":     self.nome.value.strip(),
-            "mappa":    self.mappa.value.strip(),
-            "abilita":  self.abilita.value.strip(),
-            "premio":   self.premio.value.strip() if self.premio else "",
-            "modalita": self.modalita,
+            "descrizione": self.descrizione.value.strip(),
+            "mappa":    mappa,
+            "abilita":  abilita,
+            "premio":   prize_value,
+            "premio_step1": prize_value,
+            "modalita": format_value,
             "is_big":   self.is_big,
             "is_custom": self.is_custom,
         }
         await interaction.response.send_message(
             f"✅ **Step 1 / 3 complete!**\nName: `{self.nome.value.strip()}` · "
-            f"Map: `{self.mappa.value.strip()}`\nPress the button to continue.",
+            f"Format: `{format_value}` · Prize: `{prize_value or '—'}`\n"
+            "Press the button to continue.",
             view=_TourStep2View(uid), ephemeral=True)
 
 
@@ -6186,7 +6249,9 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         "host_name":         interaction.user.display_name,
         "modalita":          actual,
         "nome":              nome,
+        "descrizione":       data.get("descrizione", ""),
         "premio":            data["premio"],
+        "premio_step1":      data.get("premio_step1", data["premio"]),
         "mappa":             data["mappa"],
         "emote":             emote_s,
         "players":           [], "player_names": [], "matches": {},
@@ -6199,11 +6264,24 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     }
 
     embed = discord.Embed(title=f"🏆 {'BIG — ' if is_big else ''}{nome}", color=color)
+    description_text = str(data.get("descrizione", "") or "").strip()
+    if description_text:
+        embed.add_field(
+            name="📝 Description",
+            value=description_text[:1024],
+            inline=False,
+        )
     prize_display = (
         format_big_tournament_prizes(data.get("big_prizes"))
         if is_big
         else format_tournament_prizes(data["premio"])
     )
+    step1_prize = str(data.get("premio_step1", "") or "").strip()
+    if is_big and step1_prize:
+        prize_display += (
+            "\n\n**Step 1 Prize / Montepremi:**\n"
+            f"{_format_prize(step1_prize)}"
+        )
     info_val = (
         f"🎮 **Format:** {actual}\n\n"
         f"🗺️ **Map:** {data['mappa']}\n\n"
@@ -6347,7 +6425,14 @@ class TourHubView(View):
             and _has_custom_tournament_access(interaction.user)
         ):
             return await _check_global_creation_interaction(interaction)
-        has = any(r.id in STAFF_ROLE_IDS | {HOSTER_ROLE_ID} | ADMIN_ROLE_IDS for r in interaction.user.roles)
+        has = any(
+            r.id in (
+                STAFF_ROLE_IDS
+                | {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+                | ADMIN_ROLE_IDS
+            )
+            for r in interaction.user.roles
+        )
         if not has:
             await interaction.response.send_message("❌ You don't have permission to do this!", ephemeral=True)
             return False
@@ -6359,7 +6444,10 @@ class TourHubView(View):
             and _has_custom_tournament_access(interaction.user)
         ):
             return await _check_global_creation_interaction(interaction)
-        has = any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in interaction.user.roles)
+        has = any(
+            r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID, TOURNAMENT_ROLE_ID}
+            for r in interaction.user.roles
+        )
         if not has:
             await interaction.response.send_message("❌ Only **Admins** can do this!", ephemeral=True)
             return False
@@ -12322,6 +12410,35 @@ async def chest_cmd(ctx):
 # ⚔️  :1v1 CHALLENGE
 # ==========================================
 
+class DuelWinnerButton(Button):
+    """Winner control with a real callback instead of an inline lambda."""
+
+    def __init__(
+        self,
+        duel_view: "DuelView",
+        winner: discord.Member,
+        loser: discord.Member,
+        *,
+        style: discord.ButtonStyle,
+        custom_id: str,
+    ):
+        super().__init__(
+            label=f"🏆 {winner.display_name} wins",
+            style=style,
+            custom_id=custom_id,
+        )
+        self.duel_view = duel_view
+        self.winner = winner
+        self.loser = loser
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.duel_view._declare_winner(
+            interaction,
+            self.winner,
+            self.loser,
+        )
+
+
 class DuelView(View):
     """Full lifecycle view for a staked 1v1 duel."""
 
@@ -12333,7 +12450,9 @@ class DuelView(View):
         guild_id: int,
         ruby_stake: int,
     ):
-        super().__init__(timeout=600)
+        # A match can last longer than the acceptance window. The arbiter
+        # controls must remain usable until a staff member records the result.
+        super().__init__(timeout=None)
         self.challenger  = challenger
         self.challenged  = challenged
         self.channel_id  = channel_id
@@ -12348,8 +12467,18 @@ class DuelView(View):
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _is_staff(self, member: discord.Member) -> bool:
-        return any(r.id in STAFF_ROLE_IDS | ADMIN_ROLE_IDS | {OWNER_ROLE_ID, HOSTER_ROLE_ID}
-                   for r in member.roles)
+        permissions = getattr(member, "guild_permissions", None)
+        return (
+            getattr(permissions, "administrator", False)
+            or any(
+                r.id in (
+                    STAFF_ROLE_IDS
+                    | ADMIN_ROLE_IDS
+                    | {OWNER_ROLE_ID, HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+                )
+                for r in member.roles
+            )
+        )
 
     def _duel_embed(self, title: str, desc: str, color=discord.Color.blue()) -> discord.Embed:
         e = discord.Embed(title=title, description=desc, color=color)
@@ -12471,10 +12600,20 @@ class DuelView(View):
             )
         self.state = "arbiting"
         self.clear_items()
-        win_a = Button(label=f"🏆 {self.challenger.display_name} wins", style=discord.ButtonStyle.success, custom_id="duel_win_a")
-        win_b = Button(label=f"🏆 {self.challenged.display_name} wins", style=discord.ButtonStyle.danger, custom_id="duel_win_b")
-        win_a.callback = lambda i: self._declare_winner(i, self.challenger, self.challenged)
-        win_b.callback = lambda i: self._declare_winner(i, self.challenged, self.challenger)
+        win_a = DuelWinnerButton(
+            self,
+            self.challenger,
+            self.challenged,
+            style=discord.ButtonStyle.success,
+            custom_id="duel_win_a",
+        )
+        win_b = DuelWinnerButton(
+            self,
+            self.challenged,
+            self.challenger,
+            style=discord.ButtonStyle.danger,
+            custom_id="duel_win_b",
+        )
         self.add_item(win_a)
         self.add_item(win_b)
         em = self._duel_embed(
