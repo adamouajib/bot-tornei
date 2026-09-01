@@ -724,8 +724,13 @@ TOURNAMENT_INVITE_TUTORIAL = (
     "3️⃣ Press **\"Invite Members\"** 👤\n"
     "4️⃣ Click **\"Copy Link\"** 🔗 & send it to your friends!"
 )
+PERSONAL_INVITE_NOTICE = (
+    "📌 **Invite Requirement:**\n"
+    "You must have invited at least 1 member to participate!\n"
+    "Haven't invited anyone yet? Get your personal invite link in <#1544363663870136460>."
+)
 TOURNAMENT_REQUIREMENT_BLOCK = (
-    "📌 **Requirement:** At least 1 Total Server Invite\n\n"
+    f"{PERSONAL_INVITE_NOTICE}\n\n"
     f"{TOURNAMENT_INVITE_TUTORIAL}"
 )
 TOURNAMENT_RULES_TEXT = (
@@ -854,7 +859,8 @@ OFFICIAL_ANNOUNCEMENT_CHANNELS = {
 DEFAULT_EVENT_RULES = (
     "🚫 No Team\n"
     "🚫 No Spam\n"
-    "🚫 No Toxic"
+    "🚫 No Toxic\n\n"
+    f"{PERSONAL_INVITE_NOTICE}"
 )
 
 # ── Level roles ──────────────────────────────────────────────────────────────
@@ -1554,8 +1560,9 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
 
 def _tournament_invite_requirement_message() -> str:
     return (
-        "❌ You haven't invited anyone yet! You need at least 1 invite to register.\n\n"
-        f"{TOURNAMENT_INVITE_TUTORIAL}"
+        "❌ **Registration Failed:** You haven't invited anyone yet! "
+        "Please get your personal invite link in <#1544363663870136460>, "
+        "invite a friend, and try registering again."
     )
 
 
@@ -6287,7 +6294,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     nome        = data["nome"]
     emote_s     = data["abilita"] or "—"
     timing_raw  = data.get("timing", "")
-        ts          = parse_tournament_datetime(timing_raw) if timing_raw else None
+    ts          = parse_tournament_datetime(timing_raw) if timing_raw else None
     if timing_raw and ts is None:
         return await interaction.response.send_message(
                 "❌ Invalid start time. Use "
@@ -6727,6 +6734,7 @@ async def setup_tour_hub(ctx):
             "*Admin only*\n\n"
             "📜 **Rules:** Players need the **1 Invite** role to register. "
             "Follow the host's instructions, be ready on time and respect staff decisions.\n\n"
+            f"{PERSONAL_INVITE_NOTICE}\n\n"
             "─────────────────────────────────────\n\n"
             "📐 Bracket **auto-generates** when slots fill\n"
             "📬 Hosts are **notified via DM** with their matches"
@@ -6760,7 +6768,8 @@ async def big_tour(ctx):
             "Select the Big Tournament type!\n\n"
             "🏆 **Classic** · 🎯 **FFA**\n\n"
             "⚠️ Tournament announcements currently ping **@everyone**!\n"
-            "Only players with a **Verified SG account** can register."
+            "Only players with a **Verified SG account** can register.\n\n"
+            f"{PERSONAL_INVITE_NOTICE}"
         ),
         color=discord.Color.from_rgb(255, 215, 0)
     )
@@ -7562,7 +7571,8 @@ async def event(ctx):
         title="⚡ Flash Event Setup",
         description=(
             f"Click below to configure the Flash Event, {ctx.author.mention}!\n\n"
-            "Fill in the prize and time. Rules are added automatically."
+            "Fill in the prize and time. Rules are added automatically.\n\n"
+            f"{PERSONAL_INVITE_NOTICE}"
         ),
         color=discord.Color.purple()
     )
@@ -7806,7 +7816,8 @@ async def big_event(ctx):
         description=(
             f"Click below to configure the Big Event, {ctx.author.mention}!\n\n"
             "Fill in the name, schedule, and prizes. Rules are added automatically.\n"
-            "This will ping **@everyone** when you use `:start-event`."
+            "This will ping **@everyone** when you use `:start-event`.\n\n"
+            f"{PERSONAL_INVITE_NOTICE}"
         ),
         color=discord.Color.from_rgb(255, 215, 0)
     )
