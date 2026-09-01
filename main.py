@@ -790,6 +790,24 @@ DEFAULT_TOURNAMENT_PRIZES = (
     "3. 25 Crystals + 500 Rubies"
 )
 
+# Big Tournaments use one explicit prize for each final-rank bracket.  The
+# amounts are deliberately kept as data so the setup modal can replace them
+# without changing the announcement or reward code.
+BIG_TOURNAMENT_PRIZE_DEFAULTS = {
+    "1": {"rubies": 2000, "gems": 100},
+    "2": {"rubies": 1000, "gems": 50},
+    "3": {"rubies": 500, "gems": 25},
+    "4_6": {"rubies": 250, "gems": 10},
+    "7_9": {"rubies": 100, "gems": 5},
+}
+BIG_TOURNAMENT_PRIZE_BRACKETS = (
+    ("1", "1st Place", "🥇"),
+    ("2", "2nd Place", "🥈"),
+    ("3", "3rd Place", "🥉"),
+    ("4_6", "4th - 6th Place", "🏅"),
+    ("7_9", "7th - 9th Place", "🎖️"),
+)
+
 # ── Role IDs ────────────────────────────────────────────────────────────────
 HOSTER_ROLE_ID       = STAFF_ROLES["hoster"]  # event/tour/bracket/qual/match/winner
 STAFF_ROLE_IDS       = set(STAFF_ROLES.values())
@@ -939,7 +957,7 @@ def interaction_role_check(interaction: discord.Interaction, roles: set[int]) ->
 OWNER_COMMANDS = {
     "set-log", "set-welcome", "set-lvl", "set-leaderboard",
     "set-1v1-leaderboard", "setup-result",
-    "reset-all", "pex", "setup", "big-tour",
+    "reset-all", "pex", "setup",
     "chest", "announcement",
 }
 ADMIN_COMMANDS = {
@@ -947,7 +965,7 @@ ADMIN_COMMANDS = {
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
     "linked", "leaderboard", "gems", "stumble-top", "1v1-leaderboard",
-    "set-tw", "setup-shop",
+    "set-tw", "setup-shop", "setup-getlink", "big-tour",
     "set-perks", "setup-p", "set-p",
 }
 STAFF_COMMANDS = {
@@ -2951,6 +2969,7 @@ _chest_panel_view_registered = False
 _ticket_main_view_registered = False
 _supporter_weekly_view_registered = False
 _sg_link_channel_view_registered = False
+_personal_invite_view_registered = False
 _additional_persistent_views_registered = False
 _announcement_language_view_registered = False
 _staff_tutorial_view_registered = False
@@ -3344,6 +3363,74 @@ def format_tournament_prizes(prize_text: str) -> str:
         f"{medals.get(position, '🏅')} **{ordinals.get(position, f'{position}th')} Place:** {_format_prize(prize)}"
         for position, prize in sorted(prizes.items())
     )
+
+
+def _parse_big_tournament_prize(value: str) -> dict[str, int] | None:
+    """Parse a modal value in the form ``rubies, gems``."""
+    amounts = re.findall(r"\d[\d.,]*", value or "")
+    if len(amounts) != 2:
+        return None
+    try:
+        rubies, gems = (
+            int(amount.replace(",", "").replace(".", ""))
+            for amount in amounts
+        )
+    except ValueError:
+        return None
+    if rubies < 0 or gems < 0:
+        return None
+    return {"rubies": rubies, "gems": gems}
+
+
+def _format_big_tournament_prize(prize: dict) -> str:
+    """Render one Big Tournament bracket using the public prize format."""
+    rubies = int(prize.get("rubies", 0) or 0)
+    gems = int(prize.get("gems", 0) or 0)
+    return f"{rubies} Rubies + {gems} {E_GEMS}"
+
+
+def _big_tournament_reward_text(prize: dict) -> str:
+    """Render one prize in the plain-text form understood by grant_prize."""
+    rubies = int(prize.get("rubies", 0) or 0)
+    gems = int(prize.get("gems", 0) or 0)
+    return f"{rubies} Rubies + {gems} Gems"
+
+
+def format_big_tournament_prizes(prizes: dict | None) -> str:
+    """Render all five configurable Big Tournament prize brackets."""
+    prizes = prizes or BIG_TOURNAMENT_PRIZE_DEFAULTS
+    return "\n".join(
+        f"• {medal} **{label}:** "
+        f"{_format_big_tournament_prize(prizes.get(key, defaults))}"
+        for key, label, medal in BIG_TOURNAMENT_PRIZE_BRACKETS
+        for defaults in [BIG_TOURNAMENT_PRIZE_DEFAULTS[key]]
+    )
+
+
+def _big_tournament_prize_text(prizes: dict) -> str:
+    """Create a parseable legacy prize string for shared tournament helpers."""
+    return ", ".join(
+        f"{position}. {_format_big_tournament_prize(prizes[key])}"
+        for position, key in enumerate(("1", "2", "3", "4_6", "7_9"), start=1)
+    )
+
+
+def _big_tournament_prize_for_position(tournament: dict, position: int) -> str:
+    """Return the prize awarded to one final placement."""
+    if position <= 3:
+        key = str(position)
+    elif position <= 6:
+        key = "4_6"
+    else:
+        key = "7_9"
+    configured = tournament.get("big_prizes", {}).get(key)
+    if configured:
+        return _big_tournament_reward_text(configured)
+    # Preserve rewards for Big Tournaments created before bracket prizes were
+    # introduced.  Those tournaments only had the top-three prize map.
+    legacy = parse_tournament_prizes(tournament.get("premio", ""))
+    return legacy.get(min(position, 3), legacy.get(1, ""))
+
 
 def _record_gems(member: discord.Member, amount: int) -> None:
     """Keep both the profile balance and the richer gems leaderboard in sync."""
@@ -4579,7 +4666,7 @@ async def send_setup_notifications():
     global _setup_notifications_sent
     if _setup_notifications_sent:
         return
-    setup_names = {"setup", "setup-result", "setup-shop", "big-tour"}
+    setup_names = {"setup", "setup-result", "setup-shop", "setup-getlink", "big-tour"}
     rows = []
     for command in sorted(bot.commands, key=lambda item: item.name.casefold()):
         if command.name not in setup_names:
@@ -4613,6 +4700,7 @@ async def on_ready():
     global _shop_panel_view_registered, _machine_panel_view_registered
     global _chest_panel_view_registered, _ticket_main_view_registered
     global _supporter_weekly_view_registered, _sg_link_channel_view_registered
+    global _personal_invite_view_registered
     global _additional_persistent_views_registered, _announcement_language_view_registered
     global _staff_tutorial_view_registered
     load_db()
@@ -4665,6 +4753,10 @@ async def on_ready():
         bot.add_view(SGLinkChannelView())
         _sg_link_channel_view_registered = True
         print("[on_ready] Persistent SG link panel view registered")
+    if not _personal_invite_view_registered:
+        bot.add_view(PersonalInviteView())
+        _personal_invite_view_registered = True
+        print("[on_ready] Persistent personal invite view registered")
     if not _announcement_language_view_registered:
         bot.add_view(OfficialAnnouncementView())
         _announcement_language_view_registered = True
@@ -5872,7 +5964,7 @@ class _TourStep3View(View):
 
 
 class TourModal1(Modal):
-    """Step 1/3 — Name · Map · Ability · Prize"""
+    """Step 1/3 — Name · Map · Ability (plus prizes for regular tournaments)."""
     def __init__(
         self,
         modalita: str,
@@ -5887,18 +5979,20 @@ class TourModal1(Modal):
         self.nome    = TextInput(label="📛 Tournament Name",       placeholder="e.g. PCF™ Classic #42", max_length=50)
         self.mappa   = TextInput(label="🗺️ Map",             placeholder="e.g. Laser Dash")
         self.abilita = TextInput(label="⚡ Ability / Emote",   placeholder="e.g. Slap, Punch, Banana…")
-        self.premio  = TextInput(
-            label="🎁 Top 3 prizes",
-            placeholder=DEFAULT_TOURNAMENT_PRIZES,
-            default=DEFAULT_TOURNAMENT_PRIZES,
-            max_length=200)
+        self.premio = None
         self.add_item(self.nome)
         self.add_item(self.mappa)
         self.add_item(self.abilita)
-        self.add_item(self.premio)
+        if not is_big:
+            self.premio = TextInput(
+                label="🎁 Top 3 prizes",
+                placeholder=DEFAULT_TOURNAMENT_PRIZES,
+                default=DEFAULT_TOURNAMENT_PRIZES,
+                max_length=200)
+            self.add_item(self.premio)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not _validate_tournament_prize_input(self.premio.value):
+        if self.premio and not _validate_tournament_prize_input(self.premio.value):
             return await interaction.response.send_message(
                 f"❌ Invalid prize format. Use `{DEFAULT_TOURNAMENT_PRIZES}` "
                 "or Crystals.",
@@ -5908,7 +6002,7 @@ class TourModal1(Modal):
             "nome":     self.nome.value.strip(),
             "mappa":    self.mappa.value.strip(),
             "abilita":  self.abilita.value.strip(),
-            "premio":   self.premio.value.strip(),
+            "premio":   self.premio.value.strip() if self.premio else "",
             "modalita": self.modalita,
             "is_big":   self.is_big,
             "is_custom": self.is_custom,
@@ -5917,6 +6011,52 @@ class TourModal1(Modal):
             f"✅ **Step 1 / 3 complete!**\nName: `{self.nome.value.strip()}` · "
             f"Map: `{self.mappa.value.strip()}`\nPress the button to continue.",
             view=_TourStep2View(uid), ephemeral=True)
+
+
+class BigTournamentPrizeModal(Modal):
+    """Collect the five configurable Big Tournament prize brackets."""
+
+    def __init__(self, uid: str):
+        super().__init__(title="🌟 Big Tournament Prizes")
+        self.uid = uid
+        self.inputs: dict[str, TextInput] = {}
+        for key, label, _ in BIG_TOURNAMENT_PRIZE_BRACKETS:
+            defaults = BIG_TOURNAMENT_PRIZE_DEFAULTS[key]
+            field = TextInput(
+                label=f"{label} — Rubies, Gems",
+                placeholder="e.g. 2000, 100",
+                default=f"{defaults['rubies']}, {defaults['gems']}",
+                max_length=30,
+            )
+            self.inputs[key] = field
+            self.add_item(field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        data = _pending_tour_setup.get(self.uid)
+        if data is None:
+            return await interaction.response.send_message(
+                "❌ Session expired — start again with :big-tour.",
+                ephemeral=True,
+            )
+        prizes = {}
+        for key, label, _ in BIG_TOURNAMENT_PRIZE_BRACKETS:
+            parsed = _parse_big_tournament_prize(self.inputs[key].value)
+            if parsed is None:
+                return await interaction.response.send_message(
+                    f"❌ Invalid value for **{label}**. Enter two non-negative "
+                    "whole numbers: `Rubies, Gems` (for example, `2000, 100`).",
+                    ephemeral=True,
+                )
+            prizes[key] = parsed
+        data["big_prizes"] = prizes
+        data["premio"] = _big_tournament_prize_text(prizes)
+        await interaction.response.send_message(
+            "✅ **Prize setup complete!**\n\n"
+            f"{format_big_tournament_prizes(prizes)}\n\n"
+            "Press the button to add final notes and publish the tournament.",
+            view=_TourStep3View(self.uid),
+            ephemeral=True,
+        )
 
 
 class TourModal2(Modal):
@@ -5947,6 +6087,9 @@ class TourModal2(Modal):
             "max_p":   max_val,
             "regione": self.regione.value.strip() if self.regione.value else "",
         })
+        if self.is_big:
+            await interaction.response.send_modal(BigTournamentPrizeModal(uid))
+            return
         timing_txt = self.timing.value.strip() or "—"
         max_txt    = str(max_val) if max_val else "default"
         reg_txt    = self.regione.value.strip() or "—"
@@ -6052,14 +6195,20 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         "is_big":            is_big,
         "is_custom":         is_custom,
         "start_timestamp":   ts,
+        "big_prizes":        data.get("big_prizes", {}),
     }
 
     embed = discord.Embed(title=f"🏆 {'BIG — ' if is_big else ''}{nome}", color=color)
+    prize_display = (
+        format_big_tournament_prizes(data.get("big_prizes"))
+        if is_big
+        else format_tournament_prizes(data["premio"])
+    )
     info_val = (
         f"🎮 **Format:** {actual}\n\n"
         f"🗺️ **Map:** {data['mappa']}\n\n"
         f"⚡ **Ability:** {emote_s}\n\n"
-        f"🎁 **Prizes:**\n\n{format_tournament_prizes(data['premio'])}\n\n"
+        f"🎁 **Prizes:**\n\n{prize_display}\n\n"
         f"⏰ **{time_str}**"
     )
     if data.get("regione"):
@@ -6219,7 +6368,7 @@ class TourHubView(View):
     @discord.ui.button(label="🏆 Classic", style=discord.ButtonStyle.success, custom_id="hub_classic")
     async def classic(self, interaction: discord.Interaction, button: Button):
         if self.is_big:
-            if not await self._check_admin(interaction): return
+            if not await self._check_staff(interaction): return
         else:
             if not await self._check_staff(interaction): return
         await interaction.response.send_modal(
@@ -6232,7 +6381,10 @@ class TourHubView(View):
 
     @discord.ui.button(label="🎯 FFA (1v1v1)", style=discord.ButtonStyle.danger, custom_id="hub_ffa")
     async def ffa(self, interaction: discord.Interaction, button: Button):
-        if not await self._check_admin(interaction): return
+        if self.is_big:
+            if not await self._check_staff(interaction): return
+        elif not await self._check_admin(interaction):
+            return
         await interaction.response.send_modal(
             TourModal1(
                 "FFA",
@@ -6763,7 +6915,12 @@ async def match(ctx, match_num: int, codice: str):
         )
         e.add_field(name="🗺️ Map",       value=t["mappa"],        inline=True)
         e.add_field(name="⚡ Ability",    value=t["emote"],        inline=True)
-        e.add_field(name="🎁 Prize",      value=_format_prize(t["premio"]), inline=True)
+        prize_value = (
+            format_big_tournament_prizes(t.get("big_prizes"))
+            if t.get("is_big")
+            else _format_prize(t["premio"])
+        )
+        e.add_field(name="🎁 Prize",      value=prize_value, inline=True)
         e.add_field(name="🔑 Room Code",  value=f"```{codice}```",  inline=False)
         e.add_field(name="⏱️ Deadline",   value=f"<t:{end_ts}:R>", inline=False)
         e.set_footer(text=f"Host: {t['host_name']}  •  PCF™ Tournaments")
@@ -6852,9 +7009,11 @@ async def winner_tour(ctx, *winners: discord.Member):
     t = db["tour"]
     if not t:
         return await ctx.send("❌ No active tournament.", delete_after=5.0)
-    if len(winners) > 4:
+    is_big = bool(t.get("is_big"))
+    max_winners = 9 if is_big else 4
+    if len(winners) > max_winners:
         return await ctx.send(
-            "❌ Indica al massimo 4 persone: 1°, 2°, 3° e 4° posto.",
+            f"❌ Enter at most {max_winners} final placements.",
             delete_after=6.0)
     winner = winners[0] if winners else None
     # Auto-detect winner if not provided
@@ -6887,9 +7046,15 @@ async def winner_tour(ctx, *winners: discord.Member):
             f"Use `:qual @winner` to finish them first.", delete_after=6.0)
     placements = list(winners) if winners else [winner]
     prize_map = parse_tournament_prizes(t.get("premio", ""))
+    first_prize_text = ""
     for position, member in enumerate(placements, start=1):
-        prize_position = min(position, 3)
-        prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+        if is_big:
+            prize_text = _big_tournament_prize_for_position(t, position)
+        else:
+            prize_position = min(position, 3)
+            prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+        if position == 1:
+            first_prize_text = prize_text
         await assign_winner_role(ctx.guild, member)
         prof = get_profile(member.id, member.display_name)
         prof["tornei_v"] += 1 if position == 1 else 0
@@ -6901,9 +7066,14 @@ async def winner_tour(ctx, *winners: discord.Member):
     # Other placements are still awarded above, but their names are not
     # published in the final Winners section.
     result_lines = f"**1.** {winner.mention}"
+    result_prizes = (
+        format_big_tournament_prizes(t.get("big_prizes"))
+        if is_big
+        else format_tournament_prizes(t.get("premio", ""))
+    )
     embed = discord.Embed(
         title=f"🏆 {t.get('nome', 'Tournament')} — Results",
-        description=f"🎁 **Prizes**\n{format_tournament_prizes(t.get('premio', ''))}\n\n"
+        description=f"🎁 **Prizes**\n{result_prizes}\n\n"
                     f"🏆 **Winners**\n{result_lines}",
         color=discord.Color.gold()
     )
@@ -6916,16 +7086,14 @@ async def winner_tour(ctx, *winners: discord.Member):
         embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
     embed.set_footer(text=f"Host: {t['host_name']}")
 
-    is_big = t.get("is_big", False)
     participants = list(t.get("players", []))
 
     # The normal prize grant above is the single source of truth for rewards.
     # Do not grant the Big Tournament first-place prize a second time here.
     if is_big:
         sg_name    = db.get("sg_links", {}).get(str(winner.id), winner.display_name)
-        prize_text = prize_map.get(1, t.get("premio", ""))
-        if "gem" in prize_text.lower():
-            gem_count = int(re.search(r"\d+", prize_text).group()) if re.search(r"\d+", prize_text) else 0
+        if "gem" in first_prize_text.lower():
+            gem_count = int(re.findall(r"\d[\d.,]*", first_prize_text)[1].replace(",", "").replace(".", "")) if len(re.findall(r"\d[\d.,]*", first_prize_text)) > 1 else 0
             embed.add_field(name="💎 Gems",
                 value=f"**+{gem_count} Gems** added to {winner.display_name}'s record (SG: `{sg_name}`)",
                 inline=False)
@@ -6936,7 +7104,7 @@ async def winner_tour(ctx, *winners: discord.Member):
     result_channel = bot.get_channel(db.get("result_channel_id")) or ctx.channel
     if is_big and participants:
         _tour_nome_snap  = t.get("nome", "Big Tournament") if t else "Big Tournament"
-        _prize_text_snap = prize_text if is_big else t.get("premio", "")
+        _prize_text_snap = first_prize_text
 
         class BigTourSentView(View):
             def __init__(self):
@@ -7012,7 +7180,15 @@ async def team_winner(ctx):
         description=f"The winning team is **{winning_slot}**! 🎉",
         color=discord.Color.gold()
     )
-    embed.add_field(name="🎁 Prizes",     value=format_tournament_prizes(t.get("premio","—")), inline=False)
+    embed.add_field(
+        name="🎁 Prizes",
+        value=(
+            format_big_tournament_prizes(t.get("big_prizes"))
+            if t.get("is_big")
+            else format_tournament_prizes(t.get("premio", "—"))
+        ),
+        inline=False,
+    )
     embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points each",          inline=True)
     embed.add_field(name="🗺️ Map",       value=t.get("mappa","—"),                 inline=True)
     embed.add_field(name="⚡ Ability",    value=t.get("emote","—"),                 inline=True)
@@ -7031,7 +7207,12 @@ async def team_winner(ctx):
                     prof = get_profile(mbr.id, mbr.display_name)
                     prof["tornei_v"] += 1
                     prof["punti"]    += 100
-                    grant_prize(t.get("premio",""), mbr, tournament_reward=True)
+                    reward_text = (
+                        _big_tournament_prize_for_position(t, 1)
+                        if t.get("is_big")
+                        else t.get("premio", "")
+                    )
+                    grant_prize(reward_text, mbr, tournament_reward=True)
                     await update_rank_roles(ctx.guild, mbr, prof["punti"])
             except Exception:
                 pass
@@ -9563,6 +9744,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         [
             (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons. Players need the 1 Invite role to register.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
             (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires the 1 Invite role plus a verified SG account for registration.", "No text arguments; admin access.", ":big-tour"),
+            (":setup-getlink", "Posts the English personal invite-link panel. Each member can generate a unique permanent server invite privately.", "No text arguments; admin access.", ":setup-getlink"),
             (":assign-hosts (alias :assign_hosts)", "Distributes the active tournament’s matches among registered hosts.", "No arguments; hoster/admin access.", ":assign-hosts"),
             (":add_bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :add_bot afterwards.", ":add_bot 2"),
             (":bracket", "Creates the first bracket or advances the tournament to a later round after matches are complete.", "[round] optional target round number; at least two players are required.", ":bracket 2"),
@@ -10641,6 +10823,70 @@ class SGLinkChannelView(View):
     @discord.ui.button(label="🔗 Link my SG Account", style=discord.ButtonStyle.primary, custom_id="sg_link_channel_btn")
     async def link_btn(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(SGLinkModal(guild_id=interaction.guild_id))
+
+
+class PersonalInviteView(View):
+    """Persistent panel for generating a private, permanent server invite."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="🔗 Create Link",
+        style=discord.ButtonStyle.primary,
+        custom_id="generate_personal_invite_btn",
+    )
+    async def create_link(self, interaction: discord.Interaction, button: Button):
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message(
+                "❌ This button can only be used inside the server.",
+                ephemeral=True,
+            )
+
+        channel = interaction.channel
+        if not hasattr(channel, "create_invite"):
+            return await interaction.response.send_message(
+                "❌ I cannot create an invite in this channel.",
+                ephemeral=True,
+            )
+        try:
+            invite = await channel.create_invite(
+                max_age=0,
+                max_uses=0,
+                temporary=False,
+                unique=True,
+                reason=f"Personal invite requested by {interaction.user} ({interaction.user.id})",
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return await interaction.response.send_message(
+                "❌ I could not create an invite here. Please ask an administrator "
+                "to grant me the **Create Invite** permission.",
+                ephemeral=True,
+            )
+
+        await interaction.response.send_message(
+            f"✨ **Here is your personal invite link:**\n{invite.url}\n\n"
+            "Share this link with your friends to invite them to the server!",
+            ephemeral=True,
+        )
+
+
+@bot.command(name="setup-getlink", aliases=["setup_getlink", "setup-get-link"])
+@admin_only()
+async def setup_getlink(ctx):
+    """Publish the English personal invite-link panel."""
+    embed = discord.Embed(
+        title="🔗 PERSONAL INVITE LINK GENERATOR",
+        description=(
+            "Click the button below to generate your unique personal invite link "
+            "for the server!\n"
+            "Share this link with your friends to invite them to the community "
+            "and track your invites."
+        ),
+        color=discord.Color.from_rgb(52, 152, 219),
+    )
+    await ctx.send(embed=embed, view=PersonalInviteView())
 
 
 @bot.command(name="link")
