@@ -33,9 +33,126 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import random
+import sys
 import traceback
 import aiohttp
 from collections.abc import MutableMapping
+
+
+def _print_detailed_interaction_error(
+    kind: str,
+    owner,
+    interaction: discord.Interaction,
+    error: Exception,
+    item=None,
+) -> None:
+    """Print enough context to reproduce a failed Discord interaction."""
+    print("\n" + "=" * 50, file=sys.stderr)
+    print(
+        f"❌ [{kind} ERROR] Exception in {owner.__class__.__name__}",
+        file=sys.stderr,
+    )
+    user = getattr(interaction, "user", None)
+    print(
+        f"User: {user!s} (ID: {getattr(user, 'id', 'unknown')})",
+        file=sys.stderr,
+    )
+    if item is not None:
+        print(
+            "Component: "
+            f"{getattr(item, 'label', None) or item.__class__.__name__} "
+            f"(custom_id={getattr(item, 'custom_id', None)!r})",
+            file=sys.stderr,
+        )
+    data = getattr(interaction, "data", None)
+    if data is not None:
+        print(f"Interaction Data: {data!r}", file=sys.stderr)
+    if kind == "MODAL":
+        print("Submitted Values:", file=sys.stderr)
+        for child in getattr(owner, "children", []):
+            if not hasattr(child, "label") or not hasattr(child, "value"):
+                continue
+            try:
+                value = child.value
+            except Exception:
+                value = "<unavailable>"
+            print(
+                f"  - {getattr(child, 'label', child.__class__.__name__)}: "
+                f"{value!r}",
+                file=sys.stderr,
+            )
+    print("-" * 50, file=sys.stderr)
+    traceback.print_exception(
+        type(error),
+        error,
+        error.__traceback__,
+        file=sys.stderr,
+    )
+    print("=" * 50 + "\n", file=sys.stderr)
+
+
+async def _send_detailed_interaction_error(
+    interaction: discord.Interaction,
+    error: Exception,
+    kind: str,
+) -> None:
+    """Report an interaction failure without masking the original exception."""
+    error_text = f"{type(error).__name__}: {error}"
+    message = f"⚠️ **{kind} Error:** `{error_text}`"
+    if len(message) > 1900:
+        message = message[:1897] + "…`"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception as response_error:
+        print(
+            f"❌ [INTERACTION ERROR] Could not send error response: "
+            f"{type(response_error).__name__}: {response_error}",
+            file=sys.stderr,
+        )
+        traceback.print_exception(
+            type(response_error),
+            response_error,
+            response_error.__traceback__,
+            file=sys.stderr,
+        )
+
+
+class DetailedModal(Modal):
+    """Modal base class with full submission diagnostics."""
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+    ) -> None:
+        _print_detailed_interaction_error("MODAL", self, interaction, error)
+        await _send_detailed_interaction_error(interaction, error, "Modal")
+
+
+class DetailedView(View):
+    """View base class with full component callback diagnostics."""
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item,
+    ) -> None:
+        _print_detailed_interaction_error(
+            "INTERACTION",
+            self,
+            interaction,
+            error,
+            item=item,
+        )
+        await _send_detailed_interaction_error(
+            interaction,
+            error,
+            "Interaction",
+        )
 
 SQLITE_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "database.db")
 LEGACY_SQLITE_DB_FILE = os.path.join(
@@ -1845,7 +1962,7 @@ def _ai_welcome_embed(guild: discord.Guild, channel: discord.TextChannel) -> dis
     )
     return embed
 
-class PrivateAIChatView(View):
+class PrivateAIChatView(DetailedView):
     def __init__(self, user_id: int):
         super().__init__(timeout=None)
         self.user_id = user_id
@@ -3697,7 +3814,7 @@ def _is_ffa_match(m_data: dict) -> bool:
 
 MATCHES_PER_PAGE = 8
 
-class FinalWinnerModal(Modal, title="🏆 Set winner"):
+class FinalWinnerModal(DetailedModal, title="🏆 Set winner"):
     winner_number = TextInput(
         label="Winner number (1 or 2)",
         placeholder="Enter 1 for the first player or 2 for the second",
@@ -3756,7 +3873,7 @@ class FinalWinnerModal(Modal, title="🏆 Set winner"):
         await _update_bracket_messages(t)
 
 
-class QualifyView(View):
+class QualifyView(DetailedView):
     """Button shown on the last bracket embed to reveal qualified players."""
     def __init__(self, qualified: list[str], final_match=None):
         super().__init__(timeout=None)
@@ -4708,6 +4825,12 @@ async def on_command_error(ctx, error):
 
 @bot.event
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    _print_detailed_interaction_error(
+        "INTERACTION",
+        interaction,
+        interaction,
+        error,
+    )
     await _log_exception(interaction.guild, f"slash command {getattr(interaction.command, 'name', 'unknown')}", error)
     message = "❌ You don't have permission to use this command." if isinstance(error, app_commands.CheckFailure) else "❌ An internal error occurred while running that command."
     if interaction.response.is_done():
@@ -4748,7 +4871,10 @@ async def on_interaction(interaction: discord.Interaction):
 async def on_error(event_method, *args, **kwargs):
     """Catch uncaught Discord event errors and send them to the audit channel."""
     exc = traceback.format_exc()
-    print(f"[DISCORD EVENT ERROR] {event_method}\n{exc}")
+    print("\n" + "=" * 50, file=sys.stderr)
+    print(f"❌ [DISCORD EVENT ERROR] {event_method}", file=sys.stderr)
+    print(exc, file=sys.stderr)
+    print("=" * 50 + "\n", file=sys.stderr)
     guild = getattr(args[0], "guild", None) if args else None
     await _log_event(guild, "ERROR", f"event={event_method}: {exc[-1800:]}")
 
@@ -5272,7 +5398,18 @@ async def _log_event(guild, category: str, details: str, *, actor=None):
 
 
 async def _log_exception(guild, context: str, exc: Exception):
-    print(f"[{context}] {exc}")
+    print("\n" + "=" * 50, file=sys.stderr)
+    print(
+        f"❌ [ERROR] {context}: {type(exc).__name__}: {exc}",
+        file=sys.stderr,
+    )
+    traceback.print_exception(
+        type(exc),
+        exc,
+        exc.__traceback__,
+        file=sys.stderr,
+    )
+    print("=" * 50 + "\n", file=sys.stderr)
     await _log_event(guild, "ERROR", f"{context}: {type(exc).__name__}: {exc}")
 
 
@@ -5610,7 +5747,7 @@ async def reset_stat(ctx, member: discord.Member, cosa: str):
 # ==========================================
 pending_invites: dict = {}
 
-class TeamInviteView(View):
+class TeamInviteView(DetailedView):
     def __init__(self, team_id: str, invitee_id: int, leader_name: str, mode: str):
         super().__init__(timeout=120)
         self.team_id    = team_id
@@ -5859,7 +5996,7 @@ async def team_leave(ctx):
 # ==========================================
 # 🏆 TORNEI — REGISTRATION VIEW
 # ==========================================
-class TourRegisterView(View):
+class TourRegisterView(DetailedView):
     def __init__(self, count: int = 0, max_p: int = 32, host_count: int = 0):
         super().__init__(timeout=None)
         for child in self.children:
@@ -6024,7 +6161,7 @@ FORMATO_MAP = {
 _pending_tour_setup: dict = {}
 
 
-class _TourStep2View(View):
+class _TourStep2View(DetailedView):
     """Shown after Modal1 so the user can open Modal2 with a button click."""
     def __init__(self, uid: str):
         super().__init__(timeout=300)
@@ -6042,7 +6179,7 @@ class _TourStep2View(View):
         await interaction.response.send_modal(TourModal2(self.uid, data.get("is_big", False)))
 
 
-class _TourStep3View(View):
+class _TourStep3View(DetailedView):
     """Shown after Modal2 so the user can open Modal3 with a button click."""
     def __init__(self, uid: str):
         super().__init__(timeout=300)
@@ -6059,7 +6196,7 @@ class _TourStep3View(View):
         await interaction.response.send_modal(TourModal3(self.uid))
 
 
-class TourModal1(Modal):
+class TourModal1(DetailedModal):
     """Step 1/3 — title, description, format, details and prize."""
 
     def __init__(
@@ -6148,7 +6285,7 @@ class TourModal1(Modal):
             view=_TourStep2View(uid), ephemeral=True)
 
 
-class BigTournamentPrizeModal(Modal):
+class BigTournamentPrizeModal(DetailedModal):
     """Collect the five configurable Big Tournament prize brackets."""
 
     def __init__(self, uid: str):
@@ -6194,7 +6331,7 @@ class BigTournamentPrizeModal(Modal):
         )
 
 
-class TourModal2(Modal):
+class TourModal2(DetailedModal):
     """Step 2/3 — Schedule · Max players · Region"""
     def __init__(self, uid: str, is_big: bool = False):
         super().__init__(title=f"🏆 Tournament Setup (2/3)")
@@ -6242,7 +6379,7 @@ class TourModal2(Modal):
             view=_TourStep3View(uid), ephemeral=True)
 
 
-class TourModal3(Modal):
+class TourModal3(DetailedModal):
     """Step 3/3 — Note host · Colore embed"""
     def __init__(self, uid: str):
         super().__init__(title="🏆 Tournament Setup (3/3)")
@@ -6439,7 +6576,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
 
 
 # ── Legacy TourSelectView kept for backward compat ───────────────────────────
-class TourSelectView(View):
+class TourSelectView(DetailedView):
     def __init__(self, host_id: int):
         super().__init__(timeout=120)
         self.host_id = host_id
@@ -6481,7 +6618,7 @@ class TourSelectView(View):
         await self._open(interaction, "World Cup")
 
 
-class TourHubView(View):
+class TourHubView(DetailedView):
     def __init__(
         self,
         is_big: bool = False,
@@ -6585,7 +6722,7 @@ def _build_custom_tournament_panel_embed() -> discord.Embed:
     )
 
 
-class CustomTournamentPanelView(View):
+class CustomTournamentPanelView(DetailedView):
     """Permanent public panel that opens the VIP/booster tournament flow."""
 
     def __init__(self):
@@ -7277,7 +7414,7 @@ async def winner_tour(ctx, *winners: discord.Member):
         _tour_nome_snap  = t.get("nome", "Big Tournament") if t else "Big Tournament"
         _prize_text_snap = first_prize_text
 
-        class BigTourSentView(View):
+        class BigTourSentView(DetailedView):
             def __init__(self):
                 super().__init__(timeout=None)
                 self._sent = False
@@ -7478,7 +7615,7 @@ async def duel_leaderboard_slash(interaction: discord.Interaction):
 # ==========================================
 # ⚡ EVENTI FLASH
 # ==========================================
-class EventModal(Modal, title="⚡ Create Flash Event"):
+class EventModal(DetailedModal, title="⚡ Create Flash Event"):
     orario = TextInput(
         label="⏰ Start time",
         placeholder=(
@@ -7542,7 +7679,7 @@ class EventModal(Modal, title="⚡ Create Flash Event"):
             if not published and not interaction.response.is_done():
                 await interaction.response.send_message(embed=embed)
 
-class EventSetupView(View):
+class EventSetupView(DetailedView):
     def __init__(self, host_id: int, channel: discord.TextChannel):
         super().__init__(timeout=120)
         self.host_id = host_id
@@ -7717,7 +7854,7 @@ async def end_event(ctx, base_premio: int, valuta: str):
 # ==========================================
 # 🌟 BIG EVENT
 # ==========================================
-class BigEventModal(Modal, title="🌟 Create Big Event"):
+class BigEventModal(DetailedModal, title="🌟 Create Big Event"):
     info   = TextInput(label="🏷️ Event Name | Time/Schedule",
                        placeholder=(
                            "e.g. Stumble Cup S1 | 18:00, "
@@ -7786,7 +7923,7 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
             if not published and not interaction.response.is_done():
                 await interaction.response.send_message(embed=embed)
 
-class BigEventSetupView(View):
+class BigEventSetupView(DetailedView):
     def __init__(self, host_id: int, channel: discord.TextChannel):
         super().__init__(timeout=120)
         self.host_id = host_id
@@ -7826,7 +7963,7 @@ async def big_event(ctx):
     embed.set_image(url=EVENT_EMBED_IMAGE_URL)
     await ctx.send(embed=embed, view=view, file=event_file)
 
-class BigEventWinnerModal(Modal, title="🏆 Big Event — Final Rankings"):
+class BigEventWinnerModal(DetailedModal, title="🏆 Big Event — Final Rankings"):
     primo   = TextInput(label="🥇 1st Place — ID or <@mention>", placeholder="e.g. 123456789 or <@123456789>")
     secondo = TextInput(label="🥈 2nd Place — ID or <@mention>", placeholder="e.g. 123456789 or <@123456789>")
     terzo   = TextInput(label="🥉 3rd Place — ID or <@mention>", placeholder="e.g. 123456789 or <@123456789>")
@@ -7872,7 +8009,7 @@ class BigEventWinnerModal(Modal, title="🏆 Big Event — Final Rankings"):
         except Exception:
             await interaction.response.send_message(embed=embed)
 
-class BigEventWinnerView(View):
+class BigEventWinnerView(DetailedView):
     def __init__(self, host_id: int, channel: discord.TextChannel):
         super().__init__(timeout=120)
         self.host_id = host_id
@@ -7937,7 +8074,7 @@ async def big_event_winner(ctx):
 # ==========================================
 # 🔄 RESET TOTALE
 # ==========================================
-class ResetConfirmView(View):
+class ResetConfirmView(DetailedView):
     def __init__(self):
         super().__init__(timeout=30)
 
@@ -7990,7 +8127,7 @@ async def reset_all(ctx):
 # ticket_map: channel_id -> user_id  (per sapere a chi appartiene)
 ticket_channel_map: dict = {}
 
-class TicketControlView(View):
+class TicketControlView(DetailedView):
     def __init__(self, user_id: int | None = None):
         super().__init__(timeout=None)
         self.user_id = user_id
@@ -8051,7 +8188,7 @@ class TicketControlView(View):
         except Exception:
             pass
 
-class StaffRequestControlView(View):
+class StaffRequestControlView(DetailedView):
     def __init__(self, user_id: int | None = None):
         super().__init__(timeout=None)
         self.user_id = user_id
@@ -8249,7 +8386,7 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
         print(f"[staff ticket] Role not found: {HIGH_STAFF_ROLE_NAME}")
     await ch.send(content=ping_content, embed=embed, view=StaffRequestControlView(user_id=user.id))
 
-class TicketMainView(View):
+class TicketMainView(DetailedView):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -8820,7 +8957,7 @@ async def on_message(message: discord.Message):
 # ==========================================
 # 🏅 SUPPORTER SYSTEM
 # ==========================================
-class SupporterVerifyView(View):
+class SupporterVerifyView(DetailedView):
     """Accept/Reject view for staff in the verification ticket."""
     def __init__(self, user_id: int | None = None, name: str = ""):
         super().__init__(timeout=None)
@@ -8929,7 +9066,7 @@ class SupporterVerifyView(View):
         except Exception:
             pass
 
-class SupporterWeeklyCheckView(View):
+class SupporterWeeklyCheckView(DetailedView):
     """Done button for the weekly staff supporter check ticket."""
     def __init__(self):
         super().__init__(timeout=None)
@@ -8992,7 +9129,7 @@ class SupporterWeeklyCheckView(View):
         except Exception:
             pass
 
-class SupporterConfirmView(View):
+class SupporterConfirmView(DetailedView):
     def __init__(self, user_id: int, name: str):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -9232,7 +9369,7 @@ def _parse_duration(s: str) -> int | None:
     n, unit = int(m.group(1)), m.group(2)
     return n * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
 
-class GiveawayJoinView(View):
+class GiveawayJoinView(DetailedView):
     def __init__(self, prize: str, winners_count: int, end_ts: int, host_id: int):
         super().__init__(timeout=None)
         self.prize         = prize
@@ -10331,7 +10468,7 @@ class HelpLangSelect(discord.ui.Select):
                 )
 
 
-class HelpLangView(View):
+class HelpLangView(DetailedView):
     def __init__(self):
         super().__init__(timeout=120)
         self.add_item(HelpLangSelect())
@@ -10643,7 +10780,7 @@ async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
     return _build_announcement_embeds(parsed)
 
 
-class SetTongueModal(Modal, title="🌐 Set Language"):
+class SetTongueModal(DetailedModal, title="🌐 Set Language"):
     language = TextInput(
         label="Enter your language:",
         placeholder="Italian, English, Spanish, Deutsch...",
@@ -10673,7 +10810,7 @@ class SetTongueModal(Modal, title="🌐 Set Language"):
             )
 
 
-class OfficialAnnouncementView(View):
+class OfficialAnnouncementView(DetailedView):
     """Persistent language control attached to the official announcement."""
 
     def __init__(self):
@@ -10688,7 +10825,7 @@ class OfficialAnnouncementView(View):
         await interaction.response.send_modal(SetTongueModal())
 
 
-class StaffTutorialLanguageModal(Modal, title="🌐 Translate Staff Guide"):
+class StaffTutorialLanguageModal(DetailedModal, title="🌐 Translate Staff Guide"):
     language = TextInput(
         label="Enter your language:",
         placeholder="Italian, English, Spanish, Deutsch...",
@@ -10724,7 +10861,7 @@ class StaffTutorialLanguageModal(Modal, title="🌐 Translate Staff Guide"):
             )
 
 
-class StaffTutorialView(View):
+class StaffTutorialView(DetailedView):
     """Persistent language control attached to every Staff & Hoster guide."""
 
     def __init__(self):
@@ -10843,7 +10980,7 @@ async def boost_cmd(ctx):
 # ==========================================
 # 🔗 SG ACCOUNT LINK
 # ==========================================
-class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
+class SGLinkModal(DetailedModal, title="🔗 Link your Stumble Guys Account"):
     sg_name = TextInput(label="🎮 Your SG Username", placeholder="e.g. StumblePro123", max_length=30)
 
     def __init__(self, guild_id: int, default_name: str = ""):
@@ -10886,7 +11023,7 @@ class SGLinkModal(Modal, title="🔗 Link your Stumble Guys Account"):
             pass
 
 
-class SGLinkVerifyView(View):
+class SGLinkVerifyView(DetailedView):
     def __init__(self, user_id: int, sg_name: str):
         super().__init__(timeout=None)
         self.user_id = user_id
@@ -11014,7 +11151,7 @@ class SGLinkVerifyView(View):
             pass
 
 
-class SGLinkChannelView(View):
+class SGLinkChannelView(DetailedView):
     """Persistent view posted in the SG-link channel — anyone can click."""
     def __init__(self):
         super().__init__(timeout=None)
@@ -11024,7 +11161,7 @@ class SGLinkChannelView(View):
         await interaction.response.send_modal(SGLinkModal(guild_id=interaction.guild_id))
 
 
-class PersonalInviteView(View):
+class PersonalInviteView(DetailedView):
     """Persistent panel for generating a private, permanent server invite."""
 
     def __init__(self):
@@ -11231,7 +11368,7 @@ def _pex_member_embed(s: dict) -> discord.Embed:
     return embed
 
 
-class PexView(View):
+class PexView(DetailedView):
     def __init__(self, staff_data: list):
         super().__init__(timeout=300)
         self.staff_data = staff_data
@@ -11454,7 +11591,7 @@ def _build_staff_lb_embed(weekly: bool = False) -> discord.Embed:
     return embed
 
 
-class StaffLbView(View):
+class StaffLbView(DetailedView):
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -11536,7 +11673,7 @@ async def drop_cmd(ctx, max_people: int, amount: int, *, currency: str):
         embed.set_footer(text=f"Released by {ctx.author.display_name} • Limited claims")
         return embed
 
-    class DropView(View):
+    class DropView(DetailedView):
         def __init__(self):
             super().__init__(timeout=120)
 
@@ -11704,7 +11841,7 @@ def _exchange_embed(prof: dict) -> discord.Embed:
     return e
 
 
-class ShopMainView(View):
+class ShopMainView(DetailedView):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -11817,7 +11954,7 @@ class WShopSelect(discord.ui.Select):
             f"{bracket_note}", ephemeral=True)
 
 
-class WShopView(View):
+class WShopView(DetailedView):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -11899,7 +12036,7 @@ class GemsShopSelect(discord.ui.Select):
             f"Crystals remaining: {format_num(prof['cristalli'])} {E_CRYSTAL}", ephemeral=True)
 
 
-class GemsShopView(View):
+class GemsShopView(DetailedView):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -11919,7 +12056,7 @@ class GemsShopView(View):
         self.add_item(back_btn)
 
 
-class ExchangeView(View):
+class ExchangeView(DetailedView):
     def __init__(self, user_id: int):
         super().__init__(timeout=120)
         self.user_id = user_id
@@ -12016,7 +12153,7 @@ class ExchangeSelect(discord.ui.Select):
             await self.view._do_crystal_to_ruby(interaction, crystal_amount, ruby_cost)
 
 
-class ShopPanelView(View):
+class ShopPanelView(DetailedView):
     """Persistent public shop panel; each user gets a private shopping flow."""
 
     def __init__(self):
@@ -12172,7 +12309,7 @@ def _build_machine_panel_embed() -> discord.Embed:
     return embed
 
 
-class MachinePanelView(View):
+class MachinePanelView(DetailedView):
     """Persistent public view used by every published slot-machine panel."""
 
     def __init__(self):
@@ -12391,7 +12528,7 @@ def _format_cooldown_with_seconds(seconds: int) -> str:
     return f"{seconds}s"
 
 
-class ChestPanelView(View):
+class ChestPanelView(DetailedView):
     """Persistent public view used by every published Mystery Chest panel."""
 
     def __init__(self):
@@ -12550,7 +12687,7 @@ class DuelWinnerButton(Button):
         )
 
 
-class DuelView(View):
+class DuelView(DetailedView):
     """Full lifecycle view for a staked 1v1 duel."""
 
     def __init__(
