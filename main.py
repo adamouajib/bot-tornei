@@ -3251,9 +3251,21 @@ def get_profile(user_id, username):
     return get_or_create_user(user_id, username)
 
 
-def parse_orario_timestamp(orario_str: str):
-    """Parse a future relative duration or HH:MM in Europe/Rome."""
-    text = re.sub(r"\s+", " ", (orario_str or "").strip().casefold())
+ROME_TZ = ZoneInfo("Europe/Rome")
+TOURNAMENT_DATETIME_FORMAT_HINT = (
+    "`HH:MM`, `DD/MM HH:MM`, `DD/MM/YYYY HH:MM`, or `domani HH:MM`"
+)
+
+
+def parse_tournament_datetime(time_str: str) -> int | None:
+    """Parse tournament/event times as Unix timestamps in Europe/Rome.
+
+    Supported absolute formats are ``HH:MM``, ``DD/MM HH:MM``,
+    ``DD/MM/YYYY HH:MM`` and ``domani/tomorrow HH:MM``. Existing relative
+    durations such as ``30 min`` and ``2 hours`` remain supported for
+    backwards compatibility with the event setup flow.
+    """
+    text = re.sub(r"\s+", " ", (time_str or "").strip().casefold())
     if not text:
         return None
 
@@ -3269,9 +3281,9 @@ def parse_orario_timestamp(orario_str: str):
         unit = relative.group(2)
         if amount <= 0:
             return None
-        if unit.startswith(("s",)):
+        if unit.startswith("s"):
             seconds = amount
-        elif unit.startswith(("m",)):
+        elif unit.startswith("m"):
             seconds = amount * 60
         elif unit.startswith(("h", "o")):
             seconds = amount * 3600
@@ -3279,9 +3291,50 @@ def parse_orario_timestamp(orario_str: str):
             seconds = amount * 86400
         return int(datetime.now(timezone.utc).timestamp() + seconds)
 
-    clock_time = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", text)
+    clock_pattern = r"([01]?\d|2[0-3]):([0-5]\d)"
+    local_now = datetime.now(ROME_TZ)
+
+    tomorrow_match = re.fullmatch(
+        rf"(?:domani|tomorrow)\s+{clock_pattern}",
+        text,
+    )
+    if tomorrow_match:
+        target = (local_now + timedelta(days=1)).replace(
+            hour=int(tomorrow_match.group(1)),
+            minute=int(tomorrow_match.group(2)),
+            second=0,
+            microsecond=0,
+        )
+        return int(target.timestamp())
+
+    date_match = re.fullmatch(
+        rf"(\d{{1,2}})/(\d{{1,2}})(?:/(\d{{4}}))?\s+{clock_pattern}",
+        text,
+    )
+    if date_match:
+        day, month, year, hour, minute = date_match.groups()
+        target_year = int(year) if year else local_now.year
+        try:
+            target = datetime(
+                target_year,
+                int(month),
+                int(day),
+                int(hour),
+                int(minute),
+                tzinfo=ROME_TZ,
+            )
+        except ValueError:
+            return None
+        # DD/MM without a year means the next occurrence of that date.
+        if year is None and target <= local_now:
+            try:
+                target = target.replace(year=target.year + 1)
+            except ValueError:
+                target += timedelta(days=365)
+        return int(target.timestamp())
+
+    clock_time = re.fullmatch(clock_pattern, text)
     if clock_time:
-        local_now = datetime.now(ZoneInfo("Europe/Rome"))
         target = local_now.replace(
             hour=int(clock_time.group(1)),
             minute=int(clock_time.group(2)),
@@ -3292,6 +3345,11 @@ def parse_orario_timestamp(orario_str: str):
             target += timedelta(days=1)
         return int(target.timestamp())
     return None
+
+
+def parse_orario_timestamp(orario_str: str) -> int | None:
+    """Compatibility alias for the shared tournament datetime parser."""
+    return parse_tournament_datetime(orario_str)
 
 
 def _format_discord_start_time(timestamp: int) -> str:
@@ -3792,6 +3850,11 @@ def generate_bracket_embeds() -> list[tuple]:
         is_last  = pg == total_pgs - 1
         if is_first:
             info = (
+                (
+                    f"{_format_discord_start_time(t['start_timestamp'])}\n\n"
+                    if t.get("start_timestamp")
+                    else ""
+                )
                 f"**Round {cur_round}"
                 + (f"/{total_rounds}" if total_rounds != "?" else "")
                 + f"**\n\n🗺️ **Map:** {t['mappa']}\n\n⚡ **Ability:** {t['emote']}\n\n🎁 **Prizes:**\n\n{format_tournament_prizes(t['premio'])}\n\n"
@@ -6128,9 +6191,17 @@ class TourModal2(Modal):
         super().__init__(title=f"🏆 Tournament Setup (2/3)")
         self.uid    = uid
         self.is_big = is_big
-        timing_label = "⏰ Time (HH:MM Italy)" if is_big else "⏰ Starts in… (e.g. 15 min)"
-        timing_ph    = "e.g. 20:00" if is_big else "e.g. 15 min"
-        self.timing  = TextInput(label=timing_label, placeholder=timing_ph, max_length=20, required=False)
+        timing_label = "⏰ Start time (Europe/Rome)"
+        timing_ph = (
+            "e.g. 18:00, 02/09 18:00, 02/09/2026 18:00, "
+            "domani 18:00"
+        )
+        self.timing  = TextInput(
+            label=timing_label,
+            placeholder=timing_ph,
+            max_length=32,
+            required=False,
+        )
         self.max_p   = TextInput(label="👥 Max Players (optional)", placeholder="e.g. 32 — leave blank for default", max_length=3, required=False)
         self.regione = TextInput(label="🌍 Region (optional)", placeholder="e.g. EU, NA, GLOBAL", required=False)
         self.add_item(self.timing)
@@ -6214,10 +6285,11 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     nome        = data["nome"]
     emote_s     = data["abilita"] or "—"
     timing_raw  = data.get("timing", "")
-    ts          = parse_orario_timestamp(timing_raw) if timing_raw else None
+        ts          = parse_tournament_datetime(timing_raw) if timing_raw else None
     if timing_raw and ts is None:
         return await interaction.response.send_message(
-            "❌ Invalid start time. Use `30 min`, `2 hours`, or `HH:MM`.",
+                "❌ Invalid start time. Use "
+                f"{TOURNAMENT_DATETIME_FORMAT_HINT} (or `30 min`).",
             ephemeral=True,
         )
     time_str = _format_discord_start_time(ts) if ts else "TBD"
@@ -7398,8 +7470,11 @@ async def duel_leaderboard_slash(interaction: discord.Interaction):
 class EventModal(Modal, title="⚡ Create Flash Event"):
     orario = TextInput(
         label="⏰ Start time",
-        placeholder="e.g. 30 min, 2 hours, or 21:00",
-        max_length=20,
+        placeholder=(
+            "e.g. 18:00, 02/09 18:00, 02/09/2026 18:00, "
+            "domani 18:00"
+        ),
+        max_length=32,
     )
     premio = TextInput(label="🎁 Prize",         placeholder="e.g. 1000 Ruby")
 
@@ -7409,10 +7484,11 @@ class EventModal(Modal, title="⚡ Create Flash Event"):
 
     async def on_submit(self, interaction: discord.Interaction):
         orario_s = self.orario.value.strip()
-        ts       = parse_orario_timestamp(orario_s)
+        ts       = parse_tournament_datetime(orario_s)
         if orario_s and ts is None:
             return await interaction.response.send_message(
-                "❌ Invalid start time. Use `30 min`, `2 hours`, or `HH:MM`.",
+                "❌ Invalid start time. Use "
+                f"{TOURNAMENT_DATETIME_FORMAT_HINT} (or `30 min`).",
                 ephemeral=True,
             )
         if not await _claim_global_creation_slot(interaction.user.id):
@@ -7509,6 +7585,13 @@ async def start_event(ctx):
         description="**Get ready: the room code will arrive shortly! 🏁**",
         color=discord.Color.green()
     )
+    scheduled_ts = ev.get("start_timestamp")
+    if scheduled_ts:
+        embed.add_field(
+            name="⏰ Start Time",
+            value=_format_discord_start_time(scheduled_ts),
+            inline=False,
+        )
     if db.get("event"):
         ev_data = db["event"]
         embed.add_field(name="🎁 Prize",         value=_format_prize(ev_data["premio"]), inline=True)
@@ -7624,7 +7707,10 @@ async def end_event(ctx, base_premio: int, valuta: str):
 # ==========================================
 class BigEventModal(Modal, title="🌟 Create Big Event"):
     info   = TextInput(label="🏷️ Event Name | Time/Schedule",
-                       placeholder="e.g. Stumble Cup S1 | 21:00  or  Week 1  or  Group Stage")
+                       placeholder=(
+                           "e.g. Stumble Cup S1 | 18:00, "
+                           "02/09 18:00, or domani 18:00"
+                       ))
     prize1 = TextInput(label="🥇 1st Place Prize", placeholder="e.g. 5000 Ruby")
     prize2 = TextInput(label="🥈 2nd Place Prize", placeholder="e.g. 3000 Ruby")
     prize3 = TextInput(label="🥉 3rd Place Prize", placeholder="e.g. 1000 Ruby")
@@ -7634,10 +7720,16 @@ class BigEventModal(Modal, title="🌟 Create Big Event"):
         self.target_channel = channel
 
     async def on_submit(self, interaction: discord.Interaction):
-        parts    = self.info.value.split("|")
+        parts    = self.info.value.split("|", 1)
         nome     = parts[0].strip()
         schedule = parts[1].strip() if len(parts) > 1 else ""
-        ts       = parse_orario_timestamp(schedule) if schedule else None
+        ts       = parse_tournament_datetime(schedule) if schedule else None
+        if schedule and ts is None:
+            return await interaction.response.send_message(
+                "❌ Invalid start time. Use "
+                f"{TOURNAMENT_DATETIME_FORMAT_HINT} (or `30 min`).",
+                ephemeral=True,
+            )
         if not await _claim_global_creation_slot(interaction.user.id):
             return await interaction.response.send_message(
                 _global_creation_cooldown_message(_global_creation_cooldown_remaining()),
@@ -7795,6 +7887,12 @@ async def big_start(ctx):
         description="**Get ready — the room code is coming soon! 🏁**",
         color=discord.Color.green()
     )
+    if big.get("start_timestamp"):
+        embed.add_field(
+            name="⏰ Start Time",
+            value=_format_discord_start_time(big["start_timestamp"]),
+            inline=False,
+        )
     embed.add_field(name="🌟 Event",          value=big.get("nome", "—"),                          inline=False)
     embed.add_field(name=f"{E_GOLD} 1st Place",  value=f"**{_format_prize(big.get('prize1','—'))}**", inline=False)
     embed.add_field(name=f"{E_GOLD} 2nd Place",  value=f"**{_format_prize(big.get('prize2','—'))}**", inline=False)
