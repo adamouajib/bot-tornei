@@ -6196,6 +6196,36 @@ class _TourStep3View(DetailedView):
         await interaction.response.send_modal(TourModal3(self.uid))
 
 
+class _BigTournamentPrizeView(DetailedView):
+    """Shown after Big Tournament step 2 before opening the prize modal."""
+
+    def __init__(self, uid: str):
+        super().__init__(timeout=300)
+        self.uid = uid
+
+    @discord.ui.button(
+        label="🌟 Configure Big Tournament Prizes",
+        style=discord.ButtonStyle.primary,
+        custom_id="tour_big_prizes",
+    )
+    async def configure_prizes(
+        self,
+        interaction: discord.Interaction,
+        button: Button,
+    ):
+        if str(interaction.user.id) != self.uid:
+            return await interaction.response.send_message(
+                "❌ This is not your setup!",
+                ephemeral=True,
+            )
+        if self.uid not in _pending_tour_setup:
+            return await interaction.response.send_message(
+                "❌ Session expired — start again with :big-tour.",
+                ephemeral=True,
+            )
+        await interaction.response.send_modal(BigTournamentPrizeModal(self.uid))
+
+
 class TourModal1(DetailedModal):
     """Step 1/3 — title, description, format, details and prize."""
 
@@ -6368,7 +6398,16 @@ class TourModal2(DetailedModal):
             "regione": self.regione.value.strip() if self.regione.value else "",
         })
         if self.is_big:
-            await interaction.response.send_modal(BigTournamentPrizeModal(uid))
+            timing_txt = self.timing.value.strip() or "—"
+            max_txt    = str(max_val) if max_val else "default"
+            reg_txt    = self.regione.value.strip() or "—"
+            await interaction.response.send_message(
+                f"✅ **Step 2 / 3 complete!**\nTime: `{timing_txt}` · "
+                f"Max: `{max_txt}` · Region: `{reg_txt}`\n"
+                "Press the button to configure the Big Tournament prizes.",
+                view=_BigTournamentPrizeView(uid),
+                ephemeral=True,
+            )
             return
         timing_txt = self.timing.value.strip() or "—"
         max_txt    = str(max_val) if max_val else "default"
