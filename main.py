@@ -3849,12 +3849,14 @@ def generate_bracket_embeds() -> list[tuple]:
         is_first = pg == 0
         is_last  = pg == total_pgs - 1
         if is_first:
+            start_timestamp = t.get("start_timestamp")
             info = (
                 (
-                    f"{_format_discord_start_time(t['start_timestamp'])}\n\n"
-                    if t.get("start_timestamp")
+                    f"{_format_discord_start_time(start_timestamp)}\n\n"
+                    if start_timestamp
                     else ""
                 )
+                +
                 f"**Round {cur_round}"
                 + (f"/{total_rounds}" if total_rounds != "?" else "")
                 + f"**\n\n🗺️ **Map:** {t['mappa']}\n\n⚡ **Ability:** {t['emote']}\n\n🎁 **Prizes:**\n\n{format_tournament_prizes(t['premio'])}\n\n"
