@@ -9,3 +9,4 @@
 - [Discord server 2FA](discord-server-2fa.md) — Error 60003 can block bot moderation actions even when channel permissions are present.
 - [Private channel permission limits](private-channel-permission-limits.md) — Use minimal member/bot overrides; Discord caps channel permission overwrites at 100.
 - [Discord typing API](discord-typing-api.md) — Use the v2 async typing context instead of the removed trigger_typing method.
+- [Discord modal transitions](discord-modal-transitions.md) — After a modal submission, open the next modal from a new button interaction instead of chaining modal responses.
