@@ -1550,35 +1550,57 @@ async def _refresh_invite_cache(
 
 
 async def _track_joining_member_invite(member: discord.Member) -> int | None:
-    """Detect which invite gained a use for a newly joined member."""
-    snapshot = await _invite_snapshot(member.guild)
-    if snapshot is None:
-        return None
-    async with _invite_cache_lock:
-        previous = _invite_cache.get(member.guild.id, {})
-        _invite_cache[member.guild.id] = snapshot
+    """Detect the invite used by a new member and award its inviter.
 
-    candidates = []
-    for code, current in snapshot.items():
-        if code not in previous:
-            continue
-        old = previous[code]
-        delta = int(current["uses"] or 0) - int(old.get("uses", 0) or 0)
-        inviter_id = current["inviter_id"]
-        if delta > 0 and inviter_id is not None:
-            candidates.append((delta, int(inviter_id)))
-    if not candidates:
+    Discord may update invite usage just after dispatching ``on_member_join``.
+    Retry the comparison briefly so a delayed usage update does not prevent
+    the inviter from receiving the ``1 Invite`` role.
+    """
+    candidate = None
+    retry_delays = (0.0, 0.75, 1.5, 3.0)
+    for attempt, delay in enumerate(retry_delays, start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        snapshot = await _invite_snapshot(member.guild)
+        if snapshot is None:
+            return None
+        async with _invite_cache_lock:
+            previous = _invite_cache.get(member.guild.id, {})
+            _invite_cache[member.guild.id] = snapshot
+
+        candidates = []
+        for code, current in snapshot.items():
+            if code not in previous:
+                continue
+            old = previous[code]
+            delta = int(current["uses"] or 0) - int(old.get("uses", 0) or 0)
+            inviter_id = current["inviter_id"]
+            if delta > 0 and inviter_id is not None:
+                candidates.append((delta, int(inviter_id)))
+        if candidates:
+            candidate = max(candidates)
+            break
+        print(
+            f"[invite tracker] No invite usage delta yet for joined member "
+            f"{member.id} (attempt {attempt}/{len(retry_delays)})"
+        )
+
+    if candidate is None:
+        print(
+            f"[invite tracker] Could not identify the invite used by member {member.id}"
+        )
         return None
-    delta, inviter_id = max(candidates)
+
+    delta, inviter_id = candidate
     total = await _record_invite_use(member.guild, inviter_id, delta)
-    await _award_invite_role(
+    awarded = await _award_invite_role(
         member.guild,
         inviter_id,
         reason=f"Invited new member {member.id}",
     )
     print(
         f"[invite tracker] {inviter_id} now has {total} recorded invite(s) "
-        f"in guild {member.guild.id}"
+        f"in guild {member.guild.id}; role_awarded={awarded}"
     )
     return inviter_id
 
