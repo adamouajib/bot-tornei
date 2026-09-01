@@ -2734,10 +2734,10 @@ TOURNAMENTS
 BIG TOURNAMENTS AND BIG EVENTS
 - :big-tour is the setup entry point for a Big Tournament. It supports
   Classic and FFA, announces the registration, and requires every registrant
-  to have a Verified SG account. The administrator configures the
+  to have the Linked role. The administrator configures the
   schedule, prizes, and capacity just like a tournament.
 - A Big Tournament is not the same as a Big Event. A Big Tournament is a
-  player bracket with registration and verified-account gating. A Big Event is
+  player bracket with Linked-role gating. A Big Event is
   an administrator-configured event with a name, schedule, and separate first,
   second, and third prizes.
 - :big-event configures a Big Event; :big-start announces it with @everyone;
@@ -6052,16 +6052,36 @@ class TourRegisterView(DetailedView):
             if uid not in t["players"]:
                 if len(t["players"]) >= t["max"]:
                     return await interaction.followup.send("❌ Tournament is full!", ephemeral=True)
-                # Big-tournament: require SG verified account
+                # Big-tournament: require the Linked role assigned by SG verification
                 if t.get("is_big"):
-                    has_sg = any(r.id == SG_VERIFIED_ROLE_ID for r in interaction.user.roles)
-                    if not has_sg:
+                    member_for_role_check = interaction.user
+                    if interaction.guild:
+                        try:
+                            member_for_role_check = await interaction.guild.fetch_member(
+                                interaction.user.id
+                            )
+                        except discord.HTTPException as exc:
+                            print(
+                                "[WARN] Could not refresh member before Big Tournament "
+                                f"Linked-role check for user={interaction.user.id}: {exc}"
+                            )
+                    has_linked_role = _member_has_role_id(
+                        member_for_role_check,
+                        LINKED_ROLE_ID,
+                    )
+                    print(
+                        "[DEBUG] Big Tournament Linked-role check: "
+                        f"user={interaction.user.id}, required_role={LINKED_ROLE_ID}, "
+                        f"member_role_ids={[getattr(role, 'id', None) for role in member_for_role_check.roles]}, "
+                        f"has_linked_role={has_linked_role}"
+                    )
+                    if not has_linked_role:
                         link_ch = discord.utils.find(
                             lambda c: c.name.lower() == "link", interaction.guild.channels
                         ) if interaction.guild else None
                         destination = link_ch.mention if link_ch else "#link"
                         return await interaction.followup.send(
-                            f"❌ You need a **Verified SG account** to join Big Tournaments!\n"
+                            f"❌ You need the **Linked** role to join Big Tournaments!\n"
                             f"Connect your account directly in the {destination} channel.",
                             ephemeral=True)
                 get_profile(interaction.user.id, interaction.user.display_name)["name"] = (
@@ -6550,7 +6570,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         info_val += f"\n\n🌍 **Region:** {data['regione']}"
     if is_big:
         info_val += (
-            "\n\n🔗 **Big Tournament requirement:** A verified SG account.\n\n"
+            "\n\n🔗 **Big Tournament requirement:** The **Linked** role.\n\n"
             f"{TOURNAMENT_REQUIREMENT_BLOCK}"
         )
     embed.add_field(name="📋 Info", value=info_val, inline=False)
@@ -6944,7 +6964,7 @@ async def big_tour(ctx):
             "Select the Big Tournament type!\n\n"
             "🏆 **Classic** · 🎯 **FFA**\n\n"
             "⚠️ Tournament announcements currently ping **@everyone**!\n"
-            "Only players with a **Verified SG account** can register.\n\n"
+            "Only players with the **Linked** role can register.\n\n"
             f"{PERSONAL_INVITE_NOTICE}"
         ),
         color=discord.Color.from_rgb(255, 215, 0)
@@ -9534,7 +9554,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "tours_title": "🏆 TOURNAMENTS",
             "tours": (
                 "`:setup` — Posts the Tournament Hub embed with **3 buttons** (Classic / FFA / World Cup). Clicking a button opens a **3-step modal** to configure: ① Name, Map, Ability, Prize → ② Start time, Max players, Region → ③ Host notes, Embed colour. The announcement is sent to the registration channel and pings the tournament role.\n"
-                "`:big-tour` — Like `:setup` but for Big Tournaments: pings @everyone, requires a verified SG account to register. Admin only.\n"
+                "`:big-tour` — Like `:setup` but for Big Tournaments: pings @everyone, requires the Linked role to register. Admin only.\n"
                 "`:match <#> <code>` — Sends the room code for match number `#` and marks it 💥 in-progress on the bracket.\n"
                 "`:qual @winner` — Registers the winner of a 1v1 match, awards Ranked Points and updates the bracket.\n"
                 "`:bracket [round]` — **No round**: generates the bracket from current players (min 2). **With round**: advances to the next round once all matches are complete.\n"
@@ -10220,7 +10240,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # Server-facing embeds and confirmations remain English.
     italian_descriptions = {
         ":setup": "Pubblica l’Hub Torneo e apre i pulsanti di iscrizione per Classic, FFA e World Cup; la configurazione continua tramite i modal.",
-        ":big-tour": "Pubblica l’hub del Big Tournament, annuncia l’apertura al server e richiede un account Stumble Guys verificato per iscriversi.",
+        ":big-tour": "Pubblica l’hub del Big Tournament, annuncia l’apertura al server e richiede il ruolo Linked per iscriversi.",
         ":assign-hosts": "Distribuisce tra gli host registrati i match del torneo attivo, così ogni partita può essere gestita dal proprio host.",
         ":add_bot": "Aggiunge alla lista del torneo il numero indicato di giocatori bot senza creare il bracket; il bracket va generato dopo con `:add_bot`.",
         ":bracket": "Crea il primo bracket dai giocatori iscritti oppure fa avanzare il torneo al round indicato quando i match del round corrente sono terminati.",
