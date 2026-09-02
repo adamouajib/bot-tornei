@@ -1734,11 +1734,28 @@ def _active_w_role_emojis(member: discord.Member | None) -> list[str]:
     return emojis
 
 
+def _bracket_role_badges(member: discord.Member | None) -> list[str]:
+    """Return the compact W/S badges shown beside bracket participants."""
+    if member is None:
+        return []
+
+    badges: list[str] = []
+    for role in getattr(member, "roles", ()):
+        normalized_name = re.sub(r"[^a-z0-9]", "", role.name.casefold())
+        if role.id == BOOSTER_ROLE_ID or normalized_name in {"w", "winner"}:
+            if "[W]" not in badges:
+                badges.append("[W]")
+        if role.id == SUPPORTER_ROLE_ID or normalized_name in {"s", "supporter"}:
+            if "[S]" not in badges:
+                badges.append("[S]")
+    return badges
+
+
 def display_with_rank(
     name: str,
     member_map: dict[str, discord.Member] | None = None,
 ) -> str:
-    """Return a bracket slot using live usernames and active W role emojis."""
+    """Return a bracket slot using live usernames and role badges."""
     player_name = str(name)
     if " × " in player_name:
         return " × ".join(
@@ -1768,7 +1785,9 @@ def display_with_rank(
             if item_name in owned_names
         ]
     purchased_w = f" {''.join(owned_w_items)}" if owned_w_items else ""
-    return f"{rank_emoji} {formatted_name}{purchased_w}"
+    role_badges = _bracket_role_badges(member)
+    badge_text = f" {' '.join(role_badges)}" if role_badges else ""
+    return f"{rank_emoji} {formatted_name}{purchased_w}{badge_text}"
 
 
 _invite_cache: dict[int, dict[str, dict[str, int | None]]] = {}
@@ -10779,11 +10798,15 @@ class GiveawayJoinView(DetailedView):
             await interaction.response.send_message("✅ You joined the giveaway!", ephemeral=True)
         if interaction.message and interaction.message.embeds:
             embed = interaction.message.embeds[0]
-            embed.description = re.sub(
-                r"(\*\*(?:Participants|Partecipanti):\*\*) \d+",
-                rf"\1 {len(self.entrants)}",
-                embed.description or "",
-            )
+            for index, field in enumerate(embed.fields):
+                if field.name == "👥 Participants":
+                    embed.set_field_at(
+                        index,
+                        name=field.name,
+                        value=f"**{len(self.entrants)}**",
+                        inline=field.inline,
+                    )
+                    break
             await interaction.message.edit(embed=embed, view=self)
 
 @bot.tree.command(name="giveaway", description="Start a timed giveaway.")
@@ -10803,18 +10826,23 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
     if winners_count < 1 or winners_count > 20:
         return await interaction.response.send_message("❌ Winners must be between 1 and 20.", ephemeral=True)
     end_ts = int(datetime.utcnow().timestamp()) + secs
-    embed  = discord.Embed(
-        title="🎉 GIVEAWAY!",
+    embed = discord.Embed(
+        title="🎉 GIVEAWAY",
         description=(
-            f"**Prize:** {_format_prize(prize)}\n"
-            f"**Winners:** {winners_count}\n"
-            f"**Participants:** 0\n"
-            f"**Ends:** <t:{end_ts}:R> (<t:{end_ts}:f>)\n\n"
-            f"Press the button below to enter!"
+            "**A new prize is waiting for you!**\n\n"
+            "Click **Join Giveaway** below to enter. "
+            "You can leave and re-enter at any time before the draw."
         ),
-        color=discord.Color.gold()
+        color=discord.Color.from_rgb(255, 72, 128),
     )
-    embed.set_image(url=STUMBLE_IMG)
+    embed.add_field(name="🎁 Prize", value=f"**{_format_prize(prize)}**", inline=False)
+    embed.add_field(
+        name="⏰ Time",
+        value=f"Ends <t:{end_ts}:R>\n<t:{end_ts}:F>",
+        inline=True,
+    )
+    embed.add_field(name="🏆 Winners", value=f"**{winners_count}**", inline=True)
+    embed.add_field(name="👥 Participants", value="**0**", inline=True)
     embed.set_footer(text=f"Hosted by {interaction.user.display_name}")
     view = GiveawayJoinView(prize=prize, winners_count=winners_count, end_ts=end_ts, host_id=interaction.user.id)
     await interaction.response.send_message(
@@ -10832,10 +10860,14 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
         winner_mentions = None
         if not entrants:
             result_embed = discord.Embed(
-                title="🎉 Giveaway ended",
+                title="🎉 GIVEAWAY ENDED",
                 description="❌ No participants joined the giveaway.",
-                color=discord.Color.red()
+                color=discord.Color.from_rgb(120, 128, 145),
             )
+            result_embed.add_field(name="🎁 Prize", value=f"**{_format_prize(prize)}**", inline=False)
+            result_embed.add_field(name="⏰ Time", value=f"Ended <t:{int(datetime.utcnow().timestamp())}:R>", inline=True)
+            result_embed.add_field(name="🏆 Winners", value="**0**", inline=True)
+            result_embed.add_field(name="👥 Participants", value="**0**", inline=True)
         else:
             import random
             actual_winners = min(winners_count, len(entrants))
@@ -10846,18 +10878,19 @@ async def giveaway_cmd(interaction: discord.Interaction, duration: str, winners_
                 if mbr:
                     grant_prize(prize, mbr)
             result_embed = discord.Embed(
-                title="🎉 Giveaway ended!",
+                title="🎉 GIVEAWAY WINNERS",
                 description=(
-                    f"**Prize:** {_format_prize(prize)}\n"
-                    f"**Total participants:** {len(entrants)}\n\n"
-                    "The prize was added to the winners' profiles.\n"
-                    "Winners have been announced in a separate message below."
+                    "The prize was added to the selected winners' profiles.\n"
+                    "They are announced in the message below."
                 ),
-                color=discord.Color.gold()
+                color=discord.Color.from_rgb(255, 193, 7),
             )
+            result_embed.add_field(name="🎁 Prize", value=f"**{_format_prize(prize)}**", inline=False)
+            result_embed.add_field(name="⏰ Time", value=f"Ended <t:{int(datetime.utcnow().timestamp())}:R>", inline=True)
+            result_embed.add_field(name="🏆 Winners", value=f"**{actual_winners}**", inline=True)
+            result_embed.add_field(name="👥 Participants", value=f"**{len(entrants)}**", inline=True)
             save_db()
         result_embed.set_footer(text=f"Hosted by {interaction.user.display_name}")
-        result_embed.set_image(url=STUMBLE_IMG)
         try:
             await msg.edit(embed=result_embed, view=view)
         except Exception:
