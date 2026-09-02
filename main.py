@@ -1501,7 +1501,11 @@ def _store_invite_mapping(
             "guild_id, invite_code, inviter_id, uses, is_personal, created_at"
             ") VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(guild_id, invite_code) DO UPDATE SET "
-            "inviter_id=excluded.inviter_id, uses=excluded.uses, "
+            "inviter_id=CASE "
+            "WHEN excluded.is_personal = 1 THEN excluded.inviter_id "
+            "WHEN invites_tracker.is_personal = 1 THEN invites_tracker.inviter_id "
+            "ELSE excluded.inviter_id END, "
+            "uses=excluded.uses, "
             "is_personal=MAX(invites_tracker.is_personal, excluded.is_personal)",
             (
                 str(guild_id),
@@ -1535,9 +1539,14 @@ def _store_invite_snapshot(
 ) -> None:
     """Persist all invite creators and their latest usage counts."""
     for code, data in snapshot.items():
-        inviter_id = data.get("inviter_id")
+        discord_inviter_id = data.get("inviter_id")
+        inviter_id = _lookup_invite_inviter(guild.id, code) or discord_inviter_id
         if inviter_id is None:
             continue
+        # Discord reports the bot as the inviter for links created through
+        # the personal-link flow. Keep the human creator in the live snapshot
+        # as well as in SQLite so later delta calculations use the right user.
+        data["inviter_id"] = int(inviter_id)
         _store_invite_mapping(
             guild.id,
             code,
@@ -1552,9 +1561,11 @@ async def _record_invite_totals(
 ) -> None:
     """Persist the highest invite total observed for each inviter."""
     totals: dict[int, int] = {}
-    for data in snapshot.values():
-        inviter_id = data.get("inviter_id")
+    for code, data in snapshot.items():
+        inviter_id = _lookup_invite_inviter(guild.id, code) or data.get("inviter_id")
         if inviter_id is None:
+            continue
+        if getattr(bot.user, "id", None) == int(inviter_id):
             continue
         totals[int(inviter_id)] = totals.get(int(inviter_id), 0) + int(
             data.get("uses", 0) or 0
@@ -1664,7 +1675,9 @@ async def _refresh_invite_cache(
         inviter_ids = {
             int(data["inviter_id"])
             for data in snapshot.values()
-            if data["inviter_id"] is not None and int(data["uses"] or 0) > 0
+            if data["inviter_id"] is not None
+            and int(data["uses"] or 0) > 0
+            and int(data["inviter_id"]) != getattr(bot.user, "id", None)
         }
         for inviter_id in inviter_ids:
             await _award_invite_role(
@@ -1700,10 +1713,11 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
                 continue
             old = previous[code]
             delta = int(current["uses"] or 0) - int(old.get("uses", 0) or 0)
-            inviter_id = current["inviter_id"] or _lookup_invite_inviter(
-                member.guild.id,
-                code,
-            )
+            inviter_id = _lookup_invite_inviter(
+                member.guild.id, code
+            ) or current["inviter_id"]
+            if inviter_id is not None and getattr(bot.user, "id", None) == int(inviter_id):
+                inviter_id = None
             if delta > 0 and inviter_id is not None:
                 candidates.append((delta, code, int(inviter_id)))
         if candidates:
@@ -1725,6 +1739,12 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
     # available even if Discord omits the inviter on a later invite fetch.
     inviter_id = _lookup_invite_inviter(member.guild.id, invite_code)
     inviter_id = inviter_id or detected_inviter_id
+    if inviter_id is None or getattr(bot.user, "id", None) == int(inviter_id):
+        print(
+            f"[invite tracker] Invite {invite_code} resolves to the bot or no "
+            f"human creator for joined member {member.id}"
+        )
+        return None
     total = await _record_invite_use(member.guild, inviter_id, delta)
     awarded = await _award_invite_role(
         member.guild,
@@ -1789,6 +1809,7 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
         traceback.print_exc()
         raise
 
+    _store_invite_snapshot(guild, snapshot)
     async with _invite_cache_lock:
         bot.invite_cache[guild.id] = snapshot
 
@@ -3890,10 +3911,13 @@ def _read_live_leaderboard_profiles(
             "CAST(json_extract(profile_json, '$.duel_wins') AS INTEGER), 0"
             ") DESC, user_id ASC"
         )
+    bot_user_id = str(getattr(bot.user, "id", -1))
     with _sqlite_lock:
         rows = _sqlite_conn().execute(
             "SELECT user_id, profile_json, rubies, crystals, gems, linked, "
-            "chest_cooldown, invite_count FROM users" + order_sql
+            "chest_cooldown, invite_count FROM users "
+            "WHERE user_id != ?" + order_sql,
+            (bot_user_id,),
         ).fetchall()
 
     live_profiles = []
@@ -5447,16 +5471,25 @@ async def on_member_join(member: discord.Member):
                 inviter = await guild.fetch_member(inviter_id)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 inviter = None
-        inviter_name = inviter.mention if inviter is not None else f"<@{inviter_id}>"
-        inviter_profile = get_profile(
-            inviter_id,
-            inviter.display_name if inviter is not None else str(inviter_id),
-        )
-        total_invites = int(inviter_profile.get("invite_count", 0) or 0)
-        footer_text = (
-            f"📥 Invited by: {inviter_name} "
-            f"(Total invites: {total_invites})"
-        )
+        if inviter is None:
+            try:
+                inviter = await bot.fetch_user(inviter_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                inviter = None
+        if inviter is not None:
+            inviter_name = (
+                getattr(inviter, "display_name", None)
+                or getattr(inviter, "name", None)
+                or "Unknown"
+            )
+            inviter_profile = get_profile(inviter_id, inviter_name)
+            total_invites = int(inviter_profile.get("invite_count", 0) or 0)
+            footer_text = (
+                f"📥 Invited by: {inviter_name} "
+                f"(Total invites: {total_invites})"
+            )
+        else:
+            footer_text = "📥 Invited by: Unknown (Invite could not be verified)"
     else:
         footer_text = "📥 Invited by: Unknown (Invite could not be verified)"
     embed.set_footer(text=footer_text)
@@ -8000,11 +8033,13 @@ async def leaderboard(ctx):
 
 def _invite_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
     """Build the public leaderboard from verified SQLite invite totals."""
+    bot_user_id = str(getattr(bot.user, "id", -1))
     with _sqlite_lock:
         rows = _sqlite_conn().execute(
             "SELECT user_id, invite_count FROM users "
-            "WHERE invite_count > 0 ORDER BY invite_count DESC, user_id ASC "
-            "LIMIT 10"
+            "WHERE user_id != ? AND invite_count > 0 "
+            "ORDER BY invite_count DESC, user_id ASC LIMIT 10",
+            (bot_user_id,),
         ).fetchall()
 
     lines = []
