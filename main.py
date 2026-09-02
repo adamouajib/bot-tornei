@@ -438,7 +438,8 @@ def _normalise_legacy_profile(profile: dict, username: str) -> dict:
         "xp_msg", "level_msg", "staff_tours", "staff_matches", "staff_rounds",
         "staff_week_tours", "staff_week_matches", "staff_week_rounds",
         "slot_wins", "slot_ruby_won", "duel_matches", "duel_wins",
-        "duel_rubies_won", "boost_count", "invite_count",
+        "duel_rubies_won", "wager_matches", "wager_wins",
+        "boost_count", "invite_count",
     ):
         try:
             normalized[key] = int(normalized.get(key, 0) or 0)
@@ -1161,6 +1162,7 @@ STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
     "set-winner", "end-event", "ban-event", "clear", "purge", "staff-tutorial",
+    "test-bracket", "test-result", "2v2-result",
 }
 
 def _prefix_access_allowed(ctx) -> bool:
@@ -3870,17 +3872,79 @@ def _stored_leaderboard_username(profile: dict) -> str | None:
     return str(username).lstrip("@").strip() or None
 
 
-async def _leaderboard_profiles() -> list[tuple[str, dict, str]]:
-    """Resolve current server members and return usernames with DB fallback.
+def _read_live_leaderboard_profiles(
+    sort_key: str | None = None,
+) -> list[tuple[str, dict]]:
+    """Read leaderboard profiles directly from SQLite for this request.
 
-    A cached member is used when available, but every uncached ID is resolved
-    through Discord before it is shown. A 404 means the account left the
-    configured server and is excluded; transient API failures retain the
-    username stored when the profile last changed.
+    Leaderboards must never use a snapshot held in ``db["profiles"]``. The
+    normalized wallet columns are overlaid onto the JSON payload so a payout
+    committed by another handler is visible immediately. ``duel_wins`` is
+    ordered in SQL as well, which keeps the dedicated 1v1 leaderboard on the
+    live database path from end to end.
+    """
+    order_sql = " ORDER BY user_id ASC"
+    if sort_key == "duel_wins":
+        order_sql = (
+            " ORDER BY COALESCE("
+            "CAST(json_extract(profile_json, '$.duel_wins') AS INTEGER), 0"
+            ") DESC, user_id ASC"
+        )
+    with _sqlite_lock:
+        rows = _sqlite_conn().execute(
+            "SELECT user_id, profile_json, rubies, crystals, gems, linked, "
+            "chest_cooldown, invite_count FROM users" + order_sql
+        ).fetchall()
+
+    live_profiles = []
+    for (
+        user_id,
+        profile_json,
+        rubies,
+        crystals,
+        gems,
+        linked,
+        chest_cooldown,
+        invite_count,
+    ) in rows:
+        try:
+            raw_profile = json.loads(profile_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            raw_profile = {}
+        if not isinstance(raw_profile, dict):
+            raw_profile = {}
+        username = str(
+            raw_profile.get("username")
+            or raw_profile.get("name")
+            or user_id
+        )
+        profile = _normalise_legacy_profile(raw_profile, username)
+        profile["rubini"] = int(rubies or 0)
+        profile["cristalli"] = int(crystals or 0)
+        profile["gemme"] = int(gems or 0)
+        profile["linked"] = bool(linked)
+        profile["chest_cooldown"] = float(chest_cooldown or 0)
+        profile["invite_count"] = max(
+            int(profile.get("invite_count", 0) or 0),
+            int(invite_count or 0),
+        )
+        live_profiles.append((str(user_id), profile))
+    return live_profiles
+
+
+async def _leaderboard_profiles(
+    sort_key: str | None = None,
+) -> list[tuple[str, dict, str]]:
+    """Resolve current server members from a fresh SQLite leaderboard read.
+
+    A cached Discord member is used when available, but every uncached ID is
+    resolved through Discord before it is shown. A 404 means the account left
+    the configured server and is excluded; transient API failures retain the
+    username stored in the live SQLite profile.
     """
     guild = bot.get_guild(SERVER_ID)
     resolved = []
-    for uid, profile in db["profiles"].items():
+    for uid, profile in _read_live_leaderboard_profiles(sort_key):
         try:
             numeric_id = int(uid)
         except (TypeError, ValueError):
@@ -3917,9 +3981,14 @@ async def build_leaderboard_embeds(
     updated_at: datetime | None = None,
     categories: list | None = None,
 ) -> list:
-    profiles = await _leaderboard_profiles()
-    embeds = []
     categories = MAIN_LEADERBOARD_CATEGORIES if categories is None else categories
+    live_sort_key = (
+        "duel_wins"
+        if categories and all(category[1] == "duel_wins" for category in categories)
+        else None
+    )
+    profiles = await _leaderboard_profiles(live_sort_key)
+    embeds = []
     updated_at = updated_at or datetime.now().astimezone()
     updated_label = updated_at.strftime("%d/%m/%Y %H:%M:%S")
     for title, key, icon, color in categories:
@@ -4066,9 +4135,82 @@ class QualifyView(DetailedView):
         )
 
 
-def generate_bracket_embeds() -> list[tuple]:
+def _preview_bracket_tournament() -> dict:
+    """Return a deterministic bracket fixture without touching the active tour."""
+    names = [f"Preview Player {number}" for number in range(1, 9)]
+    players = [f"preview_{number}" for number in range(1, 9)]
+    return {
+        "nome": "Bracket Preview",
+        "descrizione": "Preview only — no tournament state was changed.",
+        "modalita": "1V1",
+        "mappa": "Preview Arena",
+        "emote": "🎮",
+        "premio": (
+            "1. 5,000 Rubies, 2. 2,500 Rubies, 3. 1,000 Rubies, "
+            "4. 500 Rubies, 5. 500 Rubies, 6. 500 Rubies, "
+            "7. 250 Rubies, 8. 250 Rubies, 9. 250 Rubies"
+        ),
+        "players": players,
+        "player_names": names,
+        "max": len(players),
+        "round": 1,
+        "total_rounds": 3,
+        "start_timestamp": None,
+        "host_name": "Preview",
+        "matches": _build_round_matches(names),
+        "bracket_channel_id": None,
+        "bracket_msg_ids": [],
+        "bracket_msg_id": None,
+    }
+
+
+def _build_preview_result_embed() -> discord.Embed:
+    """Build the standard nine-position results board without active data."""
+    placements = [f"Preview Player {number}" for number in range(1, 10)]
+    prize_text = (
+        "1. 5,000 Rubies, 2. 2,500 Rubies, 3. 1,000 Rubies, "
+        "4. 500 Rubies, 5. 500 Rubies, 6. 500 Rubies, "
+        "7. 250 Rubies, 8. 250 Rubies, 9. 250 Rubies"
+    )
+    prize_map = parse_tournament_prizes(prize_text)
+    placement_medals = {
+        1: "🥇",
+        2: "🥈",
+        3: "🥉",
+        4: "🏅",
+        5: "🏅",
+        6: "🏅",
+        7: "🎖️",
+        8: "🎖️",
+        9: "🎖️",
+    }
+    result_lines = "\n".join(
+        f"**{position}.** {placement_medals[position]} "
+        f"@{placements[position - 1]} - "
+        f"[{_format_prize(prize_map.get(position, '—'))}]"
+        for position in range(1, 10)
+    )
+    embed = discord.Embed(
+        title="🏆 Tournament Preview — Results",
+        description=(
+            f"🎁 **Prizes**\n{format_tournament_prizes(prize_text)}\n\n"
+            f"🏆 **Winners**\n{result_lines}"
+        ),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points", inline=True)
+    embed.add_field(name="🗺️ Map", value="Preview Arena", inline=True)
+    embed.add_field(name="⚡ Ability", value="🎮", inline=True)
+    embed.set_image(url=STUMBLE_IMG)
+    embed.set_footer(text="PREVIEW ONLY • No tournament data was changed")
+    return embed
+
+
+def generate_bracket_embeds(tournament: dict | None = None) -> list[tuple]:
     """Returns list of (embed, view|None). First embed has tour info; last has image + QualifyView."""
-    t            = db["tour"]
+    t            = db["tour"] if tournament is None else tournament
+    if not t:
+        return []
     cur_round    = t.get("round", 1)
     total_rounds = t.get("total_rounds", "?")
     modalita     = t.get("modalita", "1V1")
@@ -4163,6 +4305,26 @@ def generate_bracket_embeds() -> list[tuple]:
         result.append((embed, view))
     return result
 
+
+@bot.command(name="test-bracket")
+@hoster_only()
+async def test_bracket(ctx):
+    """Send a standalone bracket preview without reading the active tournament."""
+    preview = _preview_bracket_tournament()
+    for embed, view in generate_bracket_embeds(preview):
+        if view is None:
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send(embed=embed, view=view)
+
+
+@bot.command(name="test-result")
+@hoster_only()
+async def test_result(ctx):
+    """Send a standalone preview of the standard 1–9 result layout."""
+    await ctx.send(embed=_build_preview_result_embed())
+
+
 async def _update_bracket_messages(t: dict):
     """Delete old bracket embeds and resend the updated pages."""
     ch = bot.get_channel(t.get("bracket_channel_id"))
@@ -4178,7 +4340,7 @@ async def _update_bracket_messages(t: dict):
             await msg.delete()
         except Exception:
             pass
-    pairs    = generate_bracket_embeds()
+    pairs    = generate_bracket_embeds(t)
     sent_ids = []
     for em, vw in pairs:
         m = await ch.send(embed=em, view=vw) if vw else await ch.send(embed=em)
@@ -12926,6 +13088,16 @@ def _debit_wager_balance(profile: MutableMapping, currency: str, amount: int) ->
         remaining -= debit
 
 
+def _credit_wager_balance(
+    profile: MutableMapping,
+    currency: str,
+    amount: int,
+) -> None:
+    """Credit a settled wager to the canonical wallet field."""
+    base_key, _ = WAGER_CURRENCY_LABELS[currency.casefold()]
+    profile[base_key] = profile.get(base_key, 0) + max(0, int(amount))
+
+
 class TwoVTwoWagerView(DetailedView):
     """Require every tagged player to accept before escrowing a 2v2 wager."""
 
@@ -12947,6 +13119,7 @@ class TwoVTwoWagerView(DetailedView):
         self.confirmed = {challenger.id}
         self.state = "pending"
         self.message: discord.Message | None = None
+        self.wager_id: str | None = None
 
     @property
     def currency_label(self) -> str:
@@ -12968,6 +13141,8 @@ class TwoVTwoWagerView(DetailedView):
                 "All four players confirmed. The wager has been escrowed; "
                 "staff can record the winning team."
             )
+            if self.wager_id:
+                prompt += f"\nUse `:2v2-result {self.wager_id} <1|2>` to settle it."
         elif error:
             title = "❌ 2V2 WAGER CANCELLED"
             color = discord.Color.red()
@@ -13023,6 +13198,7 @@ class TwoVTwoWagerView(DetailedView):
             for profile in profiles:
                 _debit_wager_balance(profile, self.currency, self.amount)
             wager_id = str(self.message.id if self.message else interaction.message.id)
+            self.wager_id = wager_id
             active_wagers[wager_id] = {
                 "guild_id": self.guild_id,
                 "team_one": [self.participants[0].id, self.participants[1].id],
@@ -13165,6 +13341,72 @@ async def two_v_two(
         view=view,
     )
     view.message = message
+
+
+@bot.command(name="2v2-result", aliases=["2v2_result", "2v2-winner"])
+@hoster_only()
+async def two_v_two_result(
+    ctx,
+    wager_id: str = None,
+    winning_team: str = None,
+):
+    """Settle a started 2V2 wager and commit every payout/stat update."""
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used inside the server.")
+    if not wager_id or not winning_team:
+        return await ctx.send(
+            "❌ Use: `:2v2-result <wager_message_id> <1|2>`",
+            delete_after=8.0,
+        )
+    team_key = winning_team.casefold().replace("_", "-")
+    if team_key in {"1", "one", "team1", "team-1", "team-one"}:
+        winning_key = "team_one"
+    elif team_key in {"2", "two", "team2", "team-2", "team-two"}:
+        winning_key = "team_two"
+    else:
+        return await ctx.send("❌ Winning team must be `1` or `2`.", delete_after=6.0)
+
+    async with _wager_lock:
+        wager = active_wagers.get(str(wager_id))
+        if not wager:
+            return await ctx.send(
+                "❌ That 2V2 wager is not active or was already settled.",
+                delete_after=8.0,
+            )
+        wager = active_wagers.pop(str(wager_id))
+        winners = list(wager[winning_key])
+        losers = list(
+            wager["team_two" if winning_key == "team_one" else "team_one"]
+        )
+        currency = wager["currency"]
+        payout_each = int(wager["amount"]) * 2
+
+        for user_id in winners + losers:
+            member = ctx.guild.get_member(int(user_id))
+            profile = get_profile(
+                user_id,
+                member.display_name if member else str(user_id),
+            )
+            profile["wager_matches"] = profile.get("wager_matches", 0) + 1
+            if user_id in winners:
+                profile["wager_wins"] = profile.get("wager_wins", 0) + 1
+                _credit_wager_balance(profile, currency, payout_each)
+
+        # SQLiteProfile commits each field assignment above. Persist the
+        # surrounding bot state too so this settlement is visible immediately
+        # to every subsequent live leaderboard query.
+        save_db()
+
+    winner_mentions = []
+    for user_id in winners:
+        member = ctx.guild.get_member(int(user_id))
+        winner_mentions.append(member.mention if member else f"<@{user_id}>")
+    await ctx.send(
+        f"✅ 2V2 wager **{wager_id}** settled for "
+        f"{', '.join(winner_mentions)}.\n"
+        f"💰 Each winner received **{format_num(payout_each)}** "
+        f"{WAGER_CURRENCY_LABELS[currency][1]}."
+    )
 
 
 # ==========================================
