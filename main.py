@@ -14108,6 +14108,12 @@ async def two_v_two_result(
             payout_each,
         )
 
+    # The command reads SQLite live, and the configured automatic leaderboard
+    # should reflect this completed 2V2 immediately instead of waiting for its
+    # next 30-minute scheduled iteration.
+    if db.get("duel_leaderboard_channel_id"):
+        await auto_duel_leaderboard()
+
     winner_mentions = []
     for user_id in winners:
         member = ctx.guild.get_member(int(user_id))
