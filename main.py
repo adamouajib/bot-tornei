@@ -8910,6 +8910,7 @@ class StaffRequestControlView(DetailedView):
                     print(f"[accept hoster_role] {e}")
         role_str = " · ".join(f"**{r}**" for r in roles_given) if roles_given else "roles (check bot permissions)"
         try:
+            embed = discord.Embed(
                 title="🎉 Application Accepted!",
                 description=(
                     f"Congratulations {member.mention}! 🎊\n\n"
