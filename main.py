@@ -13675,6 +13675,80 @@ def _credit_wager_balance(
     profile[base_key] = profile.get(base_key, 0) + max(0, int(amount))
 
 
+async def _add_2v2_participants(
+    thread: discord.Thread,
+    participants: list[discord.Member],
+) -> None:
+    """Add every player to the newly-created wager thread before publishing it."""
+    for member in participants:
+        await thread.add_user(member)
+
+
+async def _create_2v2_thread(
+    ctx,
+    match_id: str,
+    participants: list[discord.Member],
+) -> discord.Thread:
+    """Create a private 2v2 thread, with a public-thread fallback."""
+    parent_channel = (
+        ctx.channel.parent
+        if isinstance(ctx.channel, discord.Thread)
+        else ctx.channel
+    )
+    if not isinstance(parent_channel, discord.TextChannel):
+        raise RuntimeError("A 2V2 wager must be started in a text channel.")
+
+    thread_name = f"⚔️-2v2-match-{match_id}"[:100]
+    private_thread = None
+    try:
+        private_thread = await parent_channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            invitable=False,
+            auto_archive_duration=1440,
+            reason="Create private 2V2 wager thread",
+        )
+        await _add_2v2_participants(private_thread, participants)
+        return private_thread
+    except Exception as exc:
+        print(
+            f"[2V2] Private thread creation/setup failed; "
+            f"falling back to standard thread: {type(exc).__name__}: {exc}"
+        )
+        if private_thread is not None:
+            try:
+                await private_thread.delete(reason="Private 2V2 thread setup failed")
+            except Exception as cleanup_exc:
+                print(
+                    f"[2V2] Could not remove failed private thread: "
+                    f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                )
+
+    public_thread = None
+    try:
+        public_thread = await parent_channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.public_thread,
+            auto_archive_duration=1440,
+            reason="Fallback standard 2V2 wager thread",
+        )
+        await _add_2v2_participants(public_thread, participants)
+        return public_thread
+    except Exception as exc:
+        if public_thread is not None:
+            try:
+                await public_thread.delete(reason="2V2 thread setup failed")
+            except Exception as cleanup_exc:
+                print(
+                    f"[2V2] Could not remove failed fallback thread: "
+                    f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                )
+        raise RuntimeError(
+            f"Could not create or prepare a 2V2 thread: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
 class TwoVTwoWagerView(DetailedView):
     """Require every tagged player to accept before escrowing a 2v2 wager."""
 
@@ -13685,6 +13759,8 @@ class TwoVTwoWagerView(DetailedView):
         participants: list[discord.Member],
         amount: int,
         currency: str,
+        match_id: str,
+        thread: discord.Thread,
     ):
         super().__init__(timeout=15 * 60)
         self.guild_id = guild.id
@@ -13693,6 +13769,8 @@ class TwoVTwoWagerView(DetailedView):
         self.participant_ids = {member.id for member in participants}
         self.amount = amount
         self.currency = currency.casefold()
+        self.match_id = str(match_id)
+        self.thread = thread
         self.confirmed = {challenger.id}
         self.state = "pending"
         self.message: discord.Message | None = None
@@ -13703,11 +13781,20 @@ class TwoVTwoWagerView(DetailedView):
         return WAGER_CURRENCY_LABELS[self.currency][1]
 
     def _status_lines(self) -> str:
-        return "\n".join(
-            f"{'✅' if member.id in self.confirmed else '⏳'} "
-            f"{member.mention} — "
-            f"{'confirmed' if member.id in self.confirmed else 'waiting'}"
-            for member in self.participants
+        team_one = self.participants[:2]
+        team_two = self.participants[2:]
+
+        def team_lines(members: list[discord.Member]) -> str:
+            return "\n".join(
+                f"{'✅' if member.id in self.confirmed else '⏳'} "
+                f"{member.mention} — "
+                f"{'confirmed' if member.id in self.confirmed else 'waiting'}"
+                for member in members
+            )
+
+        return (
+            f"**Team 1**\n{team_lines(team_one)}\n\n"
+            f"**Team 2**\n{team_lines(team_two)}"
         )
 
     def build_embed(self, *, started: bool = False, error: str | None = None) -> discord.Embed:
@@ -13751,6 +13838,9 @@ class TwoVTwoWagerView(DetailedView):
         if self.participant_ids != self.confirmed:
             return
         async with _wager_lock:
+            if self.state != "pending":
+                return
+            self.state = "escrowing"
             profiles = [
                 get_profile(member.id, member.display_name)
                 for member in self.participants
@@ -13774,7 +13864,7 @@ class TwoVTwoWagerView(DetailedView):
                 return
             for profile in profiles:
                 _debit_wager_balance(profile, self.currency, self.amount)
-            wager_id = str(self.message.id if self.message else interaction.message.id)
+            wager_id = self.match_id
             self.wager_id = wager_id
             active_wagers[wager_id] = {
                 "guild_id": self.guild_id,
@@ -13790,6 +13880,10 @@ class TwoVTwoWagerView(DetailedView):
         await interaction.response.edit_message(
             embed=self.build_embed(started=True),
             view=self,
+        )
+        await self.thread.send(
+            f"🏁 **2v2 Match Started!** All four players accepted. "
+            f"Staff can settle this wager with `:2v2-result {self.wager_id} <1|2>`."
         )
         self.stop()
 
@@ -13825,6 +13919,11 @@ class TwoVTwoWagerView(DetailedView):
         custom_id="two_v_two_wager_decline",
     )
     async def decline(self, interaction: discord.Interaction, button: Button):
+        if self.state != "pending":
+            return await interaction.response.send_message(
+                "❌ This 2V2 wager is already closed.",
+                ephemeral=True,
+            )
         if interaction.user.id not in self.participant_ids:
             return await interaction.response.send_message(
                 "❌ Only the four tagged players can decline this challenge.",
@@ -13902,23 +14001,51 @@ async def two_v_two(
             f"Insufficient balance: {', '.join(insufficient)}.",
             delete_after=8.0,
         )
+    match_id = str(getattr(ctx.message, "id", None) or int(
+        datetime.now(timezone.utc).timestamp()
+    ))
+    try:
+        thread = await _create_2v2_thread(ctx, match_id, participants)
+    except RuntimeError as exc:
+        return await ctx.send(
+            f"❌ I couldn't create the 2V2 match thread: {exc}",
+            delete_after=10.0,
+        )
+
     view = TwoVTwoWagerView(
         ctx.guild,
         ctx.author,
         participants,
         amount,
         currency_key,
+        match_id,
+        thread,
     )
-    embed = view.build_embed()
-    message = await ctx.send(
-        content=(
-            f"{ctx.author.mention} challenges {partner.mention} and "
-            f"{opponent1.mention} {opponent2.mention}!"
-        ),
-        embed=embed,
-        view=view,
+    try:
+        view.message = await thread.send(embed=view.build_embed(), view=view)
+    except Exception as exc:
+        print(f"[2V2] Could not publish wager in thread: {type(exc).__name__}: {exc}")
+        try:
+            await thread.delete(reason="2V2 wager message setup failed")
+        except Exception as cleanup_exc:
+            print(
+                f"[2V2] Could not remove thread after publish failure: "
+                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+            )
+        return await ctx.send(
+            "❌ I couldn't publish the interactive 2V2 wager in the match thread.",
+            delete_after=10.0,
+        )
+
+    notification_channel = (
+        ctx.channel.parent
+        if isinstance(ctx.channel, discord.Thread)
+        else ctx.channel
     )
-    view.message = message
+    await notification_channel.send(
+        f"⚔️ **2v2 Challenge Created!** All players move to "
+        f"{thread.mention} to confirm the wager."
+    )
 
 
 @bot.command(name="2v2-result", aliases=["2v2_result", "2v2-winner"])
@@ -13933,7 +14060,7 @@ async def two_v_two_result(
         return await ctx.send("❌ This command can only be used inside the server.")
     if not wager_id or not winning_team:
         return await ctx.send(
-            "❌ Use: `:2v2-result <wager_message_id> <1|2>`",
+            "❌ Use: `:2v2-result <match_id> <1|2>`",
             delete_after=8.0,
         )
     team_key = winning_team.casefold().replace("_", "-")
