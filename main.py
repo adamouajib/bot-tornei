@@ -1237,12 +1237,14 @@ TOURNAMENT_REQUIREMENT_BLOCK = (
     f"{PERSONAL_INVITE_NOTICE}"
 )
 TOURNAMENT_RULES_TEXT = (
-    f"{TOURNAMENT_REQUIREMENT_BLOCK}\n\n"
-    "📜 **Rules:**\n\n"
     "• Register only for yourself, or use a completed team for team formats.\n\n"
     "• Follow the host's room, map, ability and match instructions.\n\n"
     "• Be respectful, be ready on time and do not leave an active match.\n\n"
     "• Staff decisions and tournament results are final."
+)
+TOURNAMENT_RULES_WITH_INVITE_TEXT = (
+    f"{TOURNAMENT_REQUIREMENT_BLOCK}\n\n"
+    f"{TOURNAMENT_RULES_TEXT}"
 )
 EVENT_INFO_CHANNEL_ID  = CHANNELS["community_event"]
 EVENT_START_CHANNEL_ID = CHANNELS["community_event"]
@@ -7420,7 +7422,12 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         info_val += "\n\n🔗 **Big Tournament requirement:** The **Linked** role."
     info_val += f"\n\n🆔 **Tournament ID:** `{tourney_id}`"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
-    embed.add_field(name="📜 Tournament Rules", value=TOURNAMENT_RULES_TEXT, inline=False)
+    rules_text = (
+        TOURNAMENT_RULES_WITH_INVITE_TEXT
+        if is_big
+        else TOURNAMENT_RULES_TEXT
+    )
+    embed.add_field(name="📜 Tournament Rules", value=rules_text, inline=False)
     status_val = (
         f"⏳ Registration open — **0/{default_max}**\n"
         f"**Host:** {interaction.user.mention}\n"
