@@ -207,6 +207,16 @@ def _sqlite_conn() -> sqlite3.Connection:
                 ")"
             )
             _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS gems_transfer_requests ("
+                "request_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "user_id TEXT NOT NULL, "
+                "sg_username TEXT NOT NULL, "
+                "amount INTEGER NOT NULL, "
+                "status TEXT NOT NULL DEFAULT 'pending', "
+                "created_at REAL NOT NULL DEFAULT 0"
+                ")"
+            )
+            _sqlite_connection.execute(
                 "CREATE TABLE IF NOT EXISTS state "
                 "(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)"
             )
@@ -350,6 +360,141 @@ def _write_profile(user_id: str, profile: dict) -> None:
             ),
         )
         conn.commit()
+
+
+def _create_gems_transfer_request(
+    user_id: int,
+    sg_username: str,
+    amount: int,
+) -> tuple[str, str, int, int] | tuple[None, str, int, int]:
+    """Atomically reserve Gems and create a pending transfer request.
+
+    The normalized ``users.gems`` column is the balance source of truth. The
+    JSON profile is updated in the same transaction for compatibility with
+    legacy code that reads ``gemme``.
+    """
+    uid = str(user_id)
+    requested_name = str(sg_username).strip()
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT gems, linked, profile_json FROM users WHERE user_id = ?",
+                (uid,),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return None, "profile_not_found", 0, 0
+
+            try:
+                profile = json.loads(row[2] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                profile = {}
+            if not isinstance(profile, dict):
+                profile = {}
+
+            linked_name = str(profile.get("sg_name") or "").strip()
+            if not bool(row[1]) or not linked_name:
+                conn.rollback()
+                return None, "account_not_linked", int(row[0] or 0), 0
+            if requested_name.casefold() != linked_name.casefold():
+                conn.rollback()
+                return None, "account_mismatch", int(row[0] or 0), 0
+
+            available = max(int(row[0] or 0), 0)
+            if amount < 1:
+                conn.rollback()
+                return None, "invalid_amount", available, 0
+            if amount > available:
+                conn.rollback()
+                return None, "insufficient_gems", available, 0
+
+            remaining = available - amount
+            profile["gemme"] = remaining
+            conn.execute(
+                "UPDATE users SET gems = ?, profile_json = ? WHERE user_id = ?",
+                (
+                    remaining,
+                    json.dumps(profile, ensure_ascii=False),
+                    uid,
+                ),
+            )
+            cursor = conn.execute(
+                "INSERT INTO gems_transfer_requests("
+                "user_id, sg_username, amount, status, created_at"
+                ") VALUES (?, ?, ?, 'pending', ?)",
+                (
+                    uid,
+                    linked_name,
+                    amount,
+                    datetime.now(timezone.utc).timestamp(),
+                ),
+            )
+            request_id = int(cursor.lastrowid)
+            conn.commit()
+            return str(request_id), "ok", remaining, amount
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _update_gems_transfer_request_status(request_id: str, status: str) -> None:
+    """Update a transfer request after the admin notification is delivered."""
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        conn.execute(
+            "UPDATE gems_transfer_requests SET status = ? WHERE request_id = ?",
+            (status, str(request_id)),
+        )
+        conn.commit()
+
+
+def _refund_gems_transfer_request(request_id: str) -> None:
+    """Return reserved Gems if the request cannot be delivered to admins."""
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT user_id, amount, status FROM gems_transfer_requests "
+                "WHERE request_id = ?",
+                (str(request_id),),
+            ).fetchone()
+            if row is None or row[2] != "pending":
+                conn.rollback()
+                return
+            amount = max(int(row[1] or 0), 0)
+            profile_row = conn.execute(
+                "SELECT gems, profile_json FROM users WHERE user_id = ?",
+                (str(row[0]),),
+            ).fetchone()
+            if profile_row is not None:
+                try:
+                    profile = json.loads(profile_row[1] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    profile = {}
+                if not isinstance(profile, dict):
+                    profile = {}
+                restored = int(profile_row[0] or 0) + amount
+                profile["gemme"] = restored
+                conn.execute(
+                    "UPDATE users SET gems = ?, profile_json = ? WHERE user_id = ?",
+                    (
+                        restored,
+                        json.dumps(profile, ensure_ascii=False),
+                        str(row[0]),
+                    ),
+                )
+            conn.execute(
+                "UPDATE gems_transfer_requests SET status = 'refunded' "
+                "WHERE request_id = ?",
+                (str(request_id),),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _delete_profile(user_id: str) -> None:
@@ -8765,7 +8910,6 @@ class StaffRequestControlView(DetailedView):
                     print(f"[accept hoster_role] {e}")
         role_str = " · ".join(f"**{r}**" for r in roles_given) if roles_given else "roles (check bot permissions)"
         try:
-            embed = discord.Embed(
                 title="🎉 Application Accepted!",
                 description=(
                     f"Congratulations {member.mention}! 🎊\n\n"
@@ -8901,6 +9045,154 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
         print(f"[staff ticket] Role not found: {HIGH_STAFF_ROLE_NAME}")
     await ch.send(content=ping_content, embed=embed, view=StaffRequestControlView(user_id=user.id))
 
+class GemsTransferModal(DetailedModal, title="💎 Request Gems Transfer"):
+    sg_account = TextInput(
+        label="Stumble Guys User ID / Username",
+        placeholder="Enter the account linked to this Discord user",
+        min_length=1,
+        max_length=40,
+    )
+    gems_amount = TextInput(
+        label="Gems Amount",
+        placeholder="Enter the number of Gems to receive",
+        min_length=1,
+        max_length=10,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None or interaction.guild_id != SERVER_ID:
+            return await interaction.response.send_message(
+                "❌ This transfer form is only available in the PCF server.",
+                ephemeral=True,
+            )
+
+        log_channel_id = db.get("log_channel_id")
+        log_channel = None
+        if log_channel_id:
+            try:
+                log_channel = guild.get_channel(int(log_channel_id))
+            except (TypeError, ValueError):
+                log_channel = None
+        if log_channel is None:
+            log_channel = bot.get_channel(log_channel_id) if log_channel_id else None
+        if log_channel is None:
+            embed = discord.Embed(
+                title="❌ Transfer Unavailable",
+                description=(
+                    "The admin log channel is not configured yet. "
+                    "Please contact staff."
+                ),
+                color=discord.Color.red(),
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        raw_amount = str(self.gems_amount.value).strip().replace(",", "")
+        try:
+            amount = int(raw_amount)
+        except (TypeError, ValueError):
+            amount = 0
+
+        request_id, status, remaining, reserved_amount = (
+            _create_gems_transfer_request(
+                interaction.user.id,
+                str(self.sg_account.value),
+                amount,
+            )
+        )
+        if status != "ok":
+            if status == "account_not_linked":
+                message = (
+                    "❌ Link your Stumble Guys account before requesting a "
+                    "Gems transfer."
+                )
+            elif status == "account_mismatch":
+                message = (
+                    "❌ The Stumble Guys ID / Username must match the account "
+                    "linked to your Discord profile."
+                )
+            elif status == "insufficient_gems":
+                message = (
+                    f"❌ You requested **{format_num(amount)}** {E_GEMS}, but "
+                    f"you only have **{format_num(remaining)}** available."
+                )
+            elif status == "invalid_amount":
+                message = "❌ Enter a valid Gems amount greater than zero."
+            else:
+                message = (
+                    "❌ Your profile could not be found. Please use the account "
+                    "link flow first."
+                )
+            return await interaction.response.send_message(message, ephemeral=True)
+
+        notification = discord.Embed(
+            title="💎 Gems Transfer Request",
+            description=(
+                "A member submitted a Gems payout request. "
+                "The requested Gems have been reserved from their balance."
+            ),
+            color=discord.Color.purple(),
+        )
+        notification.add_field(
+            name="Discord User",
+            value=interaction.user.mention,
+            inline=False,
+        )
+        notification.add_field(
+            name="Stumble Guys ID / Username",
+            value=str(self.sg_account.value).strip(),
+            inline=True,
+        )
+        notification.add_field(
+            name="Gems Requested",
+            value=f"{format_num(reserved_amount)} {E_GEMS}",
+            inline=True,
+        )
+        notification.add_field(
+            name="Gems Remaining",
+            value=f"{format_num(remaining)} {E_GEMS}",
+            inline=True,
+        )
+        notification.set_footer(text=f"Transfer request #{request_id} • Pending payout")
+
+        try:
+            await log_channel.send(embed=notification)
+        except Exception as exc:
+            print(f"[gems transfer] Could not notify admin log channel: {exc}")
+            try:
+                _refund_gems_transfer_request(request_id)
+            except Exception as refund_error:
+                print(f"[gems transfer] Could not refund failed request: {refund_error}")
+            return await interaction.response.send_message(
+                "❌ I could not submit the request to staff. Your Gems were not charged.",
+                ephemeral=True,
+            )
+
+        _update_gems_transfer_request_status(request_id, "notified")
+        confirmation = discord.Embed(
+            title="✅ Gems Transfer Submitted",
+            description=(
+                f"Your request for **{format_num(reserved_amount)}** {E_GEMS} "
+                "has been sent to staff."
+            ),
+            color=discord.Color.green(),
+        )
+        confirmation.add_field(
+            name="Stumble Guys account",
+            value=str(self.sg_account.value).strip(),
+            inline=True,
+        )
+        confirmation.add_field(
+            name="Gems remaining",
+            value=f"{format_num(remaining)} {E_GEMS}",
+            inline=True,
+        )
+        confirmation.set_footer(
+            text=f"Request #{request_id} • Staff will complete the transfer"
+        )
+        await interaction.response.send_message(embed=confirmation, ephemeral=True)
+
+
 class TicketMainView(DetailedView):
     def __init__(self):
         super().__init__(timeout=None)
@@ -9000,26 +9292,13 @@ class TicketMainView(DetailedView):
 
     @discord.ui.button(label="💎 Gems Transfer", style=discord.ButtonStyle.secondary, custom_id="ticket_gems")
     async def gems_transfer(self, interaction: discord.Interaction, button: Button):
-        try:
-            embed = discord.Embed(
-                title="💎 Gems Transfer",
-                description=(
-                    "Sorry, the owner **cannot send gems right now**.\n\n"
-                    "Support him in his **livestreams** so he can become a Content Creator "
-                    "and unlock new things for everyone! 🎮✨\n\n"
-                    "Use `:link` to connect your Stumble Guys account and receive gems automatically "
-                    "when you win a Big Tournament!"
-                ),
-                color=discord.Color.purple()
+        if interaction.guild_id != SERVER_ID:
+            return await interaction.response.send_message(
+                "❌ This transfer button is only available in the PCF server.",
+                ephemeral=True,
             )
-            embed.set_image(url=STUMBLE_IMG)
-            await interaction.user.send(embed=embed)
-            await interaction.response.send_message("✅ Sent you a DM!", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ I can't DM you. Please enable DMs from this server.", ephemeral=True
-            )
-
+        await interaction.response.send_modal(GemsTransferModal())
+        return
 @bot.command(name="add-ticket")
 @admin_only()
 async def add_ticket(ctx):
