@@ -183,7 +183,27 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "gems INTEGER NOT NULL DEFAULT 0, "
                 "linked INTEGER NOT NULL DEFAULT 0, "
                 "chest_cooldown REAL NOT NULL DEFAULT 0, "
+                "invite_count INTEGER NOT NULL DEFAULT 0, "
                 "profile_json TEXT NOT NULL DEFAULT '{}'"
+                ")"
+            )
+            try:
+                _sqlite_connection.execute(
+                    "ALTER TABLE users ADD COLUMN invite_count "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+            _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS invites_tracker ("
+                "guild_id TEXT NOT NULL, "
+                "invite_code TEXT NOT NULL, "
+                "inviter_id TEXT NOT NULL, "
+                "uses INTEGER NOT NULL DEFAULT 0, "
+                "is_personal INTEGER NOT NULL DEFAULT 0, "
+                "created_at REAL NOT NULL DEFAULT 0, "
+                "PRIMARY KEY (guild_id, invite_code)"
                 ")"
             )
             _sqlite_connection.execute(
@@ -199,6 +219,27 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "CREATE TABLE IF NOT EXISTS metadata "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
+            # Existing imports may already have invite_count only inside the
+            # legacy profile JSON. Promote it to the indexed users column so
+            # the leaderboard sees those historical totals too.
+            for user_id, profile_json, column_count in _sqlite_connection.execute(
+                "SELECT user_id, profile_json, invite_count FROM users"
+            ).fetchall():
+                try:
+                    json_count = int(
+                        (json.loads(profile_json or "{}") or {}).get(
+                            "invite_count",
+                            0,
+                        )
+                        or 0
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    json_count = 0
+                if json_count > int(column_count or 0):
+                    _sqlite_connection.execute(
+                        "UPDATE users SET invite_count = ? WHERE user_id = ?",
+                        (json_count, user_id),
+                    )
             _sqlite_connection.commit()
         return _sqlite_connection
 
@@ -213,7 +254,8 @@ def _profile_exists(user_id: str) -> bool:
 def _read_profile(user_id: str) -> dict:
     with _sqlite_lock:
         row = _sqlite_conn().execute(
-            "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown "
+            "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown, "
+            "invite_count "
             "FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
@@ -228,6 +270,10 @@ def _read_profile(user_id: str) -> dict:
     profile["gemme"] = int(row[3] or 0)
     profile["linked"] = bool(row[4])
     profile["chest_cooldown"] = float(row[5] or 0)
+    profile["invite_count"] = max(
+        int(profile.get("invite_count", 0) or 0),
+        int(row[6] or 0),
+    )
     return profile
 
 
@@ -259,7 +305,8 @@ def _write_profile(user_id: str, profile: dict) -> None:
     with _sqlite_lock:
         conn = _sqlite_conn()
         existing = conn.execute(
-            "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown "
+            "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown, "
+            "invite_count "
             "FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
@@ -273,13 +320,23 @@ def _write_profile(user_id: str, profile: dict) -> None:
         profile_data["gemme"] = gems
         profile_data["linked"] = bool(linked)
         profile_data["chest_cooldown"] = chest_cooldown
+        try:
+            invite_count = max(
+                int(profile_data.get("invite_count", 0) or 0),
+                int(existing[6] or 0) if existing else 0,
+            )
+        except (TypeError, ValueError):
+            invite_count = int(existing[6] or 0) if existing else 0
+        profile_data["invite_count"] = invite_count
         conn.execute(
             "INSERT INTO users("
-            "user_id, rubies, crystals, gems, linked, chest_cooldown, profile_json"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "user_id, rubies, crystals, gems, linked, chest_cooldown, "
+            "invite_count, profile_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(user_id) DO UPDATE SET "
             "rubies=excluded.rubies, crystals=excluded.crystals, gems=excluded.gems, "
             "linked=excluded.linked, chest_cooldown=excluded.chest_cooldown, "
+            "invite_count=excluded.invite_count, "
             "profile_json=excluded.profile_json",
             (
                 user_id,
@@ -288,6 +345,7 @@ def _write_profile(user_id: str, profile: dict) -> None:
                 gems,
                 linked,
                 chest_cooldown,
+                invite_count,
                 json.dumps(profile_data, ensure_ascii=False),
             ),
         )
@@ -380,7 +438,7 @@ def _normalise_legacy_profile(profile: dict, username: str) -> dict:
         "xp_msg", "level_msg", "staff_tours", "staff_matches", "staff_rounds",
         "staff_week_tours", "staff_week_matches", "staff_week_rounds",
         "slot_wins", "slot_ruby_won", "duel_matches", "duel_wins",
-        "duel_rubies_won", "boost_count",
+        "duel_rubies_won", "boost_count", "invite_count",
     ):
         try:
             normalized[key] = int(normalized.get(key, 0) or 0)
@@ -393,6 +451,7 @@ def _normalise_legacy_profile(profile: dict, username: str) -> dict:
         if isinstance(linked, str)
         else bool(linked)
     )
+    normalized["invite_count"] = max(0, normalized.get("invite_count", 0))
     normalized.setdefault("w_owned", [])
     return normalized
 
@@ -456,8 +515,9 @@ def _insert_user_profile(
     normalized["chest_cooldown"] = chest_cooldown
     conn.execute(
         "INSERT OR IGNORE INTO users("
-        "user_id, rubies, crystals, gems, linked, chest_cooldown, profile_json"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "user_id, rubies, crystals, gems, linked, chest_cooldown, "
+        "invite_count, profile_json"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             str(user_id),
             rubies,
@@ -465,6 +525,7 @@ def _insert_user_profile(
             gems,
             linked,
             chest_cooldown,
+            normalized.get("invite_count", 0),
             json.dumps(normalized, ensure_ascii=False),
         ),
     )
@@ -1387,6 +1448,7 @@ _invite_cache_lock = asyncio.Lock()
 # Keep the cache available on the bot instance for event handlers and
 # integrations that need to inspect the current invite snapshot.
 bot.invite_cache = _invite_cache
+bot.invites_cache = _invite_cache
 
 
 class InviteRegistrationError(RuntimeError):
@@ -1420,6 +1482,66 @@ async def _invite_snapshot(
         }
         for invite in invites
     }
+
+
+def _store_invite_mapping(
+    guild_id: int,
+    invite_code: str,
+    inviter_id: int,
+    *,
+    uses: int = 0,
+    is_personal: bool = False,
+) -> None:
+    """Persist the invite-code-to-creator mapping used for attribution."""
+    with _sqlite_lock:
+        _sqlite_conn().execute(
+            "INSERT INTO invites_tracker("
+            "guild_id, invite_code, inviter_id, uses, is_personal, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, invite_code) DO UPDATE SET "
+            "inviter_id=excluded.inviter_id, uses=excluded.uses, "
+            "is_personal=MAX(invites_tracker.is_personal, excluded.is_personal)",
+            (
+                str(guild_id),
+                str(invite_code),
+                str(inviter_id),
+                max(int(uses or 0), 0),
+                int(bool(is_personal)),
+                datetime.now(timezone.utc).timestamp(),
+            ),
+        )
+        _sqlite_conn().commit()
+
+
+def _lookup_invite_inviter(guild_id: int, invite_code: str) -> int | None:
+    """Read the persisted creator for an invite code."""
+    with _sqlite_lock:
+        row = _sqlite_conn().execute(
+            "SELECT inviter_id FROM invites_tracker "
+            "WHERE guild_id = ? AND invite_code = ?",
+            (str(guild_id), str(invite_code)),
+        ).fetchone()
+    try:
+        return int(row[0]) if row else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_invite_snapshot(
+    guild: discord.Guild,
+    snapshot: dict[str, dict[str, int | None]],
+) -> None:
+    """Persist all invite creators and their latest usage counts."""
+    for code, data in snapshot.items():
+        inviter_id = data.get("inviter_id")
+        if inviter_id is None:
+            continue
+        _store_invite_mapping(
+            guild.id,
+            code,
+            int(inviter_id),
+            uses=int(data.get("uses", 0) or 0),
+        )
 
 
 async def _record_invite_totals(
@@ -1532,6 +1654,7 @@ async def _refresh_invite_cache(
     snapshot = await _invite_snapshot(guild)
     if snapshot is None:
         return
+    _store_invite_snapshot(guild, snapshot)
     async with _invite_cache_lock:
         _invite_cache[guild.id] = snapshot
     await _record_invite_totals(guild, snapshot)
@@ -1564,6 +1687,7 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
         snapshot = await _invite_snapshot(member.guild)
         if snapshot is None:
             return None
+        _store_invite_snapshot(member.guild, snapshot)
         async with _invite_cache_lock:
             previous = _invite_cache.get(member.guild.id, {})
             _invite_cache[member.guild.id] = snapshot
@@ -1574,9 +1698,12 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
                 continue
             old = previous[code]
             delta = int(current["uses"] or 0) - int(old.get("uses", 0) or 0)
-            inviter_id = current["inviter_id"]
+            inviter_id = current["inviter_id"] or _lookup_invite_inviter(
+                member.guild.id,
+                code,
+            )
             if delta > 0 and inviter_id is not None:
-                candidates.append((delta, int(inviter_id)))
+                candidates.append((delta, code, int(inviter_id)))
         if candidates:
             candidate = max(candidates)
             break
@@ -1591,7 +1718,11 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
         )
         return None
 
-    delta, inviter_id = candidate
+    delta, invite_code, detected_inviter_id = candidate
+    # The database mapping is authoritative for personal links and remains
+    # available even if Discord omits the inviter on a later invite fetch.
+    inviter_id = _lookup_invite_inviter(member.guild.id, invite_code)
+    inviter_id = inviter_id or detected_inviter_id
     total = await _record_invite_use(member.guild, inviter_id, delta)
     awarded = await _award_invite_role(
         member.guild,
@@ -3121,6 +3252,8 @@ SLOT_EMOJIS = ["⭐", "💎", "🍒", "🐔"]
 
 # ── In-memory: duels ───────────────────────────────────────────────────────
 active_duels: dict = {}
+active_wagers: dict = {}
+_wager_lock = asyncio.Lock()
 _shop_panel_view_registered = False
 _machine_panel_view_registered = False
 _chest_panel_view_registered = False
@@ -5084,11 +5217,20 @@ async def on_invite_create(invite: discord.Invite):
     guild = invite.guild
     if guild is None or guild.id != SERVER_ID:
         return
+    inviter_id = invite.inviter.id if invite.inviter else None
+    if inviter_id is not None:
+        _store_invite_mapping(
+            guild.id,
+            invite.code,
+            inviter_id,
+            uses=int(invite.uses or 0),
+        )
     async with _invite_cache_lock:
         bot.invite_cache.setdefault(guild.id, {})[invite.code] = {
             "uses": max(int(invite.uses or 0), 0),
-            "inviter_id": invite.inviter.id if invite.inviter else None,
+            "inviter_id": inviter_id,
         }
+        bot.invites_cache = bot.invite_cache
 
 
 @bot.event
@@ -5099,15 +5241,17 @@ async def on_invite_delete(invite: discord.Invite):
         return
     async with _invite_cache_lock:
         bot.invite_cache.setdefault(guild.id, {}).pop(invite.code, None)
+        bot.invites_cache = bot.invite_cache
 
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = member.guild
+    inviter_id = None
     if guild.id == SERVER_ID:
         # Discord does not include the used invite in MemberJoin. Compare the
         # cached startup/event snapshot with current usage and persist the
         # inviter's historical total before assigning their role.
-        await _track_joining_member_invite(member)
+        inviter_id = await _track_joining_member_invite(member)
     member_role = guild.get_role(MEMBER_ROLE_ID)
     if member_role:
         try:
@@ -5134,7 +5278,26 @@ async def on_member_join(member: discord.Member):
         ),
         color=discord.Color.green()
     )
-    embed.set_footer(text=f"Member #{guild.member_count} • PCF™")
+    if inviter_id is not None:
+        inviter = guild.get_member(inviter_id)
+        if inviter is None:
+            try:
+                inviter = await guild.fetch_member(inviter_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                inviter = None
+        inviter_name = inviter.mention if inviter is not None else f"<@{inviter_id}>"
+        inviter_profile = get_profile(
+            inviter_id,
+            inviter.display_name if inviter is not None else str(inviter_id),
+        )
+        total_invites = int(inviter_profile.get("invite_count", 0) or 0)
+        footer_text = (
+            f"📥 Invited by: {inviter_name} "
+            f"(Total invites: {total_invites})"
+        )
+    else:
+        footer_text = "📥 Invited by: Unknown (Invite could not be verified)"
+    embed.set_footer(text=footer_text)
     embed.set_image(url=WELCOME_EMBED_IMAGE_URL)
     await channel.send(content=member.mention, embed=embed)
 
@@ -7399,7 +7562,7 @@ async def winner_tour(ctx, *winners: discord.Member):
     if not t:
         return await ctx.send("❌ No active tournament.", delete_after=5.0)
     is_big = bool(t.get("is_big"))
-    max_winners = 9 if is_big else 4
+    max_winners = 9
     if len(winners) > max_winners:
         return await ctx.send(
             f"❌ Enter at most {max_winners} final placements.",
@@ -7451,10 +7614,33 @@ async def winner_tour(ctx, *winners: discord.Member):
         if prize_text:
             grant_prize(prize_text, member, tournament_reward=True)
         await update_rank_roles(ctx.guild, member, prof["punti"])
-    # Keep the result-channel announcement focused on the tournament winner.
-    # Other placements are still awarded above, but their names are not
-    # published in the final Winners section.
-    result_lines = f"**1.** {winner.mention}"
+    # Publish a stable nine-position result board. Empty positions remain
+    # visible so staff and players can immediately see the full bracket.
+    placement_medals = {
+        1: "🥇",
+        2: "🥈",
+        3: "🥉",
+        4: "🏅",
+        5: "🏅",
+        6: "🏅",
+        7: "🎖️",
+        8: "🎖️",
+        9: "🎖️",
+    }
+    result_lines = []
+    for position in range(1, 10):
+        member = placements[position - 1] if position <= len(placements) else None
+        if is_big:
+            prize_text = _big_tournament_prize_for_position(t, position)
+        else:
+            prize_position = min(position, 3)
+            prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+        result_lines.append(
+            f"**{position}.** {placement_medals[position]} "
+            f"{member.mention if member else '—'} - "
+            f"[{_format_prize(prize_text) if prize_text else '—'}]"
+        )
+    result_lines = "\n".join(result_lines)
     result_prizes = (
         format_big_tournament_prizes(t.get("big_prizes"))
         if is_big
@@ -7648,6 +7834,57 @@ async def leaderboard(ctx):
         categories=FULL_LEADERBOARD_CATEGORIES,
     ):
         await ctx.send(embed=embed)
+
+
+def _invite_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
+    """Build the public leaderboard from verified SQLite invite totals."""
+    with _sqlite_lock:
+        rows = _sqlite_conn().execute(
+            "SELECT user_id, invite_count FROM users "
+            "WHERE invite_count > 0 ORDER BY invite_count DESC, user_id ASC "
+            "LIMIT 10"
+        ).fetchall()
+
+    lines = []
+    for rank, (user_id, invite_count) in enumerate(rows, start=1):
+        member = guild.get_member(int(user_id))
+        if member is not None:
+            name = member.mention
+        else:
+            profile = db.get("profiles", {}).get(str(user_id))
+            stored_name = _stored_leaderboard_username(profile) if profile else None
+            name = f"@{stored_name}" if stored_name else f"<@{user_id}>"
+        lines.append(
+            f"**{rank}.** {name} — **{format_num(int(invite_count))}** verified invites"
+        )
+
+    embed = discord.Embed(
+        title="🏆 TOP INVITES LEADERBOARD",
+        description="\n".join(lines) if lines else "No verified invites yet.",
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text="PCF™ • Verified invite tracking")
+    return embed
+
+
+@bot.command(name="invites")
+async def invites(ctx):
+    """Show the top server inviters using verified SQLite totals."""
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used inside the server.")
+    await ctx.send(embed=_invite_leaderboard_embed(ctx.guild))
+
+
+@bot.tree.command(name="invites", description="Show the top verified server inviters.")
+async def invites_slash(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return await interaction.response.send_message(
+            "❌ This command can only be used inside the server.",
+            ephemeral=True,
+        )
+    await interaction.response.send_message(
+        embed=_invite_leaderboard_embed(interaction.guild)
+    )
 
 
 def _manager_or_admin_access(member) -> bool:
@@ -11242,6 +11479,42 @@ class SGLinkChannelView(DetailedView):
         await interaction.response.send_modal(SGLinkModal(guild_id=interaction.guild_id))
 
 
+async def _create_personal_invite(
+    guild: discord.Guild,
+    channel,
+    creator: discord.abc.User,
+    *,
+    reason: str,
+) -> discord.Invite | None:
+    """Create, cache, and persist one permanent invite owned by ``creator``."""
+    if not hasattr(channel, "create_invite"):
+        return None
+    try:
+        invite = await channel.create_invite(
+            max_age=0,
+            max_uses=0,
+            temporary=False,
+            unique=True,
+            reason=reason,
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        return None
+    _store_invite_mapping(
+        guild.id,
+        invite.code,
+        creator.id,
+        uses=int(invite.uses or 0),
+        is_personal=True,
+    )
+    async with _invite_cache_lock:
+        bot.invite_cache.setdefault(guild.id, {})[invite.code] = {
+            "uses": max(int(invite.uses or 0), 0),
+            "inviter_id": creator.id,
+        }
+        bot.invites_cache = bot.invite_cache
+    return invite
+
+
 class PersonalInviteView(DetailedView):
     """Persistent panel for generating a private, permanent server invite."""
 
@@ -11261,21 +11534,16 @@ class PersonalInviteView(DetailedView):
                 ephemeral=True,
             )
 
-        channel = interaction.channel
-        if not hasattr(channel, "create_invite"):
-            return await interaction.response.send_message(
-                "❌ I cannot create an invite in this channel.",
-                ephemeral=True,
-            )
-        try:
-            invite = await channel.create_invite(
-                max_age=0,
-                max_uses=0,
-                temporary=False,
-                unique=True,
-                reason=f"Personal invite requested by {interaction.user} ({interaction.user.id})",
-            )
-        except (discord.Forbidden, discord.HTTPException):
+        invite = await _create_personal_invite(
+            guild,
+            interaction.channel,
+            interaction.user,
+            reason=(
+                f"Personal invite requested by {interaction.user} "
+                f"({interaction.user.id})"
+            ),
+        )
+        if invite is None:
             return await interaction.response.send_message(
                 "❌ I could not create an invite here. Please ask an administrator "
                 "to grant me the **Create Invite** permission.",
@@ -11287,6 +11555,30 @@ class PersonalInviteView(DetailedView):
             "Share this link with your friends to invite them to the server!",
             ephemeral=True,
         )
+
+
+@bot.command(name="get-link", aliases=["getlink"])
+async def get_link_cmd(ctx):
+    """Create a unique permanent invite linked to the requesting member."""
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used inside the server.")
+    invite = await _create_personal_invite(
+        ctx.guild,
+        ctx.channel,
+        ctx.author,
+        reason=f"Personal invite requested by {ctx.author} ({ctx.author.id})",
+    )
+    if invite is None:
+        return await ctx.send(
+            "❌ I could not create an invite here. Please ask an administrator "
+            "to grant me the **Create Invite** permission.",
+            delete_after=8.0,
+        )
+    await ctx.send(
+        f"✨ **Here is your personal invite link:**\n{invite.url}\n\n"
+        "Share this link with your friends to invite them to the server!",
+        delete_after=15.0,
+    )
 
 
 @bot.command(name="setup-getlink", aliases=["setup_getlink", "setup-get-link"])
@@ -12376,7 +12668,24 @@ MACHINE_PANEL_DESCRIPTION = (
 )
 
 MACHINE_SPIN_BUTTON_LABEL = "🎰 spin!!"
+MACHINE_COOLDOWN_SECONDS = 3 * 60
+MACHINE_COOLDOWN_ACTION = "machine_spin"
 _machine_spin_lock = asyncio.Lock()
+
+
+def _machine_cooldown_remaining(user_id: int) -> int:
+    started = _cooldown_timestamp(user_id, MACHINE_COOLDOWN_ACTION)
+    if started is None:
+        return 0
+    elapsed = datetime.now(timezone.utc).timestamp() - started
+    return max(0, math.ceil(MACHINE_COOLDOWN_SECONDS - elapsed))
+
+
+def _machine_cooldown_message(remaining: int) -> str:
+    minutes, seconds = divmod(max(0, remaining), 60)
+    return (
+        f"⏳ Please wait {minutes}m {seconds}s before using the machine again"
+    )
 
 
 def _build_machine_panel_embed() -> discord.Embed:
@@ -12409,6 +12718,12 @@ class MachinePanelView(DetailedView):
             )
 
         async with _machine_spin_lock:
+            remaining = _machine_cooldown_remaining(interaction.user.id)
+            if remaining:
+                return await interaction.response.send_message(
+                    _machine_cooldown_message(remaining),
+                    ephemeral=True,
+                )
             prof = get_profile(
                 interaction.user.id,
                 interaction.user.display_name,
@@ -12423,6 +12738,12 @@ class MachinePanelView(DetailedView):
                     ephemeral=True,
                 )
 
+            # Claim the cooldown while holding the same lock as the balance
+            # check so rapid double-clicks cannot create two spins.
+            _set_cooldown_timestamp(
+                interaction.user.id,
+                MACHINE_COOLDOWN_ACTION,
+            )
             prof["rubini"] -= SLOT_MACHINE_MIN_BET
             reels, outcome, ruby_payout, crystal_payout, flavor = _spin_result(
                 SLOT_MACHINE_MIN_BET
@@ -12543,6 +12864,307 @@ def _spin_result(bet_amount: int) -> tuple:
 async def machine_cmd(ctx):
     """🎰 Publish the persistent Slot Machine setup panel."""
     await ctx.send(embed=_build_machine_panel_embed(), view=MachinePanelView())
+
+
+WAGER_CURRENCY_LABELS = {
+    "gems": ("gemme", E_GEMS),
+    "gem": ("gemme", E_GEMS),
+    "crystals": ("cristalli", E_CRYSTAL),
+    "crystal": ("cristalli", E_CRYSTAL),
+}
+
+
+def _wager_balance_parts(profile: MutableMapping, currency: str) -> list[tuple[str, int]]:
+    """Return available and pending wallet fields for a wager currency."""
+    base_key, _ = WAGER_CURRENCY_LABELS[currency.casefold()]
+    field_names = [base_key]
+    if base_key == "gemme":
+        field_names.extend(
+            (
+                "available_gems",
+                "pending_gems",
+                "gems_available",
+                "gems_pending",
+            )
+        )
+    else:
+        field_names.extend(
+            (
+                "available_crystals",
+                "pending_crystals",
+                "crystals_available",
+                "crystals_pending",
+            )
+        )
+    parts = []
+    for field_name in field_names:
+        if field_name not in profile:
+            continue
+        try:
+            value = max(0, int(profile.get(field_name, 0) or 0))
+        except (TypeError, ValueError):
+            value = 0
+        parts.append((field_name, value))
+    if not parts:
+        parts.append((base_key, 0))
+    return parts
+
+
+def _wager_balance(profile: MutableMapping, currency: str) -> int:
+    """Include both the main wallet and explicit pending/available fields."""
+    return sum(value for _, value in _wager_balance_parts(profile, currency))
+
+
+def _debit_wager_balance(profile: MutableMapping, currency: str, amount: int) -> None:
+    """Debit a wager from available funds first, then pending funds."""
+    remaining = amount
+    for field_name, value in _wager_balance_parts(profile, currency):
+        if remaining <= 0:
+            break
+        debit = min(value, remaining)
+        profile[field_name] = value - debit
+        remaining -= debit
+
+
+class TwoVTwoWagerView(DetailedView):
+    """Require every tagged player to accept before escrowing a 2v2 wager."""
+
+    def __init__(
+        self,
+        guild: discord.Guild,
+        challenger: discord.Member,
+        participants: list[discord.Member],
+        amount: int,
+        currency: str,
+    ):
+        super().__init__(timeout=15 * 60)
+        self.guild_id = guild.id
+        self.challenger = challenger
+        self.participants = participants
+        self.participant_ids = {member.id for member in participants}
+        self.amount = amount
+        self.currency = currency.casefold()
+        self.confirmed = {challenger.id}
+        self.state = "pending"
+        self.message: discord.Message | None = None
+
+    @property
+    def currency_label(self) -> str:
+        return WAGER_CURRENCY_LABELS[self.currency][1]
+
+    def _status_lines(self) -> str:
+        return "\n".join(
+            f"{'✅' if member.id in self.confirmed else '⏳'} "
+            f"{member.mention} — "
+            f"{'confirmed' if member.id in self.confirmed else 'waiting'}"
+            for member in self.participants
+        )
+
+    def build_embed(self, *, started: bool = False, error: str | None = None) -> discord.Embed:
+        if started:
+            title = "🏁 2V2 WAGER STARTED"
+            color = discord.Color.green()
+            prompt = (
+                "All four players confirmed. The wager has been escrowed; "
+                "staff can record the winning team."
+            )
+        elif error:
+            title = "❌ 2V2 WAGER CANCELLED"
+            color = discord.Color.red()
+            prompt = error
+        else:
+            title = "⚔️ 2V2 WAGER CHALLENGE"
+            color = discord.Color.blurple()
+            prompt = (
+                "Every tagged player must press **Accept Challenge** before "
+                "the match starts."
+            )
+        embed = discord.Embed(
+            title=title,
+            description=(
+                f"**Stake:** {format_num(self.amount)} {self.currency_label} each\n"
+                f"**Total pot:** {format_num(self.amount * 4)} {self.currency_label}\n\n"
+                f"{prompt}\n\n{self._status_lines()}"
+            ),
+            color=color,
+        )
+        embed.set_footer(text="PCF™ 2V2 Wager")
+        return embed
+
+    def _disable_buttons(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def _finish_if_confirmed(self, interaction: discord.Interaction) -> None:
+        if self.participant_ids != self.confirmed:
+            return
+        async with _wager_lock:
+            profiles = [
+                get_profile(member.id, member.display_name)
+                for member in self.participants
+            ]
+            insufficient = [
+                member
+                for member, profile in zip(self.participants, profiles)
+                if _wager_balance(profile, self.currency) < self.amount
+            ]
+            if insufficient:
+                self.state = "cancelled"
+                self._disable_buttons()
+                names = ", ".join(member.mention for member in insufficient)
+                await interaction.response.edit_message(
+                    embed=self.build_embed(
+                        error=f"Insufficient {self.currency_label} for {names}."
+                    ),
+                    view=self,
+                )
+                self.stop()
+                return
+            for profile in profiles:
+                _debit_wager_balance(profile, self.currency, self.amount)
+            wager_id = str(self.message.id if self.message else interaction.message.id)
+            active_wagers[wager_id] = {
+                "guild_id": self.guild_id,
+                "team_one": [self.participants[0].id, self.participants[1].id],
+                "team_two": [self.participants[2].id, self.participants[3].id],
+                "amount": self.amount,
+                "currency": self.currency,
+                "created_at": datetime.now(timezone.utc).timestamp(),
+            }
+            save_db()
+        self.state = "started"
+        self._disable_buttons()
+        await interaction.response.edit_message(
+            embed=self.build_embed(started=True),
+            view=self,
+        )
+        self.stop()
+
+    @discord.ui.button(
+        label="✅ Accept Challenge",
+        style=discord.ButtonStyle.success,
+        custom_id="two_v_two_wager_accept",
+    )
+    async def accept(self, interaction: discord.Interaction, button: Button):
+        if self.state != "pending":
+            return await interaction.response.send_message(
+                "❌ This 2V2 wager is already closed.",
+                ephemeral=True,
+            )
+        if interaction.user.id not in self.participant_ids:
+            return await interaction.response.send_message(
+                "❌ Only the four tagged players can accept this challenge.",
+                ephemeral=True,
+            )
+        if interaction.user.id in self.confirmed:
+            return await interaction.response.send_message(
+                "✅ You have already accepted this challenge.",
+                ephemeral=True,
+            )
+        self.confirmed.add(interaction.user.id)
+        if self.participant_ids == self.confirmed:
+            return await self._finish_if_confirmed(interaction)
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(
+        label="❌ Decline Challenge",
+        style=discord.ButtonStyle.danger,
+        custom_id="two_v_two_wager_decline",
+    )
+    async def decline(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id not in self.participant_ids:
+            return await interaction.response.send_message(
+                "❌ Only the four tagged players can decline this challenge.",
+                ephemeral=True,
+            )
+        self.state = "declined"
+        self._disable_buttons()
+        await interaction.response.edit_message(
+            embed=self.build_embed(
+                error=f"{interaction.user.mention} declined the wager."
+            ),
+            view=self,
+        )
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        if self.state != "pending":
+            return
+        self.state = "expired"
+        self._disable_buttons()
+        if self.message is not None:
+            try:
+                await self.message.edit(
+                    embed=self.build_embed(error="The challenge expired."),
+                    view=self,
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+
+@bot.command(name="2v2", aliases=["2v2-wager", "2v2_wager"])
+async def two_v_two(
+    ctx,
+    partner: discord.Member = None,
+    opponent1: discord.Member = None,
+    opponent2: discord.Member = None,
+    amount: int = None,
+    currency: str = None,
+):
+    """Challenge two opposing players with a four-player currency wager."""
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used inside the server.")
+    if None in (partner, opponent1, opponent2, amount, currency):
+        return await ctx.send(
+            "❌ Use: `:2v2 @partner @opponent1 @opponent2 <amount> <gems|crystals>`",
+            delete_after=8.0,
+        )
+    currency_key = currency.casefold()
+    if currency_key not in WAGER_CURRENCY_LABELS:
+        return await ctx.send(
+            "❌ Currency must be `gems` or `crystals`.",
+            delete_after=6.0,
+        )
+    if amount < 1:
+        return await ctx.send("❌ The wager amount must be at least 1.", delete_after=6.0)
+    participants = [ctx.author, partner, opponent1, opponent2]
+    if len({member.id for member in participants}) != 4:
+        return await ctx.send("❌ All four players must be different.", delete_after=6.0)
+    if any(member.bot for member in participants):
+        return await ctx.send("❌ Bots cannot participate in a wager.", delete_after=6.0)
+    label = WAGER_CURRENCY_LABELS[currency_key][1]
+    balances = [
+        _wager_balance(get_profile(member.id, member.display_name), currency_key)
+        for member in participants
+    ]
+    insufficient = [
+        member.mention
+        for member, balance in zip(participants, balances)
+        if balance < amount
+    ]
+    if insufficient:
+        return await ctx.send(
+            f"❌ Every player needs **{format_num(amount)}** {label}. "
+            f"Insufficient balance: {', '.join(insufficient)}.",
+            delete_after=8.0,
+        )
+    view = TwoVTwoWagerView(
+        ctx.guild,
+        ctx.author,
+        participants,
+        amount,
+        currency_key,
+    )
+    embed = view.build_embed()
+    message = await ctx.send(
+        content=(
+            f"{ctx.author.mention} challenges {partner.mention} and "
+            f"{opponent1.mention} {opponent2.mention}!"
+        ),
+        embed=embed,
+        view=view,
+    )
+    view.message = message
 
 
 # ==========================================
