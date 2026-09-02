@@ -36,6 +36,7 @@ import random
 import sys
 import traceback
 import aiohttp
+import uuid
 from collections.abc import MutableMapping
 
 
@@ -1220,26 +1221,20 @@ TWITCH_REWARD_CURRENCY_NAMES = {
 
 TOUR_HUB_CHANNEL_ID    = CHANNELS["setup_tornei"]
 TOUR_REG_CHANNEL_ID    = CHANNELS["tournament"]
+TOURNAMENT_GET_LINK_CHANNEL_ID = 1544363663870136460
 # Role used for tournament announcements and tournament controls.
 TOURNAMENT_ROLE_ID     = 1287451275708993537
 TOUR_PING_ROLE_ID      = TOURNAMENT_ROLE_ID
-# Temporary campaign setting: notify everyone for every newly published tournament.
-TOURNAMENT_EVERYONE_PING_ENABLED = True
 TOURNAMENT_INVITE_TUTORIAL = (
-    "❓ **How to get your invite link?**\n"
-    "1️⃣ Go to the `#general` channel 💬\n"
-    "2️⃣ Open channel options / click the invite icon ➕\n"
-    "3️⃣ Press **\"Invite Members\"** 👤\n"
-    "4️⃣ Click **\"Copy Link\"** 🔗 & send it to your friends!"
+    f"Get your personal invite link in <#{TOURNAMENT_GET_LINK_CHANNEL_ID}>."
 )
 PERSONAL_INVITE_NOTICE = (
     "📌 **Invite Requirement:**\n"
     "You must have invited at least 1 member to participate!\n"
-    "Haven't invited anyone yet? Get your personal invite link in <#1544363663870136460>."
+    f"{TOURNAMENT_INVITE_TUTORIAL}"
 )
 TOURNAMENT_REQUIREMENT_BLOCK = (
-    f"{PERSONAL_INVITE_NOTICE}\n\n"
-    f"{TOURNAMENT_INVITE_TUTORIAL}"
+    f"{PERSONAL_INVITE_NOTICE}"
 )
 TOURNAMENT_RULES_TEXT = (
     f"{TOURNAMENT_REQUIREMENT_BLOCK}\n\n"
@@ -1300,9 +1295,9 @@ def xp_to_next_level(current_level: int) -> int:
 
 TEAM_MODES = {"2V2", "3V3", "4V4", "5V5", "6V6", "7V7", "8V8"}
 DEFAULT_TOURNAMENT_PRIZES = (
-    "1. 100 Crystals + 2000 Rubies, "
-    "2. 50 Crystals + 1000 Rubies, "
-    "3. 25 Crystals + 500 Rubies"
+    "1. 100 Crystals + 2500 Rubies, "
+    "2. 50 Crystals + 1500 Rubies, "
+    "3. 25 Crystals + 1000 Rubies"
 )
 
 # Big Tournaments use one explicit prize for each final-rank bracket.  The
@@ -1491,7 +1486,7 @@ STAFF_COMMANDS = {
     "setup", "assign-hosts", "add-bot", "bracket", "match", "match-rs", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
     "set-winner", "end-event", "ban-event", "clear", "purge", "staff-tutorial",
-    "test-bracket", "test-result", "2v2-result",
+    "test-bracket", "test-result", "ping-players", "2v2-result",
 }
 
 def _prefix_access_allowed(ctx) -> bool:
@@ -2183,8 +2178,7 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
 def _tournament_invite_requirement_message() -> str:
     return (
         "❌ **Registration Failed:** You haven't invited anyone yet! "
-        "Please get your personal invite link in <#1544363663870136460>, "
-        "invite a friend, and try registering again."
+        f"Get your personal invite link in <#{TOURNAMENT_GET_LINK_CHANNEL_ID}>."
     )
 
 
@@ -3984,8 +3978,8 @@ def parse_orario_timestamp(orario_str: str) -> int | None:
 
 
 def _format_discord_start_time(timestamp: int) -> str:
-    """Render Discord's localized relative and exact start-time formats."""
-    return f"Start Time: <t:{timestamp}:R> (<t:{timestamp}:t>)"
+    """Render the full localized Discord date/time format."""
+    return f"Start Time: <t:{int(timestamp)}:F>"
 
 def format_num(n: int) -> str:
     if n >= 1000:
@@ -4103,15 +4097,31 @@ def _big_tournament_reward_text(prize: dict) -> str:
     return f"{rubies} Rubies + {gems} Gems"
 
 
+def _big_tournament_prize_is_active(prize: dict | None) -> bool:
+    """Return whether a Big Tournament tier actually awards anything."""
+    if not isinstance(prize, dict):
+        return False
+    try:
+        return (
+            int(prize.get("rubies", 0) or 0) > 0
+            or int(prize.get("gems", 0) or 0) > 0
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def format_big_tournament_prizes(prizes: dict | None) -> str:
-    """Render all five configurable Big Tournament prize brackets."""
-    prizes = prizes or BIG_TOURNAMENT_PRIZE_DEFAULTS
-    return "\n".join(
-        f"• {medal} **{label}:** "
-        f"{_format_big_tournament_prize(prizes.get(key, defaults))}"
-        for key, label, medal in BIG_TOURNAMENT_PRIZE_BRACKETS
-        for defaults in [BIG_TOURNAMENT_PRIZE_DEFAULTS[key]]
-    )
+    """Render only the configured, non-empty Big Tournament prize tiers."""
+    prizes = BIG_TOURNAMENT_PRIZE_DEFAULTS if prizes is None else prizes
+    lines = []
+    for key, label, medal in BIG_TOURNAMENT_PRIZE_BRACKETS:
+        prize = prizes.get(key) if isinstance(prizes, dict) else None
+        if not _big_tournament_prize_is_active(prize):
+            continue
+        lines.append(
+            f"• {medal} **{label}:** {_format_big_tournament_prize(prize)}"
+        )
+    return "\n".join(lines) or "—"
 
 
 def _big_tournament_prize_text(prizes: dict) -> str:
@@ -4130,13 +4140,56 @@ def _big_tournament_prize_for_position(tournament: dict, position: int) -> str:
         key = "4_6"
     else:
         key = "7_9"
-    configured = tournament.get("big_prizes", {}).get(key)
-    if configured:
+    configured_prizes = tournament.get("big_prizes")
+    if isinstance(configured_prizes, dict) and key in configured_prizes:
+        configured = configured_prizes.get(key)
+        if not _big_tournament_prize_is_active(configured):
+            return ""
         return _big_tournament_reward_text(configured)
     # Preserve rewards for Big Tournaments created before bracket prizes were
     # introduced.  Those tournaments only had the top-three prize map.
     legacy = parse_tournament_prizes(tournament.get("premio", ""))
-    return legacy.get(min(position, 3), legacy.get(1, ""))
+    return legacy.get(position, "")
+
+
+def _tournament_prize_positions(tournament: dict) -> list[int]:
+    """Return the paid final placements for a tournament."""
+    if tournament.get("is_big"):
+        configured = tournament.get("big_prizes")
+        if isinstance(configured, dict) and any(
+            key in configured for key, _label, _medal in BIG_TOURNAMENT_PRIZE_BRACKETS
+        ):
+            positions = []
+            ranges = {
+                "1": (1,),
+                "2": (2,),
+                "3": (3,),
+                "4_6": (4, 5, 6),
+                "7_9": (7, 8, 9),
+            }
+            for key, _label, _medal in BIG_TOURNAMENT_PRIZE_BRACKETS:
+                if _big_tournament_prize_is_active(configured.get(key)):
+                    positions.extend(ranges[key])
+            return positions or [1]
+        prizes = parse_tournament_prizes(tournament.get("premio", ""))
+    else:
+        prizes = parse_tournament_prizes(tournament.get("premio", ""))
+    return sorted(position for position, prize in prizes.items() if prize.strip()) or [1]
+
+
+def _tournament_prize_limit(tournament: dict) -> int:
+    """Return the highest placement that can receive a configured prize."""
+    return max(_tournament_prize_positions(tournament))
+
+
+def _ensure_tournament_id(tournament: dict) -> str:
+    """Give legacy active tournaments the same ID used by new announcements."""
+    tourney_id = str(tournament.get("tourney_id") or "").strip()
+    if not tourney_id:
+        tourney_id = f"TOUR-{uuid.uuid4().hex[:8].upper()}"
+        tournament["tourney_id"] = tourney_id
+        save_db()
+    return tourney_id
 
 
 def _record_gems(member: discord.Member, amount: int) -> None:
@@ -4553,7 +4606,7 @@ def _preview_bracket_tournament() -> dict:
 
 
 def _build_preview_result_embed() -> discord.Embed:
-    """Build the standard nine-position results board without active data."""
+    """Build a results preview using only the actual preview placements."""
     placements = [f"Preview Player {number}" for number in range(1, 10)]
     prize_text = (
         "1. 5,000 Rubies, 2. 2,500 Rubies, 3. 1,000 Rubies, "
@@ -4576,7 +4629,7 @@ def _build_preview_result_embed() -> discord.Embed:
         f"**{position}.** {placement_medals[position]} "
         f"@{placements[position - 1]} - "
         f"[{_format_prize(prize_map.get(position, '—'))}]"
-        for position in range(1, 10)
+        for position in range(1, len(placements) + 1)
     )
     embed = discord.Embed(
         title="🏆 Tournament Preview — Results",
@@ -4671,7 +4724,7 @@ def generate_bracket_embeds(tournament: dict | None = None) -> list[tuple]:
                 +
                 f"**Round {cur_round}"
                 + (f"/{total_rounds}" if total_rounds != "?" else "")
-                + f"**\n\n🗺️ **Map:** {t['mappa']}\n\n⚡ **Ability:** {t['emote']}\n\n🎁 **Prizes:**\n\n{format_tournament_prizes(t['premio'])}\n\n"
+                + f"**\n\n🗺️ **Map:** {t['mappa']}\n\n⚡ **Ability:** {t['emote']}\n\n🎁 **Prizes:**\n\n{format_big_tournament_prizes(t.get('big_prizes')) if t.get('is_big') else format_tournament_prizes(t['premio'])}\n\n"
             )
             if modalita not in TEAM_MODES:
                 info += f"👥 **Players:** {len(t['players'])}/{t['max']}\n\n"
@@ -7111,6 +7164,8 @@ class TourModal1(DetailedModal):
             mappa, abilita = details or "—", "—"
         format_value = self.formato.value.strip() or self.modalita
         prize_value = self.premio.value.strip()
+        if not self.is_big and not prize_value:
+            prize_value = DEFAULT_TOURNAMENT_PRIZES
         _pending_tour_setup[uid] = {
             "nome":     self.nome.value.strip(),
             "descrizione": self.descrizione.value.strip(),
@@ -7292,6 +7347,10 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
             ephemeral=True,
         )
     time_str = _format_discord_start_time(ts) if ts else "TBD"
+    tourney_id = str(data.get("tourney_id") or f"TOUR-{uuid.uuid4().hex[:8].upper()}")
+    prize_value = str(data.get("premio") or "").strip()
+    if not is_big and not prize_value:
+        prize_value = DEFAULT_TOURNAMENT_PRIZES
     if not await _claim_global_creation_slot(interaction.user.id):
         return await interaction.response.send_message(
             _global_creation_cooldown_message(_global_creation_cooldown_remaining()),
@@ -7321,8 +7380,9 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         "modalita":          actual,
         "nome":              nome,
         "descrizione":       data.get("descrizione", ""),
-        "premio":            data["premio"],
-        "premio_step1":      data.get("premio_step1", data["premio"]),
+        "tourney_id":        tourney_id,
+        "premio":            prize_value,
+        "premio_step1":      data.get("premio_step1", prize_value),
         "mappa":             data["mappa"],
         "emote":             emote_s,
         "players":           [], "player_names": [], "matches": {},
@@ -7345,14 +7405,8 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     prize_display = (
         format_big_tournament_prizes(data.get("big_prizes"))
         if is_big
-        else format_tournament_prizes(data["premio"])
+        else format_tournament_prizes(prize_value)
     )
-    step1_prize = str(data.get("premio_step1", "") or "").strip()
-    if is_big and step1_prize:
-        prize_display += (
-            "\n\n**Step 1 Prize / Montepremi:**\n"
-            f"{_format_prize(step1_prize)}"
-        )
     info_val = (
         f"🎮 **Format:** {actual}\n\n"
         f"🗺️ **Map:** {data['mappa']}\n\n"
@@ -7363,10 +7417,8 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     if data.get("regione"):
         info_val += f"\n\n🌍 **Region:** {data['regione']}"
     if is_big:
-        info_val += (
-            "\n\n🔗 **Big Tournament requirement:** The **Linked** role.\n\n"
-            f"{TOURNAMENT_REQUIREMENT_BLOCK}"
-        )
+        info_val += "\n\n🔗 **Big Tournament requirement:** The **Linked** role."
+    info_val += f"\n\n🆔 **Tournament ID:** `{tourney_id}`"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
     embed.add_field(name="📜 Tournament Rules", value=TOURNAMENT_RULES_TEXT, inline=False)
     status_val = (
@@ -7387,21 +7439,12 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     reg_ch = bot.get_channel(TOUR_REG_CHANNEL_ID)
     view   = TourRegisterView(count=0, max_p=default_max, host_count=0)
     if reg_ch:
-        announcement_ping = (
-            "@everyone"
-            if TOURNAMENT_EVERYONE_PING_ENABLED
-            else ("@here" if is_big else "")
-        )
         if is_big:
-            content = (
-                f"{announcement_ping} <@&{TOUR_PING_ROLE_ID}> "
-                "🌟 **BIG TOURNAMENT** announced!"
-            ).strip()
+            content = "@everyone 🌟 **BIG TOURNAMENT** announced!"
+            allowed_mentions = discord.AllowedMentions(roles=False, everyone=True)
         else:
-            content = (
-                f"{announcement_ping} <@&{TOUR_PING_ROLE_ID}> "
-                "🏆 New tournament open — register now!"
-            ).strip()
+            content = f"<@&{TOUR_PING_ROLE_ID}> 🏆 New tournament open — register now!"
+            allowed_mentions = discord.AllowedMentions(roles=True, everyone=False)
         if os.path.exists(STUMBLE_TOUR_IMG_PATH):
             tournament_file = discord.File(
                 STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME
@@ -7409,17 +7452,13 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
             embed.set_image(url=f"attachment://{TOURNAMENT_IMAGE_FILENAME}")
             reg_msg = await reg_ch.send(
                 content=content, file=tournament_file, embed=embed, view=view,
-                allowed_mentions=discord.AllowedMentions(
-                    roles=True, everyone=TOURNAMENT_EVERYONE_PING_ENABLED
-                ))
+                allowed_mentions=allowed_mentions)
         else:
             print(f"[tournament] Missing image asset: {STUMBLE_TOUR_IMG_PATH}")
             embed.set_image(url=STUMBLE_IMG)
             reg_msg = await reg_ch.send(
                 content=content, embed=embed, view=view,
-                allowed_mentions=discord.AllowedMentions(
-                    roles=True, everyone=TOURNAMENT_EVERYONE_PING_ENABLED
-                ))
+                allowed_mentions=allowed_mentions)
         db["tour"]["register_msg_id"]     = reg_msg.id
         db["tour"]["register_channel_id"] = reg_ch.id
         save_db()
@@ -8400,6 +8439,48 @@ async def close_tour(ctx):
     embed.set_footer(text=f"Closed by {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
+
+@bot.command(name="ping-players", aliases=["ping_players", "pingplayers"])
+@hoster_only()
+async def ping_players(ctx, tourney_id: str = None):
+    """Briefly mention every registered player in the active tournament."""
+    tournament = db.get("tour")
+    if not tournament:
+        return await ctx.send("❌ No active tournament.", delete_after=5.0)
+    if not tourney_id:
+        return await ctx.send(
+            "❌ Use: `:ping-players <tourney_id>`.",
+            delete_after=6.0,
+        )
+
+    active_id = _ensure_tournament_id(tournament)
+    if str(tourney_id).strip().casefold() != active_id.casefold():
+        return await ctx.send(
+            f"❌ Tournament ID not found. The active tournament ID is `{active_id}`.",
+            delete_after=8.0,
+        )
+
+    player_mentions = [
+        f"<@{player_id}>"
+        for player_id in tournament.get("players", [])
+        if str(player_id).isdigit()
+    ]
+    if not player_mentions:
+        return await ctx.send(
+            "❌ No registered players to ping in this tournament.",
+            delete_after=6.0,
+        )
+
+    message = await ctx.send(
+        "📣 **Tournament players:** " + " ".join(player_mentions),
+        allowed_mentions=discord.AllowedMentions(users=True),
+    )
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
 @bot.command(name="end", aliases=["winner-tour", "winner_tour"])
 @hoster_only()
 async def winner_tour(ctx, *winners: discord.Member):
@@ -8407,7 +8488,7 @@ async def winner_tour(ctx, *winners: discord.Member):
     if not t:
         return await ctx.send("❌ No active tournament.", delete_after=5.0)
     is_big = bool(t.get("is_big"))
-    max_winners = 9
+    max_winners = _tournament_prize_limit(t)
     if len(winners) > max_winners:
         return await ctx.send(
             f"❌ Enter at most {max_winners} final placements.",
@@ -8448,8 +8529,7 @@ async def winner_tour(ctx, *winners: discord.Member):
         if is_big:
             prize_text = _big_tournament_prize_for_position(t, position)
         else:
-            prize_position = min(position, 3)
-            prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+            prize_text = prize_map.get(position, "")
         if position == 1:
             first_prize_text = prize_text
         await assign_winner_role(ctx.guild, member)
@@ -8459,8 +8539,8 @@ async def winner_tour(ctx, *winners: discord.Member):
         if prize_text:
             grant_prize(prize_text, member, tournament_reward=True)
         await update_rank_roles(ctx.guild, member, prof["punti"])
-    # Publish a stable nine-position result board. Empty positions remain
-    # visible so staff and players can immediately see the full bracket.
+    # Publish only the actual placements entered by the host, bounded by the
+    # configured prize tiers. This prevents empty 2nd/3rd/etc. rows.
     placement_medals = {
         1: "🥇",
         2: "🥈",
@@ -8473,30 +8553,31 @@ async def winner_tour(ctx, *winners: discord.Member):
         9: "🎖️",
     }
     result_lines = []
-    for position in range(1, 10):
-        member = placements[position - 1] if position <= len(placements) else None
+    for position, member in enumerate(placements, start=1):
         if is_big:
             prize_text = _big_tournament_prize_for_position(t, position)
         else:
-            prize_position = min(position, 3)
-            prize_text = prize_map.get(prize_position) or prize_map.get(1, "")
+            prize_text = prize_map.get(position, "")
         result_lines.append(
-            f"**{position}.** {placement_medals[position]} "
-            f"{member.mention if member else '—'} - "
-            f"[{_format_prize(prize_text) if prize_text else '—'}]"
+            f"**{position}.** {placement_medals.get(position, '🏅')} "
+            f"{member.mention} — "
+            f"**{_format_prize(prize_text) if prize_text else 'No prize'}**"
         )
     result_lines = "\n".join(result_lines)
-    result_prizes = (
-        format_big_tournament_prizes(t.get("big_prizes"))
-        if is_big
-        else format_tournament_prizes(t.get("premio", ""))
-    )
+    result_prizes = format_tournament_prizes(t.get("premio", ""))
+    if is_big:
+        result_prizes = (
+            format_big_tournament_prizes(t.get("big_prizes"))
+            if t.get("big_prizes")
+            else result_prizes
+        )
     embed = discord.Embed(
         title=f"🏆 {t.get('nome', 'Tournament')} — Results",
-        description=f"🎁 **Prizes**\n{result_prizes}\n\n"
-                    f"🏆 **Winners**\n{result_lines}",
+        description=f"Final standings for **{len(placements)}** paid placement(s).",
         color=discord.Color.gold()
     )
+    embed.add_field(name="🎁 Prize Distribution", value=result_prizes[:1024], inline=False)
+    embed.add_field(name="🏆 Final Standings", value=result_lines[:1024], inline=False)
     embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points",       inline=True)
     embed.add_field(name="🗺️ Map",       value=t["mappa"],                  inline=True)
     embed.add_field(name="⚡ Ability",    value=t["emote"],                  inline=True)
@@ -11390,6 +11471,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":match-rs (alias :match_rs)", "Resets a tournament match, removes its previous result and cleans the winner from later bracket slots.", "<match number>; hoster/admin access.", ":match-rs 2"),
             (":qual", "Records a 1v1 match winner, grants the related Ranked Points and updates the bracket.", "<@winner>; team formats can also use the team/captain syntax accepted by the command.", ":qual @Winner"),
             (":end (aliases :winner-tour, :winner_tour)", "Closes a 1v1 tournament and awards the winner with Ruby and Crystals.", "[@winner] optional member mention; without it, the last remaining player is detected.", ":end @Winner"),
+            (":ping-players (aliases :ping_players, :pingplayers)", "Briefly mentions every registered player in the active tournament, then removes the ping message.", "<tourney_id> shown in the tournament registration embed; hoster/admin access.", ":ping-players TOUR-AB12CD34"),
             (":team-winner", "Closes a team-format tournament and awards the winning team.", "No arguments; the active tournament must contain a winning team.", ":team-winner"),
             (":close-tour (alias :close_tour)", "Resets and closes the currently active tournament.", "No arguments; hoster/admin access. This clears the active tournament state.", ":close-tour"),
             (":event", "Posts a Flash Event embed in the current channel with its registration controls.", "No command arguments; configure the event through the displayed controls.", ":event"),
