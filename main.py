@@ -355,26 +355,13 @@ def _read_profile(user_id: str) -> dict:
         int(profile.get("invite_count", 0) or 0),
         int(row[6] or 0),
     )
-    profile["matches_played"] = max(
-        int(profile.get("matches_played", 0) or 0),
-        int(row[7] or 0),
-    )
-    profile["wins"] = max(
-        int(profile.get("wins", 0) or 0),
-        int(row[8] or 0),
-    )
-    profile["rubies_won"] = max(
-        int(profile.get("rubies_won", 0) or 0),
-        int(row[9] or 0),
-    )
-    profile["gems_won"] = max(
-        int(profile.get("gems_won", 0) or 0),
-        int(row[10] or 0),
-    )
-    profile["crystals_won"] = max(
-        int(profile.get("crystals_won", 0) or 0),
-        int(row[11] or 0),
-    )
+    # Normalized SQLite columns are the source of truth for live competitive
+    # stats. The JSON payload remains for compatibility with older fields.
+    profile["matches_played"] = int(row[7] or 0)
+    profile["wins"] = int(row[8] or 0)
+    profile["rubies_won"] = int(row[9] or 0)
+    profile["gems_won"] = int(row[10] or 0)
+    profile["crystals_won"] = int(row[11] or 0)
     return profile
 
 
@@ -607,7 +594,12 @@ def _record_competitive_match_stats(
     currency: str,
     amount_won: int,
 ) -> None:
-    """Commit live 1v1/2v2 match totals directly to the normalized SQLite row."""
+    """Commit one completed 1v1/2v2 result to normalized SQLite columns.
+
+    This deliberately bypasses the in-memory profile store. A completed
+    match is visible to commands and the 30-minute refresh loop as soon as
+    this transaction commits.
+    """
     currency_column = _COMPETITIVE_STAT_CURRENCY_COLUMNS.get(
         str(currency).casefold().strip()
     )
@@ -640,6 +632,28 @@ def _record_competitive_match_stats(
                         "WHERE user_id = ?",
                         (user_id,),
                     )
+                live_row = conn.execute(
+                    "SELECT profile_json, matches_played, wins, rubies_won, "
+                    "gems_won, crystals_won FROM users WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                try:
+                    profile_json = json.loads(live_row[0] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    profile_json = {}
+                if not isinstance(profile_json, dict):
+                    profile_json = {}
+                profile_json.update({
+                    "matches_played": int(live_row[1] or 0),
+                    "wins": int(live_row[2] or 0),
+                    "rubies_won": int(live_row[3] or 0),
+                    "gems_won": int(live_row[4] or 0),
+                    "crystals_won": int(live_row[5] or 0),
+                })
+                conn.execute(
+                    "UPDATE users SET profile_json = ? WHERE user_id = ?",
+                    (json.dumps(profile_json, ensure_ascii=False), user_id),
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -4271,26 +4285,14 @@ def _read_live_leaderboard_profiles(
             int(profile.get("invite_count", 0) or 0),
             int(invite_count or 0),
         )
-        profile["matches_played"] = max(
-            int(profile.get("matches_played", 0) or 0),
-            int(matches_played or 0),
-        )
-        profile["wins"] = max(
-            int(profile.get("wins", 0) or 0),
-            int(wins or 0),
-        )
-        profile["rubies_won"] = max(
-            int(profile.get("rubies_won", 0) or 0),
-            int(rubies_won or 0),
-        )
-        profile["gems_won"] = max(
-            int(profile.get("gems_won", 0) or 0),
-            int(gems_won or 0),
-        )
-        profile["crystals_won"] = max(
-            int(profile.get("crystals_won", 0) or 0),
-            int(crystals_won or 0),
-        )
+        # Always use the values from this SQLite read. Taking the maximum
+        # with profile_json can resurrect stale legacy totals and make a
+        # freshly completed match appear not to update the leaderboard.
+        profile["matches_played"] = int(matches_played or 0)
+        profile["wins"] = int(wins or 0)
+        profile["rubies_won"] = int(rubies_won or 0)
+        profile["gems_won"] = int(gems_won or 0)
+        profile["crystals_won"] = int(crystals_won or 0)
         live_profiles.append((str(user_id), profile))
     return live_profiles
 
@@ -4340,6 +4342,28 @@ async def _leaderboard_profiles(
     return resolved
 
 
+def _format_duel_leaderboard_entry(
+    position: int,
+    username: str,
+    profile: dict,
+) -> str:
+    """Render one 1v1 leaderboard block in the fixed vertical layout."""
+    medals = ["🥇", "🥈", "🥉"]
+    rank_marker = (
+        medals[position - 1]
+        if position <= len(medals)
+        else f"**#{position}**"
+    )
+    return (
+        f"{rank_marker} {username}\n"
+        f"│ 1v1 Matches: {format_num(profile.get('matches_played', 0))}\n"
+        f"│ 1v1 Wins: {format_num(profile.get('wins', 0))}\n"
+        f"│ Rubies Won: {format_num(profile.get('rubies_won', 0))} {E_RUBY}\n"
+        f"│ Gems Won: {format_num(profile.get('gems_won', 0))} {E_GEMS}\n"
+        f"│ Crystals Won: {format_num(profile.get('crystals_won', 0))} {E_CRYSTAL}\n"
+    )
+
+
 async def build_leaderboard_embeds(
     updated_at: datetime | None = None,
     categories: list | None = None,
@@ -4347,7 +4371,7 @@ async def build_leaderboard_embeds(
     categories = MAIN_LEADERBOARD_CATEGORIES if categories is None else categories
     live_sort_key = (
         "wins"
-        if categories and all(category[1] == "duel_wins" for category in categories)
+        if categories and all(category[1] == "wins" for category in categories)
         else None
     )
     profiles = await _leaderboard_profiles(live_sort_key)
@@ -4373,19 +4397,11 @@ async def build_leaderboard_embeds(
                     f"**{format_num(value)} XP** `(Lv. {level})`\n\n"
                 )
             elif key == "wins":
-                matches = profile.get("matches_played", 0)
-                wins = profile.get("wins", 0)
-                rubies = profile.get("rubies_won", 0)
-                gems = profile.get("gems_won", 0)
-                crystals = profile.get("crystals_won", 0)
-                desc += (
-                    f"{medal} {username}\n"
-                    f"│ 1v1 Matches: {format_num(matches)}\n"
-                    f"│ 1v1 Wins: {format_num(wins)}\n"
-                    f"│ Rubies Won: {format_num(rubies)} {E_RUBY}\n"
-                    f"│ Gems Won: {format_num(gems)} {E_GEMS}\n"
-                    f"│ Crystals Won: {format_num(crystals)} {E_CRYSTAL}\n\n"
-                )
+                desc += _format_duel_leaderboard_entry(
+                    i + 1,
+                    username,
+                    profile,
+                ) + "\n"
             else:
                 desc += (
                     f"{medal} {rank_emoji} **{username}** — {icon} "
@@ -5328,11 +5344,14 @@ async def _refresh_live_leaderboard(
 ) -> list[int]:
     """Edit the configured leaderboard messages using a fresh SQLite read."""
     try:
-        channel = bot.get_channel(int(channel_id))
+        normalized_channel_id = int(channel_id)
     except (TypeError, ValueError):
-        channel = None
+        raise RuntimeError(f"[{label}] invalid configured channel {channel_id!r}")
+    channel = bot.get_channel(normalized_channel_id)
     if channel is None:
-        raise RuntimeError(f"[{label}] configured channel {channel_id!r} is unavailable")
+        # A channel may not be present in the local cache after a restart.
+        # Fetching it keeps the scheduled task independent from cache state.
+        channel = await bot.fetch_channel(normalized_channel_id)
 
     embeds = await build_leaderboard_embeds(
         updated_at=datetime.now().astimezone(),
@@ -5344,12 +5363,20 @@ async def _refresh_live_leaderboard(
         message = None
         edited = False
         if index < len(existing_ids):
-            message_id = existing_ids[index]
             try:
-                message = await channel.fetch_message(message_id)
-                await message.edit(embed=embed)
-                refreshed_ids.append(message.id)
-                edited = True
+                message_id = int(existing_ids[index])
+            except (TypeError, ValueError):
+                print(
+                    f"[{label}] Ignoring invalid stored message ID "
+                    f"{existing_ids[index]!r}"
+                )
+                message_id = None
+            try:
+                if message_id is not None:
+                    message = await channel.fetch_message(message_id)
+                    await message.edit(embed=embed)
+                    refreshed_ids.append(message.id)
+                    edited = True
             except discord.NotFound:
                 print(f"[{label}] Message {message_id} no longer exists; sending replacement")
             except (discord.Forbidden, discord.HTTPException) as exc:
@@ -5361,10 +5388,13 @@ async def _refresh_live_leaderboard(
             except (discord.Forbidden, discord.HTTPException) as exc:
                 print(f"[{label}] Could not send refreshed embed: {exc}")
 
-    for message_id in existing_ids[len(embeds):]:
+    for raw_message_id in existing_ids[len(embeds):]:
         try:
+            message_id = int(raw_message_id)
             message = await channel.fetch_message(message_id)
             await message.delete()
+        except (TypeError, ValueError):
+            print(f"[{label}] Ignoring invalid stale message ID {raw_message_id!r}")
         except discord.NotFound:
             continue
         except (discord.Forbidden, discord.HTTPException) as exc:
