@@ -1488,7 +1488,7 @@ ADMIN_COMMANDS = {
     "set-perks", "setup-p", "set-p",
 }
 STAFF_COMMANDS = {
-    "setup", "assign-hosts", "add-bot", "bracket", "match", "qual", "end",
+    "setup", "assign-hosts", "add-bot", "bracket", "match", "match-rs", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
     "set-winner", "end-event", "ban-event", "clear", "purge", "staff-tutorial",
     "test-bracket", "test-result", "2v2-result",
@@ -4452,13 +4452,17 @@ class FinalWinnerModal(DetailedModal, title="🏆 Set winner"):
             return await interaction.response.send_message(
                 "❌ This match already has a winner.", ephemeral=True
             )
+        winner_id = match_data.get(
+            "id1" if self.winner_number.value == "1" else "id2"
+        )
         winner = self.p1 if self.winner_number.value == "1" else self.p2
         loser = self.p2 if self.winner_number.value == "1" else self.p1
         match_data["winner"] = winner
         match_data["loser"] = loser
+        match_data["winner_id"] = winner_id
         match_data["in_progress"] = False
+        match_data["status"] = "completed"
 
-        winner_id = match_data.get("id1" if self.winner_number.value == "1" else "id2")
         if winner_id and str(winner_id).isdigit() and interaction.guild:
             member = interaction.guild.get_member(int(winner_id))
             if member:
@@ -4625,7 +4629,10 @@ def generate_bracket_embeds(tournament: dict | None = None) -> list[tuple]:
         else:
             d2 = display_with_rank(p2, member_map) if p2 != "BYE" else "~~BYE~~"
             if p2 == "BYE":
-                match_lines.append(f"✅ **Match #{m_id}** — Done\n　**{d1}** ⚔️ {d2}\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n\n")
+                if win:
+                    match_lines.append(f"✅ **Match #{m_id}** — Done\n　**{d1}** ⚔️ {d2}\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n\n")
+                else:
+                    match_lines.append(f"⏳ **Match #{m_id}**\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
             elif win:
                 los = m_data.get("loser")
                 s1  = f"~~{d1}~~" if los == p1 else f"**{d1}**"
@@ -4767,11 +4774,7 @@ async def _auto_generate_bracket(guild: discord.Guild, t: dict):
     else:
         names = list(t["player_names"])
         total_rounds = math.ceil(math.log2(len(names))) if len(names) > 1 else 1
-        t["matches"] = _build_round_matches(names)
-        for idx, (m_id, m_data) in enumerate(t["matches"].items()):
-            ii = idx * 2
-            m_data["id1"] = t["players"][ii]   if ii   < len(t["players"]) else None
-            m_data["id2"] = t["players"][ii+1] if ii+1 < len(t["players"]) else None
+        t["matches"] = _build_round_matches(names, t["players"])
         t["round"]        = 1
         t["total_rounds"] = total_rounds
     save_db()
@@ -4786,10 +4789,19 @@ async def _advance_round_if_complete(ctx, t: dict) -> bool:
     if any(not m.get("winner") for m in matches.values()):
         return False
     winners = [m["winner"] for m in matches.values() if m.get("winner")]
+    winner_ids = [
+        _winner_id_for_match(t, m)
+        for m in matches.values()
+        if m.get("winner")
+    ]
     if len(winners) < 2:
         return False
     t["round"] = int(t.get("round", 1)) + 1
-    t["matches"] = _build_ffa_matches(winners) if t.get("modalita") == "FFA" else _build_round_matches(winners)
+    t["matches"] = (
+        _build_ffa_matches(winners)
+        if t.get("modalita") == "FFA"
+        else _build_round_matches(winners, winner_ids)
+    )
     t["bracket_channel_id"] = t.get("bracket_channel_id") or ctx.channel.id
     save_db()
     await ctx.send(f"🔄 **Round {t['round']}** started automatically — {len(winners)} qualified!", delete_after=6.0)
@@ -7757,15 +7769,20 @@ async def big_tour(ctx):
 # ==========================================
 # 🏆 BRACKET HELPERS
 # ==========================================
-def _build_round_matches(slots: list) -> dict:
+def _build_round_matches(slots: list, player_ids: list | None = None) -> dict:
     """Bracket 1v1 standard."""
+    player_ids = player_ids or []
     matches = {}
     for i in range(0, len(slots), 2):
         p1 = slots[i]
         p2 = slots[i+1] if i+1 < len(slots) else "BYE"
         matches[i//2+1] = {
-            "p1": p1, "p2": p2, "id1": None, "id2": None,
-            "winner": p1 if p2 == "BYE" else None, "loser": None,
+            "p1": p1, "p2": p2,
+            "id1": player_ids[i] if i < len(player_ids) else None,
+            "id2": player_ids[i + 1] if i + 1 < len(player_ids) else None,
+            "winner": p1 if p2 == "BYE" else None, "winner_id": None,
+            "loser": None,
+            "status": "completed" if p2 == "BYE" else "pending",
         }
     return matches
 
@@ -7784,11 +7801,140 @@ def _build_ffa_matches(slots: list) -> dict:
         matches[mnum] = {
             "p1": p1, "p2": p2, "p3": p3,
             "id1": None, "id2": None, "id3": None,
-            "winner": auto_win, "losers": [] if not auto_win else [p2, p3],
+            "winner": auto_win, "winner_id": None,
+            "losers": [] if not auto_win else [p2, p3],
+            "status": "completed" if auto_win else "pending",
         }
         mnum += 1
         i    += 3
     return matches
+
+
+def _match_key(matches: dict, match_number) -> object | None:
+    """Resolve a match key after JSON persistence may have changed its type."""
+    target = str(match_number)
+    return next(
+        (key for key in matches if str(key) == target),
+        None,
+    )
+
+
+def _match_slot_player_id(t: dict, match_data: dict, slot: int):
+    """Return the Discord ID assigned to a match slot, if it can be resolved."""
+    player_id = match_data.get(f"id{slot}")
+    if player_id is not None:
+        return player_id
+    player_name = match_data.get(f"p{slot}")
+    if not player_name or player_name == "BYE":
+        return None
+    for candidate_id, candidate_name in zip(
+        t.get("players", []),
+        t.get("player_names", []),
+    ):
+        if str(candidate_name).casefold() == str(player_name).casefold():
+            return candidate_id
+    return None
+
+
+def _match_slot_for_member(t: dict, match_data: dict, member) -> int | None:
+    """Find a member's slot using IDs first, with a name fallback for legacy data."""
+    member_id = getattr(member, "id", None)
+    member_names = {
+        str(getattr(member, "display_name", "")).casefold(),
+        str(getattr(member, "name", "")).casefold(),
+    }
+    for slot in range(1, 4):
+        player_name = match_data.get(f"p{slot}")
+        if not player_name or player_name == "BYE":
+            continue
+        player_id = _match_slot_player_id(t, match_data, slot)
+        if player_id is not None and str(member_id) == str(player_id):
+            return slot
+        if str(player_name).casefold() in member_names:
+            return slot
+    return None
+
+
+def _set_match_result(
+    match_data: dict,
+    winner: str,
+    loser=None,
+    winner_id=None,
+) -> None:
+    """Keep all result/status fields in sync for old and new bracket records."""
+    match_data["winner"] = winner
+    match_data["winner_id"] = winner_id
+    match_data["loser"] = loser
+    match_data["in_progress"] = False
+    match_data["status"] = "completed"
+
+
+def _winner_id_for_match(t: dict, match_data: dict):
+    """Recover a result ID from legacy matches that predate winner_id."""
+    if match_data.get("winner_id") is not None:
+        return match_data["winner_id"]
+    winner = match_data.get("winner")
+    if not winner:
+        return None
+    for slot in range(1, 4):
+        if str(match_data.get(f"p{slot}")).casefold() == str(winner).casefold():
+            return _match_slot_player_id(t, match_data, slot)
+    return None
+
+
+def _remove_player_from_future_match(
+    t: dict,
+    match_data: dict,
+    player_name: str,
+    player_id,
+) -> bool:
+    """Remove a reset winner from a later slot without leaving stale results."""
+    target_name = str(player_name).casefold()
+    target_id = None if player_id is None else str(player_id)
+    removed = False
+    for slot in range(1, 4):
+        slot_name = match_data.get(f"p{slot}")
+        slot_id = _match_slot_player_id(t, match_data, slot)
+        same_id = (
+            target_id is not None
+            and slot_id is not None
+            and str(slot_id) == target_id
+        )
+        same_name = (
+            slot_name not in (None, "", "BYE")
+            and str(slot_name).casefold() == target_name
+        )
+        if not (same_id or same_name):
+            continue
+        removed = True
+        # Keep standard 1v1 brackets renderable when their first slot is removed.
+        if (
+            slot == 1
+            and not _is_ffa_match(match_data)
+            and "p2" in match_data
+            and match_data.get("p2") not in (None, "BYE")
+        ):
+            match_data["p1"] = match_data["p2"]
+            match_data["id1"] = match_data.get("id2")
+            match_data["p2"] = "BYE"
+            match_data["id2"] = None
+        else:
+            match_data[f"p{slot}"] = "BYE"
+            match_data[f"id{slot}"] = None
+        if (
+            str(match_data.get("winner")).casefold() == target_name
+            or (
+                target_id is not None
+                and match_data.get("winner_id") is not None
+                and str(match_data["winner_id"]) == target_id
+            )
+        ):
+            match_data["winner"] = None
+            match_data["winner_id"] = None
+            match_data["loser"] = None
+        match_data["in_progress"] = False
+        match_data["status"] = "pending"
+    return removed
 
 def _ffa_total_rounds(n: int) -> int:
     if n <= 1: return 1
@@ -7817,11 +7963,7 @@ def _generate_bracket_now(t: dict) -> bool:
         t["matches"]      = _build_round_matches(names)
         t["total_rounds"] = math.ceil(math.log2(len(names))) if len(names) > 1 else 1
     else:
-        t["matches"] = _build_round_matches(names)
-        for idx, (m_id, m_data) in enumerate(t["matches"].items()):
-            ii = idx * 2
-            m_data["id1"] = t["players"][ii]   if ii   < len(t["players"]) else None
-            m_data["id2"] = t["players"][ii+1] if ii+1 < len(t["players"]) else None
+        t["matches"] = _build_round_matches(names, t["players"])
         t["total_rounds"] = math.ceil(math.log2(len(names))) if len(names) > 1 else 1
     t["round"] = 1
     save_db()
@@ -7877,13 +8019,18 @@ async def bracket(ctx, next_round: int = None):
             hint = ":qual team @captain" if modalita in TEAM_MODES else ":qual @winner"
             return await ctx.send(f"❌ **{len(incomplete)}** matches are still open. Use `{hint}`.")
         winners = [m["winner"] for m in t["matches"].values() if m.get("winner")]
+        winner_ids = [
+            _winner_id_for_match(t, m)
+            for m in t["matches"].values()
+            if m.get("winner")
+        ]
         if len(winners) < 2:
             return await ctx.send("🏆 Only 1 winner remains — use `:winner-tour` or `:team-winner` to close!")
         t["round"] = next_round
         if modalita == "FFA":
             t["matches"] = _build_ffa_matches(winners)
         else:
-            t["matches"] = _build_round_matches(winners)
+            t["matches"] = _build_round_matches(winners, winner_ids)
         save_db()
         await ctx.send(f"🔄 **Round {next_round}** started — {len(winners)} players!", delete_after=5.0)
     t["bracket_channel_id"] = ctx.channel.id
@@ -7893,9 +8040,10 @@ async def _give_xp_and_rank(ctx, member, match_data, win_slot):
     """Update stats for a single 1v1 winner."""
     p1 = match_data["p1"]; p2 = match_data["p2"]
     if win_slot.lower() in p1.lower():
-        match_data["winner"] = p1; match_data["loser"] = p2
+        winner_name, loser = p1, p2
     else:
-        match_data["winner"] = p2; match_data["loser"] = p1
+        winner_name, loser = p2, p1
+    _set_match_result(match_data, winner_name, loser, member.id)
     prof    = get_profile(member.id, member.display_name)
     old_pts = prof["punti"]
     prof["punti"] += 100
@@ -7938,9 +8086,19 @@ async def qual(ctx):
         # Determine which slot is the bot
         p1l = m["p1"].lower(); p2l = m.get("p2","").lower()
         if bot_name.lower() in p1l or "bot" in p1l:
-            m["winner"] = m["p1"]; m["loser"] = m.get("p2","")
+            _set_match_result(
+                m,
+                m["p1"],
+                m.get("p2", ""),
+                _match_slot_player_id(t, m, 1),
+            )
         else:
-            m["winner"] = m["p2"]; m["loser"] = m["p1"]
+            _set_match_result(
+                m,
+                m["p2"],
+                m["p1"],
+                _match_slot_player_id(t, m, 2),
+            )
         save_db()
         await ctx.send(f"✅ **{m['winner']}** qualified (bot)!", delete_after=5.0)
         await _update_bracket_messages(t)
@@ -7952,7 +8110,13 @@ async def qual(ctx):
             return await ctx.send("❌ Use: `:qual team @captain`", delete_after=5.0)
         captain  = mentions[0]
         cap_id   = str(captain.id)
-        cap_team = next((tm for tm in db["teams"] if tm["leader_id"] == cap_id), None)
+        cap_team = next(
+            (
+                tm for tm in db["teams"]
+                if str(tm.get("leader_id")) == str(cap_id)
+            ),
+            None,
+        )
         if not cap_team:
             return await ctx.send(f"❌ No team found with captain {captain.mention}.", delete_after=5.0)
         found_mid = None
@@ -7966,9 +8130,10 @@ async def qual(ctx):
         m  = t["matches"][found_mid]
         p1 = m["p1"]; p2 = m["p2"]
         if any(n.lower() in p1.lower() for n in cap_team["names"]):
-            m["winner"] = p1; m["loser"] = p2
+            winner_name, loser = p1, p2
         else:
-            m["winner"] = p2; m["loser"] = p1
+            winner_name, loser = p2, p1
+        _set_match_result(m, winner_name, loser, captain.id)
         for uid, name in zip(cap_team["ids"], cap_team["names"]):
             if str(uid).startswith("bot_") or name.startswith("🤖"):
                 continue
@@ -7995,16 +8160,25 @@ async def qual(ctx):
         for mid, m in t["matches"].items():
             if m.get("winner"):
                 continue
-            if win_name.lower() in m["p1"].lower() or win_name.lower() in m.get("p2","").lower() or win_name.lower() in m.get("p3","").lower():
+            if _match_slot_for_member(t, m, winner) is not None:
                 found_mid = mid; break
         if found_mid is None:
             return await ctx.send(f"❌ No open FFA match for **{win_name}**.", delete_after=6.0)
         m         = t["matches"][found_mid]
         players_3 = [m["p1"], m.get("p2",""), m.get("p3","")]
-        win_slot  = next((p for p in players_3 if win_name.lower() in p.lower()), win_name)
+        winner_slot = _match_slot_for_member(t, m, winner)
+        win_slot = (
+            m.get(f"p{winner_slot}")
+            if winner_slot is not None
+            else next((p for p in players_3 if win_name.lower() in p.lower()), win_name)
+        )
         losers    = [p for p in players_3 if p != win_slot and p not in ("BYE","")]
         m["winner"] = win_slot
+        m["winner_id"] = winner.id
+        m["loser"] = losers[0] if losers else None
         m["losers"] = losers
+        m["in_progress"] = False
+        m["status"] = "completed"
         prof    = get_profile(winner.id, win_name)
         await assign_winner_role(ctx.guild, winner)
         old_pts = prof["punti"]
@@ -8023,11 +8197,18 @@ async def qual(ctx):
         for mid, m in t["matches"].items():
             if m.get("winner"):
                 continue
-            if win_name.lower() in m["p1"].lower() or win_name.lower() in m["p2"].lower():
+            if _match_slot_for_member(t, m, winner) is not None:
                 found_mid = mid; break
         if found_mid is None:
             return await ctx.send(f"❌ No open match for **{win_name}**.", delete_after=6.0)
-        await _give_xp_and_rank(ctx, winner, t["matches"][found_mid], win_name)
+        match_data = t["matches"][found_mid]
+        winner_slot = _match_slot_for_member(t, match_data, winner)
+        winner_name = (
+            match_data.get(f"p{winner_slot}", win_name)
+            if winner_slot is not None
+            else win_name
+        )
+        await _give_xp_and_rank(ctx, winner, match_data, winner_name)
         await assign_winner_role(ctx.guild, winner)
 
     save_db()
@@ -8039,12 +8220,14 @@ async def qual(ctx):
 async def match(ctx, match_num: int, codice: str):
     if not db["tour"]:
         return await ctx.send("❌ No active tournament.")
-    if match_num not in db["tour"]["matches"]:
+    t = db["tour"]
+    match_key = _match_key(t.get("matches", {}), match_num)
+    if match_key is None:
         return await ctx.send(f"❌ Match #{match_num} not found.")
-    t        = db["tour"]
-    m        = t["matches"][match_num]
+    m = t["matches"][match_key]
     # Mark as in-progress for bracket display
     m["in_progress"] = True
+    m["status"] = "in_progress"
     save_db()
     p1_name  = m["p1"]; p2_name = m["p2"]
     modalita = t.get("modalita", "1V1")
@@ -8135,6 +8318,71 @@ async def match(ctx, match_num: int, codice: str):
         except Exception:
             pass
     bot.loop.create_task(timer_fine())
+
+
+@bot.command(name="match-rs", aliases=["match_rs"])
+@hoster_only()
+async def match_reset(ctx, match_num: int = None):
+    """Reset one tournament match and remove its winner from later slots."""
+    t = db.get("tour")
+    if not t:
+        return await ctx.send("❌ No active tournament.", delete_after=5.0)
+    if match_num is None:
+        return await ctx.send("❌ Use: `:match-rs <match_number>`.", delete_after=6.0)
+
+    matches = t.get("matches", {})
+    match_key = _match_key(matches, match_num)
+    if match_key is None:
+        return await ctx.send(f"❌ Match #{match_num} not found.", delete_after=6.0)
+
+    match_data = matches[match_key]
+    previous_winner = match_data.get("winner")
+    previous_winner_id = _winner_id_for_match(t, match_data)
+    if not previous_winner and previous_winner_id is not None:
+        for slot in range(1, 4):
+            slot_id = _match_slot_player_id(t, match_data, slot)
+            if slot_id is not None and str(slot_id) == str(previous_winner_id):
+                previous_winner = match_data.get(f"p{slot}")
+                break
+
+    match_data["winner"] = None
+    match_data["winner_id"] = None
+    match_data["loser"] = None
+    match_data["losers"] = []
+    match_data["in_progress"] = False
+    match_data["status"] = "pending"
+
+    cascade_count = 0
+    if previous_winner:
+        for future_key, future_match in matches.items():
+            if future_key == match_key:
+                continue
+            if _remove_player_from_future_match(
+                t,
+                future_match,
+                previous_winner,
+                previous_winner_id,
+            ):
+                cascade_count += 1
+
+    # save_db persists the complete tournament state in SQLite's state table.
+    save_db()
+    await _update_bracket_messages(t)
+
+    embed = discord.Embed(
+        title="🔄 MATCH RESET",
+        description=(
+            f"Match **#{match_num}** has been successfully reset. "
+            "The previous result was removed and the match is ready to be replayed."
+        ),
+        color=discord.Color.orange(),
+    )
+    if cascade_count:
+        embed.set_footer(
+            text=f"Removed the previous winner from {cascade_count} future match slot(s)."
+        )
+    await ctx.send(embed=embed)
+
 
 @bot.command(name="close-tour", aliases=["close_tour"])
 @hoster_only()
@@ -11139,6 +11387,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":add_bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :add_bot afterwards.", ":add_bot 2"),
             (":bracket", "Creates the first bracket or advances the tournament to a later round after matches are complete.", "[round] optional target round number; at least two players are required.", ":bracket 2"),
             (":match", "Publishes a room code for a bracket match and marks that match as in progress.", "<match number> <room code>; the match number must exist in the active bracket.", ":match 3 ABC123"),
+            (":match-rs (alias :match_rs)", "Resets a tournament match, removes its previous result and cleans the winner from later bracket slots.", "<match number>; hoster/admin access.", ":match-rs 2"),
             (":qual", "Records a 1v1 match winner, grants the related Ranked Points and updates the bracket.", "<@winner>; team formats can also use the team/captain syntax accepted by the command.", ":qual @Winner"),
             (":end (aliases :winner-tour, :winner_tour)", "Closes a 1v1 tournament and awards the winner with Ruby and Crystals.", "[@winner] optional member mention; without it, the last remaining player is detected.", ":end @Winner"),
             (":team-winner", "Closes a team-format tournament and awards the winning team.", "No arguments; the active tournament must contain a winning team.", ":team-winner"),
@@ -11207,7 +11456,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         "help", "claim-tw", "vipclaim",
     }
     staff_names = {
-        "setup", "assign-hosts", "add_bot", "bracket", "match", "qual", "end",
+        "setup", "assign-hosts", "add_bot", "bracket", "match", "match-rs", "qual", "end",
         "team-winner", "close-tour", "event", "start-event", "cod-event",
         "set-winner", "end-event", "ban-event", "reset-staff-week", "boost", "clear",
     }
@@ -11240,6 +11489,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":add_bot": "Aggiunge alla lista del torneo il numero indicato di giocatori bot senza creare il bracket; il bracket va generato dopo con `:add_bot`.",
         ":bracket": "Crea il primo bracket dai giocatori iscritti oppure fa avanzare il torneo al round indicato quando i match del round corrente sono terminati.",
         ":match": "Pubblica il codice della stanza del match indicato e lo marca come in corso nel bracket del torneo attivo.",
+        ":match-rs": "Resetta il match indicato, rimuove il risultato precedente e pulisce il vincitore dagli eventuali slot dei round successivi.",
         ":qual": "Registra il vincitore del match 1v1, assegna i Ranked Points previsti e aggiorna il bracket con il giocatore qualificato.",
         ":end": "Chiude il torneo 1v1 e assegna al vincitore Ruby e Cristalli; senza menzione prova a riconoscere automaticamente l’ultimo giocatore rimasto.",
         ":team-winner": "Conclude il torneo a squadre e assegna il premio alla squadra vincitrice in base ai membri registrati.",
