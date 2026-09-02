@@ -1491,7 +1491,7 @@ def owner_only():
 
 def big_event_only():
     async def predicate(ctx):
-        return any(r.id in ADMIN_ROLE_IDS for r in ctx.author.roles)
+        return _has_admin_access(ctx.author)
     return commands.check(predicate)
 
 
@@ -4935,8 +4935,9 @@ class QualifyView(DetailedView):
 
     @discord.ui.button(label="🏅 Qualify — See who advances", style=discord.ButtonStyle.success, custom_id="qualify_btn")
     async def qualify_btn(self, interaction: discord.Interaction, button: Button):
+        is_owner = interaction.user.id in OWNER_USER_IDS
         is_host = any(r.id == HOSTER_ROLE_ID for r in interaction.user.roles)
-        is_admin = any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
+        is_admin = is_owner or any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
         if not is_host and not is_admin:
             return await interaction.response.send_message("❌ Only hosts/admins can see this!", ephemeral=True)
         lines = "\n".join(f"**{i+1}.** {name}" for i, name in enumerate(self.qualified)) or "No qualified players yet."
@@ -4947,11 +4948,12 @@ class QualifyView(DetailedView):
 
     @discord.ui.button(label="🏆 Set winner", style=discord.ButtonStyle.primary, custom_id="bracket_set_final_winner")
     async def set_final_winner(self, interaction: discord.Interaction, button: Button):
+        is_owner = interaction.user.id in OWNER_USER_IDS
         is_host = any(
             r.id in {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
             for r in interaction.user.roles
         )
-        is_admin = any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
+        is_admin = is_owner or any(r.id in ADMIN_ROLE_IDS for r in interaction.user.roles)
         if not is_host and not is_admin:
             return await interaction.response.send_message("❌ Only hosts/admins can do this.", ephemeral=True)
         if not self.final_match:
@@ -8162,6 +8164,8 @@ class TourHubView(DetailedView):
             and _has_custom_tournament_access(interaction.user)
         ):
             return await _check_global_creation_interaction(interaction)
+        if interaction.user.id in OWNER_USER_IDS:
+            return await _check_global_creation_interaction(interaction)
         has = any(
             r.id in (
                 STAFF_ROLE_IDS
@@ -8180,6 +8184,8 @@ class TourHubView(DetailedView):
             self.perk_host_id == interaction.user.id
             and _has_custom_tournament_access(interaction.user)
         ):
+            return await _check_global_creation_interaction(interaction)
+        if interaction.user.id in OWNER_USER_IDS:
             return await _check_global_creation_interaction(interaction)
         has = any(
             r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID, TOURNAMENT_ROLE_ID}
@@ -9281,7 +9287,10 @@ async def winner_tour(ctx, *winners: discord.Member):
             async def sent_btn(self, interaction: discord.Interaction, button: Button):
                 if self._sent:
                     return await interaction.response.send_message("Already sent!", ephemeral=True)
-                if not any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in interaction.user.roles):
+                if (
+                    interaction.user.id not in OWNER_USER_IDS
+                    and not any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in interaction.user.roles)
+                ):
                     return await interaction.response.send_message("❌ Admin only!", ephemeral=True)
                 self._sent      = True
                 button.disabled = True
@@ -9960,7 +9969,7 @@ class ResetConfirmView(DetailedView):
         custom_id="reset_all_confirm",
     )
     async def confirm(self, interaction: discord.Interaction, button: Button):
-        if not interaction.user.guild_permissions.administrator:
+        if not _has_admin_access(interaction.user):
             return await interaction.response.send_message("❌ Admins only.", ephemeral=True)
         db["profiles"].clear()
         db["tour"] = None
@@ -9986,7 +9995,7 @@ class ResetConfirmView(DetailedView):
 @bot.command(name="reset-all")
 @owner_only()
 async def reset_all(ctx):
-    if not ctx.author.guild_permissions.administrator:
+    if not _has_admin_access(ctx.author):
         return await ctx.send("❌ Administrators only.", delete_after=5.0)
     embed = discord.Embed(title="⚠️ FULL RESET", color=discord.Color.red())
     embed.description = (
@@ -10833,7 +10842,10 @@ async def on_message(message: discord.Message):
     if (
         message.guild
         and isinstance(message.channel, discord.TextChannel)
-        and message.author.id == message.guild.owner_id
+        and (
+            message.author.id in OWNER_USER_IDS
+            or message.author.id == message.guild.owner_id
+        )
         and bot.user is not None
         and bot.user in message.mentions
     ):
@@ -10847,7 +10859,10 @@ async def on_message(message: discord.Message):
     if (
         message.guild
         and isinstance(message.channel, discord.TextChannel)
-        and message.author.id == message.guild.owner_id
+        and (
+            message.author.id in OWNER_USER_IDS
+            or message.author.id == message.guild.owner_id
+        )
         and active_owner_ai_channels.get(message.channel.id, False)
     ):
         if message.content.strip().casefold() == ":stop":
@@ -10890,7 +10905,10 @@ async def on_message(message: discord.Message):
                 pass
             elif cmd_root in allowed_cmds:
                 pass
-            elif any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in message.author.roles):
+            elif (
+                message.author.id in OWNER_USER_IDS
+                or any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in message.author.roles)
+            ):
                 pass
             else:
                 try:
@@ -10900,7 +10918,11 @@ async def on_message(message: discord.Message):
 
         elif ch_id == PROFILE_ONLY_CH:
             allowed_cmds = {"profile"}
-            if cmd_root not in allowed_cmds and not any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in message.author.roles):
+            if (
+                cmd_root not in allowed_cmds
+                and message.author.id not in OWNER_USER_IDS
+                and not any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in message.author.roles)
+            ):
                 try:
                     await message.delete()
                 except Exception:
@@ -10908,7 +10930,12 @@ async def on_message(message: discord.Message):
 
         elif ch_id == SOCIAL_ONLY_CH:
             social_cmds = {"supporter", "team", "myteam", "teamleave", "boost", "link", "gems", "leaderboard"}
-            if cmd_root and cmd_root not in social_cmds and not any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in message.author.roles):
+            if (
+                cmd_root
+                and cmd_root not in social_cmds
+                and message.author.id not in OWNER_USER_IDS
+                and not any(r.id in ADMIN_ROLE_IDS | {OWNER_ROLE_ID} for r in message.author.roles)
+            ):
                 try:
                     await message.delete()
                 except Exception:
@@ -13583,7 +13610,10 @@ class PexView(DetailedView):
         custom_id="pex_promote",
     )
     async def promote(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
+        if (
+            interaction.user.id not in OWNER_USER_IDS
+            and not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles)
+        ):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
         s   = self._s()
         if not s:
@@ -13613,7 +13643,10 @@ class PexView(DetailedView):
         custom_id="pex_demote",
     )
     async def demote(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
+        if (
+            interaction.user.id not in OWNER_USER_IDS
+            and not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles)
+        ):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
         s   = self._s()
         if not s:
@@ -13656,7 +13689,10 @@ class PexView(DetailedView):
         custom_id="pex_keep",
     )
     async def keep(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
+        if (
+            interaction.user.id not in OWNER_USER_IDS
+            and not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles)
+        ):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
         s = self._s()
         if not s:
@@ -13673,7 +13709,10 @@ class PexView(DetailedView):
         custom_id="pex_next",
     )
     async def nxt(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
+        if (
+            interaction.user.id not in OWNER_USER_IDS
+            and not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles)
+        ):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
         self.current = (self.current + 1) % len(self.staff_data)
         s = self._s()
@@ -13687,7 +13726,10 @@ class PexView(DetailedView):
         custom_id="pex_prev",
     )
     async def prev(self, interaction: discord.Interaction, button: Button):
-        if not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles):
+        if (
+            interaction.user.id not in OWNER_USER_IDS
+            and not any(r.id == OWNER_ROLE_ID for r in interaction.user.roles)
+        ):
             return await interaction.response.send_message("❌ Owner only!", ephemeral=True)
         self.current = (self.current - 1) % len(self.staff_data)
         s = self._s()
@@ -15470,7 +15512,8 @@ class DuelView(DetailedView):
     def _is_staff(self, member: discord.Member) -> bool:
         permissions = getattr(member, "guild_permissions", None)
         return (
-            getattr(permissions, "administrator", False)
+            member.id in OWNER_USER_IDS
+            or getattr(permissions, "administrator", False)
             or any(
                 r.id in (
                     STAFF_ROLE_IDS
