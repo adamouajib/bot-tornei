@@ -11,3 +11,5 @@
 - [Discord typing API](discord-typing-api.md) — Use the v2 async typing context instead of the removed trigger_typing method.
 - [Discord modal transitions](discord-modal-transitions.md) — After a modal submission, open the next modal from a new button interaction instead of chaining modal responses.
 - [Discord invite tracking](discord-invite-tracking.md) — Invite usage can lag behind member joins, so compare cached snapshots with short bounded retries before awarding inviter roles.
+- [Active invite accounting](active-invite-accounting.md) — Active invite rankings require durable invitee-to-inviter rows so departures can decrement counts exactly once.
+- [Closed-DM delivery](closed-dm-delivery.md) — Route user-facing DM sends through one fallback helper so closed DMs become an actionable channel notice.

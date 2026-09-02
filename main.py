@@ -228,6 +228,19 @@ def _sqlite_conn() -> sqlite3.Connection:
                 ")"
             )
             _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS active_invites ("
+                "guild_id TEXT NOT NULL, "
+                "invitee_id TEXT NOT NULL, "
+                "inviter_id TEXT NOT NULL, "
+                "joined_at REAL NOT NULL DEFAULT 0, "
+                "PRIMARY KEY (guild_id, invitee_id)"
+                ")"
+            )
+            _sqlite_connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_active_invites_inviter "
+                "ON active_invites(guild_id, inviter_id)"
+            )
+            _sqlite_connection.execute(
                 "CREATE TABLE IF NOT EXISTS gems_transfer_requests ("
                 "request_id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "user_id TEXT NOT NULL, "
@@ -250,9 +263,8 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "CREATE TABLE IF NOT EXISTS metadata "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
-            # Existing imports may already have invite_count only inside the
-            # legacy profile JSON. Promote it to the indexed users column so
-            # the leaderboard sees those historical totals too.
+            # Active invite counts are derived from active_invites. Do not
+            # promote legacy historical totals into the active-only count.
             for (
                 user_id,
                 profile_json,
@@ -272,15 +284,6 @@ def _sqlite_conn() -> sqlite3.Connection:
                     legacy_profile = {}
                 if not isinstance(legacy_profile, dict):
                     legacy_profile = {}
-                try:
-                    json_count = int(legacy_profile.get("invite_count", 0) or 0)
-                except (TypeError, ValueError):
-                    json_count = 0
-                if json_count > int(column_count or 0):
-                    _sqlite_connection.execute(
-                        "UPDATE users SET invite_count = ? WHERE user_id = ?",
-                        (json_count, user_id),
-                    )
                 legacy_matches = legacy_profile.get("matches_played")
                 if legacy_matches is None:
                     legacy_matches = (
@@ -334,7 +337,8 @@ def _profile_exists(user_id: str) -> bool:
 
 def _read_profile(user_id: str) -> dict:
     with _sqlite_lock:
-        row = _sqlite_conn().execute(
+        conn = _sqlite_conn()
+        row = conn.execute(
             "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown, "
             "invite_count, matches_played, wins, rubies_won, gems_won, "
             "crystals_won "
@@ -352,10 +356,14 @@ def _read_profile(user_id: str) -> dict:
     profile["gemme"] = int(row[3] or 0)
     profile["linked"] = bool(row[4])
     profile["chest_cooldown"] = float(row[5] or 0)
-    profile["invite_count"] = max(
-        int(profile.get("invite_count", 0) or 0),
-        int(row[6] or 0),
-    )
+    with _sqlite_lock:
+        profile["invite_count"] = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM active_invites "
+                "WHERE guild_id = ? AND inviter_id = ?",
+                (str(SERVER_ID), str(user_id)),
+            ).fetchone()[0]
+        )
     # Normalized SQLite columns are the source of truth for live competitive
     # stats. The JSON payload remains for compatibility with older fields.
     profile["matches_played"] = int(row[7] or 0)
@@ -409,13 +417,13 @@ def _write_profile(user_id: str, profile: dict) -> None:
         profile_data["gemme"] = gems
         profile_data["linked"] = bool(linked)
         profile_data["chest_cooldown"] = chest_cooldown
-        try:
-            invite_count = max(
-                int(profile_data.get("invite_count", 0) or 0),
-                int(existing[6] or 0) if existing else 0,
-            )
-        except (TypeError, ValueError):
-            invite_count = int(existing[6] or 0) if existing else 0
+        invite_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM active_invites "
+                "WHERE guild_id = ? AND inviter_id = ?",
+                (str(SERVER_ID), user_id),
+            ).fetchone()[0]
+        )
         profile_data["invite_count"] = invite_count
         conn.execute(
             "INSERT INTO users("
@@ -681,6 +689,7 @@ class SQLiteProfile(MutableMapping):
         profile = _read_profile(self.user_id)
         profile[key] = value
         _write_profile(self.user_id, profile)
+        _schedule_live_leaderboard_refresh(key)
 
     def __delitem__(self, key):
         profile = _read_profile(self.user_id)
@@ -967,7 +976,8 @@ def _persist_state() -> None:
             "level_channel_id", "supporter_channel_id", "supporter_msg_id",
             "result_channel_id", "log_channel_id",
             "canale_dashboard_twitch", "twitch_live", "supporters", "gems",
-            "sg_links", "big_event", "event_history", "event_bans",
+            "sg_links", "ai_moderation_warnings", "big_event",
+            "event_history", "event_bans",
         )
     }
     state["teams"] = [
@@ -1019,6 +1029,52 @@ def _persist_state() -> None:
 def save_db():
     """Persist non-profile state; profiles and cooldowns commit on each write."""
     _persist_state()
+
+
+_leaderboard_refresh_task: asyncio.Task | None = None
+_LIVE_LEADERBOARD_KEYS = {
+    "punti",
+    "tornei_v",
+    "eventi_v",
+    "xp_msg",
+    "level_msg",
+    "matches_played",
+    "wins",
+    "duel_matches",
+    "duel_wins",
+    "wager_matches",
+    "wager_wins",
+}
+
+
+def _schedule_live_leaderboard_refresh(key: str) -> None:
+    """Refresh configured leaderboard messages after a ranked value changes."""
+    if key not in _LIVE_LEADERBOARD_KEYS:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if not loop.is_running():
+        return
+    global _leaderboard_refresh_task
+    if _leaderboard_refresh_task is not None and not _leaderboard_refresh_task.done():
+        return
+
+    async def refresh() -> None:
+        global _leaderboard_refresh_task
+        try:
+            await asyncio.sleep(0)
+            if db.get("leaderboard_channel_id"):
+                await auto_leaderboard()
+            if db.get("duel_leaderboard_channel_id"):
+                await auto_duel_leaderboard()
+        except Exception as exc:
+            print(f"[LEADERBOARD] Immediate refresh failed: {type(exc).__name__}: {exc}")
+        finally:
+            _leaderboard_refresh_task = None
+
+    _leaderboard_refresh_task = loop.create_task(refresh())
 
 
 def load_db():
@@ -1382,7 +1438,7 @@ def _level_role_for(level: int) -> int | None:
 
 def staff_only():
     async def predicate(ctx):
-        return any(r.id in STAFF_ROLE_IDS for r in ctx.author.roles)
+        return _has_staff_access(ctx.author, ctx.guild)
     return commands.check(predicate)
 
 
@@ -1424,7 +1480,13 @@ def admin_only():
 
 def owner_only():
     async def predicate(ctx):
-        return ctx.author.id in OWNER_USER_IDS
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or (
+                ctx.guild is not None
+                and ctx.author.id == ctx.guild.owner_id
+            )
+        )
     return commands.check(predicate)
 
 def big_event_only():
@@ -1461,10 +1523,57 @@ def _has_admin_access(member) -> bool:
     )
 
 
+def _has_staff_access(member, guild=None) -> bool:
+    """Allow staff roles, administrators, configured owners, and guild owners."""
+    permissions = getattr(member, "guild_permissions", None)
+    return (
+        member.id in OWNER_USER_IDS
+        or (
+            guild is not None
+            and member.id == getattr(guild, "owner_id", None)
+        )
+        or getattr(permissions, "administrator", False)
+        or any(
+            role.id in STAFF_ROLE_IDS | ADMIN_ROLE_IDS
+            for role in getattr(member, "roles", ())
+        )
+    )
+
+
+async def _send_dm_or_closed_notice(
+    recipient,
+    *,
+    channel=None,
+    closed_notice=None,
+    **send_kwargs,
+):
+    """Send a DM and report closed DMs in the originating channel."""
+    try:
+        return await recipient.send(**send_kwargs)
+    except discord.Forbidden:
+        if channel is not None:
+            try:
+                await channel.send(
+                    closed_notice
+                    or (
+                        f"⚠️ {recipient.mention}, I cannot send you the code "
+                        "because your DMs are closed!"
+                    )
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        return None
+
+
 def interaction_role_check(interaction: discord.Interaction, roles: set[int]) -> bool:
     member = interaction.user
     return isinstance(member, discord.Member) and (
-        member.id in OWNER_USER_IDS or any(role.id in roles for role in member.roles)
+        member.id in OWNER_USER_IDS
+        or (
+            interaction.guild is not None
+            and member.id == interaction.guild.owner_id
+        )
+        or any(role.id in roles for role in member.roles)
     )
 
 # Prefix commands are guarded here as a second, centralized boundary.  This
@@ -1477,7 +1586,7 @@ OWNER_COMMANDS = {
     "chest", "announcement",
 }
 ADMIN_COMMANDS = {
-    "warn", "time", "give", "reset", "add-punti", "add-gems", "set-rank",
+    "give", "reset", "remove", "add-punti", "add-gems", "set-rank",
     "big-event", "big-start", "big-event-winner", "add-ticket", "set-supporter",
     "drop", "machine", "giveaway", "reset-staff-week",
     "linked", "leaderboard", "gems", "stumble-top", "1v1-leaderboard",
@@ -1485,7 +1594,7 @@ ADMIN_COMMANDS = {
     "set-perks", "setup-p", "set-p",
 }
 STAFF_COMMANDS = {
-    "setup", "assign-hosts", "add-bot", "bracket", "match", "match-rs", "qual", "end",
+    "warn", "time", "setup", "assign-hosts", "add-bot", "bracket", "match", "match-rs", "qual", "end",
     "team-winner", "close-tour", "event", "start-event", "cod-event",
     "set-winner", "end-event", "ban-event", "clear", "purge", "staff-tutorial",
     "test-bracket", "test-result", "ping-players", "2v2-result",
@@ -1496,23 +1605,22 @@ def _prefix_access_allowed(ctx) -> bool:
     if name == "staff-tutorial":
         return _has_staff_tutorial_access(ctx.author)
     if name in OWNER_COMMANDS:
-        return ctx.author.id in OWNER_USER_IDS
+        return (
+            ctx.author.id in OWNER_USER_IDS
+            or (
+                ctx.guild is not None
+                and ctx.author.id == ctx.guild.owner_id
+            )
+        )
     if name in ADMIN_COMMANDS:
         return (
             _has_admin_access(ctx.author)
             or any(role.id in MANAGER_ROLE_IDS for role in ctx.author.roles)
         )
     if name in STAFF_COMMANDS:
-        return (
-            ctx.author.id in OWNER_USER_IDS
-            or any(
-                r.id in (
-                    ADMIN_ROLE_IDS
-                    | STAFF_ROLE_IDS
-                    | {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
-                )
-                for r in ctx.author.roles
-            )
+        return _has_staff_access(ctx.author, ctx.guild) or any(
+            r.id in {HOSTER_ROLE_ID, TOURNAMENT_ROLE_ID}
+            for r in ctx.author.roles
         )
     return True
 
@@ -1900,48 +2008,109 @@ def _store_invite_snapshot(
         )
 
 
-async def _record_invite_totals(
+def _sync_active_invite_counts(guild_id: int) -> None:
+    """Keep the compatibility column equal to the active-attribution rows."""
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        conn.execute(
+            "UPDATE users SET invite_count = ("
+            "SELECT COUNT(*) FROM active_invites "
+            "WHERE guild_id = ? AND inviter_id = users.user_id"
+            ")",
+            (str(guild_id),),
+        )
+        conn.commit()
+
+
+def _active_invite_count(guild_id: int, inviter_id: int) -> int:
+    """Return the current active invite count directly from SQLite."""
+    with _sqlite_lock:
+        return int(
+            _sqlite_conn().execute(
+                "SELECT COUNT(*) FROM active_invites "
+                "WHERE guild_id = ? AND inviter_id = ?",
+                (str(guild_id), str(inviter_id)),
+            ).fetchone()[0]
+        )
+
+
+def _active_inviter_ids(guild_id: int) -> set[int]:
+    """Return inviters with at least one member currently in the server."""
+    with _sqlite_lock:
+        rows = _sqlite_conn().execute(
+            "SELECT DISTINCT inviter_id FROM active_invites WHERE guild_id = ?",
+            (str(guild_id),),
+        ).fetchall()
+    return {
+        int(row[0])
+        for row in rows
+        if row[0] is not None and str(row[0]).isdigit()
+    }
+
+
+def _record_active_invitee(
     guild: discord.Guild,
-    snapshot: dict[str, dict[str, int | None]],
-) -> None:
-    """Persist the highest invite total observed for each inviter."""
-    totals: dict[int, int] = {}
-    for code, data in snapshot.items():
-        inviter_id = _lookup_invite_inviter(guild.id, code) or data.get("inviter_id")
-        if inviter_id is None:
-            continue
-        if getattr(bot.user, "id", None) == int(inviter_id):
-            continue
-        totals[int(inviter_id)] = totals.get(int(inviter_id), 0) + int(
-            data.get("uses", 0) or 0
+    invitee_id: int,
+    inviter_id: int,
+) -> int:
+    """Record one currently active invitee and return the inviter's count."""
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO users(user_id, profile_json) VALUES (?, '{}')",
+            (str(inviter_id),),
         )
-
-    for inviter_id, observed_total in totals.items():
-        uid = str(inviter_id)
-        profile = db.get("profiles", {}).get(uid)
-        if profile is None:
-            member = guild.get_member(inviter_id)
-            profile = get_profile(
-                inviter_id,
-                member.display_name if member is not None else uid,
-            )
-        stored_total = int(profile.get("invite_count", 0) or 0)
-        if observed_total > stored_total:
-            profile["invite_count"] = observed_total
-
-
-async def _record_invite_use(guild: discord.Guild, inviter_id: int, amount: int = 1) -> int:
-    """Increment and persist an inviter's historical invite total."""
-    uid = str(inviter_id)
-    profile = db.get("profiles", {}).get(uid)
-    if profile is None:
-        member = guild.get_member(inviter_id)
-        profile = get_profile(
-            inviter_id,
-            member.display_name if member is not None else uid,
+        conn.execute(
+            "INSERT OR IGNORE INTO active_invites("
+            "guild_id, invitee_id, inviter_id, joined_at"
+            ") VALUES (?, ?, ?, ?)",
+            (
+                str(guild.id),
+                str(invitee_id),
+                str(inviter_id),
+                datetime.now(timezone.utc).timestamp(),
+            ),
         )
-    profile["invite_count"] = int(profile.get("invite_count", 0) or 0) + max(amount, 1)
-    return int(profile["invite_count"])
+        count = conn.execute(
+            "SELECT COUNT(*) FROM active_invites "
+            "WHERE guild_id = ? AND inviter_id = ?",
+            (str(guild.id), str(inviter_id)),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE users SET invite_count = ? WHERE user_id = ?",
+            (int(count), str(inviter_id)),
+        )
+        conn.commit()
+    return int(count)
+
+
+def _remove_active_invitee(guild_id: int, invitee_id: int) -> int | None:
+    """Remove a departed invitee once and return their inviter, if known."""
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        row = conn.execute(
+            "SELECT inviter_id FROM active_invites "
+            "WHERE guild_id = ? AND invitee_id = ?",
+            (str(guild_id), str(invitee_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        inviter_id = int(row[0])
+        conn.execute(
+            "DELETE FROM active_invites WHERE guild_id = ? AND invitee_id = ?",
+            (str(guild_id), str(invitee_id)),
+        )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM active_invites "
+            "WHERE guild_id = ? AND inviter_id = ?",
+            (str(guild_id), str(inviter_id)),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE users SET invite_count = ? WHERE user_id = ?",
+            (int(count), str(inviter_id)),
+        )
+        conn.commit()
+    return inviter_id
 
 
 async def _ensure_invite_role(guild: discord.Guild) -> discord.Role | None:
@@ -2003,6 +2172,32 @@ async def _award_invite_role(
         return False
 
 
+async def _remove_invite_role(
+    guild: discord.Guild,
+    inviter_id: int,
+    *,
+    reason: str,
+) -> bool:
+    """Remove invite eligibility when an inviter has no active invitees."""
+    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    member = guild.get_member(inviter_id)
+    if role is None or member is None or role not in member.roles:
+        return False
+    try:
+        await member.remove_roles(role, reason=reason)
+        print(f"[invite tracker] Removed {INVITE_ROLE_NAME} from {member} in {guild.id}")
+        return True
+    except discord.Forbidden:
+        print(
+            f"[invite tracker WARNING] Cannot remove role {INVITE_ROLE_NAME} "
+            f"from {inviter_id}; check role hierarchy."
+        )
+        return False
+    except discord.HTTPException as exc:
+        print(f"[invite tracker] Could not remove {INVITE_ROLE_NAME} from {inviter_id}: {exc}")
+        return False
+
+
 async def _refresh_invite_cache(
     guild: discord.Guild,
     *,
@@ -2015,21 +2210,24 @@ async def _refresh_invite_cache(
     _store_invite_snapshot(guild, snapshot)
     async with _invite_cache_lock:
         _invite_cache[guild.id] = snapshot
-    await _record_invite_totals(guild, snapshot)
+    _sync_active_invite_counts(guild.id)
     if reconcile_roles:
-        inviter_ids = {
-            int(data["inviter_id"])
-            for data in snapshot.values()
-            if data["inviter_id"] is not None
-            and int(data["uses"] or 0) > 0
-            and int(data["inviter_id"]) != getattr(bot.user, "id", None)
-        }
+        inviter_ids = _active_inviter_ids(guild.id)
         for inviter_id in inviter_ids:
             await _award_invite_role(
                 guild,
                 inviter_id,
-                reason="Backfill invite eligibility role",
+                reason="Sync active invite eligibility role",
             )
+        role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+        if role is not None:
+            for member in guild.members:
+                if role in member.roles and member.id not in inviter_ids:
+                    await _remove_invite_role(
+                        guild,
+                        member.id,
+                        reason="Remove inactive invite eligibility",
+                    )
 
 
 async def _track_joining_member_invite(member: discord.Member) -> int | None:
@@ -2090,14 +2288,14 @@ async def _track_joining_member_invite(member: discord.Member) -> int | None:
             f"human creator for joined member {member.id}"
         )
         return None
-    total = await _record_invite_use(member.guild, inviter_id, delta)
+    total = _record_active_invitee(member.guild, member.id, inviter_id)
     awarded = await _award_invite_role(
         member.guild,
         inviter_id,
         reason=f"Invited new member {member.id}",
     )
     print(
-        f"[invite tracker] {inviter_id} now has {total} recorded invite(s) "
+        f"[invite tracker] {inviter_id} now has {total} active invite(s) "
         f"in guild {member.guild.id}; role_awarded={awarded}"
     )
     return inviter_id
@@ -2116,7 +2314,12 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
             member = await guild.fetch_member(member_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             member = None
-    if member is not None and role is not None and role in member.roles:
+    if (
+        member is not None
+        and role is not None
+        and role in member.roles
+        and _active_invite_count(guild.id, member_id) > 0
+    ):
         return True
 
     bot_member = guild.me
@@ -2158,14 +2361,10 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
     async with _invite_cache_lock:
         bot.invite_cache[guild.id] = snapshot
 
-    total_uses = sum(
-        int(data.get("uses", 0) or 0)
-        for data in snapshot.values()
-        if data.get("inviter_id") is not None
-        and int(data["inviter_id"]) == member_id
-    )
-    print(f"[DEBUG] Total invite uses calculated for user: {total_uses}")
-    if total_uses >= 1:
+    _sync_active_invite_counts(guild.id)
+    active_invites = _active_invite_count(guild.id, member_id)
+    print(f"[DEBUG] Current active invites calculated for user: {active_invites}")
+    if active_invites >= 1:
         if not perms.manage_roles:
             print("[ERROR] Missing 'Manage Roles' permission!")
             raise InviteRegistrationError(
@@ -2182,7 +2381,6 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
             "[DEBUG] Bot highest role position vs '1 Invite' role position: "
             f"{bot_role_position} vs {role.position}"
         )
-        await _record_invite_totals(guild, snapshot)
         await _award_invite_role(
             guild,
             member_id,
@@ -2239,6 +2437,7 @@ db = {
     "supporters": {},
     "gems": {},       # {user_id_str: {"name": str, "sg_name": str, "total": int}}
     "sg_links": {},   # {user_id_str: sg_name}
+    "ai_moderation_warnings": {},
     "event_history": [],
     "event_bans": {},
     "perk_cooldowns": {},
@@ -2260,6 +2459,9 @@ dm_conversations: dict[int, list[dict[str, str]]] = {}
 dm_language_preferences: dict[int, str] = {}
 ai_private_channels: dict[int, int] = {}
 ai_channel_last_activity: dict[int, datetime] = {}
+active_owner_ai_channels: dict[int, bool] = {}
+owner_ai_conversations: dict[int, list[dict[str, str]]] = {}
+owner_ai_locks: dict[int, asyncio.Lock] = {}
 DM_IDLE_SECONDS = 15 * 60
 DM_GREETING_WORDS = {
     "ciao", "salve", "buongiorno", "buonasera", "buonanotte",
@@ -2370,6 +2572,115 @@ def _contains_inappropriate_content(content: str) -> bool:
     return bool(words & AI_BANNED_WORDS) or any(
         phrase in normalized for phrase in ("kill the server", "nuke the server", "ammazza il server")
     )
+
+
+def _record_ai_abuse_warning(user_id: int, guild_id: int, reason: str) -> tuple[int, bool]:
+    """Persist AI abuse strikes and return (strike_count, new_server_warn)."""
+    warnings = db.setdefault("ai_moderation_warnings", {})
+    key = str(user_id)
+    record = warnings.setdefault(
+        key,
+        {
+            "guild_id": str(guild_id),
+            "count": 0,
+            "server_warned": False,
+            "history": [],
+        },
+    )
+    try:
+        count = max(int(record.get("count", 0) or 0), 0) + 1
+    except (TypeError, ValueError):
+        count = 1
+    record["guild_id"] = str(guild_id)
+    record["count"] = count
+    record["last_reason"] = reason[:300]
+    record["last_at"] = datetime.now(timezone.utc).isoformat()
+    history = record.setdefault("history", [])
+    history.append(
+        {
+            "kind": "ai-abuse",
+            "at": record["last_at"],
+            "reason": reason[:300],
+        }
+    )
+    del history[:-20]
+    new_server_warn = count >= 2 and not bool(record.get("server_warned"))
+    if new_server_warn:
+        record["server_warned"] = True
+        record["server_warn_at"] = record["last_at"]
+        history.append(
+            {
+                "kind": "server-warn",
+                "at": record["last_at"],
+                "reason": "Continued abusive language in the AI chat",
+            }
+        )
+    save_db()
+    return count, new_server_warn
+
+
+async def _handle_ai_abuse(
+    message: discord.Message,
+    *,
+    response_channel,
+) -> None:
+    """Warn an AI user, then persist one automatic server warning on repeat."""
+    guild = message.guild
+    if guild is None:
+        guild = await _get_ai_main_guild()
+    guild_id = guild.id if guild is not None else SERVER_ID
+    strike_count, new_server_warn = _record_ai_abuse_warning(
+        message.author.id,
+        guild_id,
+        message.content,
+    )
+    if strike_count == 1:
+        await response_channel.send(
+            "⚠️ Please keep the AI chat respectful. Insults, swear words, "
+            "and abuse are not allowed. This is your first warning."
+        )
+        return
+
+    if new_server_warn:
+        warning_text = (
+            "🚨 Continued abusive language has been recorded as an automatic "
+            "server Warn. Please stop using insults or swear words."
+        )
+        await response_channel.send(warning_text)
+        if guild is not None:
+            await _log_event(
+                guild,
+                "WARN",
+                (
+                    f"Automatic AI moderation warning for "
+                    f"{message.author} ({message.author.id}): continued abuse"
+                ),
+                actor=bot.user,
+            )
+        dm_text = (
+            "🚨 You received an automatic server Warn because you continued "
+            "using insults, swear words, or abusive language in the AI chat. "
+            "Please keep the conversation respectful."
+        )
+        if message.guild is None:
+            await response_channel.send(dm_text)
+        else:
+            await _send_dm_or_closed_notice(
+                message.author,
+                channel=response_channel,
+                content=dm_text,
+                closed_notice=(
+                    f"⚠️ {message.author.mention}, I could not deliver your "
+                    "automatic server Warn by DM because your DMs are closed."
+                ),
+            )
+        return
+
+    await response_channel.send(
+        "⚠️ Your abusive-language warning is already recorded. "
+        "Please keep the AI chat respectful."
+    )
+
 
 def _is_gemini_rate_limit_error(error_text: str) -> bool:
     """Recognize quota/rate-limit responses before generic error handling."""
@@ -2608,30 +2919,35 @@ async def _process_private_ai_batch(
         None,
     )
     if flagged_message:
-        log_channel = await _get_ai_log_channel(message.guild)
-        log_embed = discord.Embed(
-            title="🚨 AI Chat Moderation Alert",
-            description="A private AI chat message was flagged for offensive or inappropriate content.",
-            color=discord.Color.red(),
-            timestamp=flagged_message.created_at,
-        )
-        log_embed.add_field(
-            name="User",
-            value=f"{message.author.mention}\n`{message.author} (ID: {user_id})`",
-            inline=False,
-        )
-        log_embed.add_field(name="Private channel", value=channel.mention, inline=True)
-        log_embed.add_field(
-            name="Date / time",
-            value=f"<t:{int(flagged_message.created_at.timestamp())}:F>",
-            inline=True,
-        )
-        log_embed.add_field(
-            name="Flagged content",
-            value=flagged_message.content[:1024] or "*(attachment)*",
-            inline=False,
-        )
-        await log_channel.send(embed=log_embed)
+        try:
+            log_channel = await _get_ai_log_channel(message.guild)
+            log_embed = discord.Embed(
+                title="🚨 AI Chat Moderation Alert",
+                description="A private AI chat message was flagged for offensive or inappropriate content.",
+                color=discord.Color.red(),
+                timestamp=flagged_message.created_at,
+            )
+            log_embed.add_field(
+                name="User",
+                value=f"{message.author.mention}\n`{message.author} (ID: {user_id})`",
+                inline=False,
+            )
+            log_embed.add_field(name="Private channel", value=channel.mention, inline=True)
+            log_embed.add_field(
+                name="Date / time",
+                value=f"<t:{int(flagged_message.created_at.timestamp())}:F>",
+                inline=True,
+            )
+            log_embed.add_field(
+                name="Flagged content",
+                value=flagged_message.content[:1024] or "*(attachment)*",
+                inline=False,
+            )
+            await log_channel.send(embed=log_embed)
+        except Exception as exc:
+            await _safe_log_ai_exception(message.guild, "AI moderation log", exc)
+        await _handle_ai_abuse(flagged_message, response_channel=channel)
+        return True
 
     if not GEMINI_CONFIGURED:
         try:
@@ -2711,6 +3027,52 @@ async def _process_private_ai_batch(
                 # A failed second chunk must not cause a generic error after
                 # the first valid chunk has already reached the user.
                 return sent_chunks > 0
+
+
+async def _process_owner_ai_message(message: discord.Message) -> None:
+    """Generate an AI reply for the server owner in an active channel session."""
+    channel_id = message.channel.id
+    if not active_owner_ai_channels.get(channel_id):
+        return
+    content = message.content.strip()
+    if not content:
+        return
+    conversation = owner_ai_conversations.setdefault(channel_id, [])
+    conversation.append({"role": "user", "content": content})
+    conversation[:] = conversation[-12:]
+    lock = owner_ai_locks.setdefault(channel_id, asyncio.Lock())
+    async with _channel_typing(message.channel):
+        async with lock:
+            if not GEMINI_CONFIGURED:
+                await message.channel.send(format_ai_error(
+                    RuntimeError("No GEMINI_API_KEY is configured")
+                ))
+                return
+            try:
+                system_prompt = build_ai_system_instruction()
+                response = await asyncio.wait_for(
+                    gemini_completion_with_retries(
+                        [{"role": "system", "content": system_prompt}, *conversation],
+                        system_prompt,
+                    ),
+                    timeout=AI_REQUEST_TIMEOUT_SECONDS,
+                )
+                reply_text = clean_ai_response(response)
+                if not reply_text:
+                    raise RuntimeError("Gemini returned no text")
+                for response_chunk in split_ai_response(reply_text):
+                    await message.channel.send(embed=discord.Embed(
+                        description=response_chunk,
+                        color=discord.Color(0x00F0FF),
+                    ))
+                conversation.append({"role": "assistant", "content": reply_text})
+                conversation[:] = conversation[-12:]
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                traceback.print_exc()
+                await _safe_log_ai_exception(message.guild, "Owner AI chat", exc)
+                await message.channel.send(format_ai_error(exc))
 
 
 def clean_ai_response(response) -> str:
@@ -2918,7 +3280,7 @@ async def send_threat_alert(
             recipient = bot.get_user(recipient_id)
             if recipient is None:
                 recipient = await bot.fetch_user(recipient_id)
-            await recipient.send(embed=embed)
+            await _send_dm_or_closed_notice(recipient, embed=embed)
             print(
                 f"[ALERT] DM sent to {recipient_id} for message "
                 f"{message.id} di {message.author.id}"
@@ -3428,7 +3790,7 @@ def build_ai_system_instruction() -> str:
         admin_commands = {
             "warn", "time", "give", "reset", "add-punti", "big-event",
             "big-start", "big-event-winner", "drop", "add-ticket",
-            "ban-event", "add-rubini", "remove-rubini", "add-cristalli",
+            "ban-event", "add-rubini", "add-cristalli",
             "set-supporter", "set-tw",
         }
         host_commands = {
@@ -3569,6 +3931,11 @@ def build_ai_system_instruction() -> str:
          "- TOURNAMENT REGISTRATION (STRICT): Never tell a normal user to use "
          "`:setup`. Instruct exactly: \"Vai nel canale dei tornei e premi il "
          "pulsante 'Iscriviti / Register' sotto al tabellone del torneo attivo.\"\n"
+         "- TOURNAMENT REGISTRATION (CLASSIC/BIG): If a user asks how to register "
+         "for a tournament, answer specifically: \"For Classic Tournaments, just "
+         "click the Register button. For Big Tournaments, you need an invite "
+         "(get link in #get-link) and to link your SG account in the designated "
+         "channel.\"\n"
          "- CREDITS (STRICT): The Server Creator/Owner is Piccolofe and the Bot "
          "Creator/Developer is Adam. For public announcements, say exactly: "
          "\"Bot created by Adam with the help of Piccolofe\".\n"
@@ -4316,10 +4683,13 @@ def _read_live_leaderboard_profiles(
     with _sqlite_lock:
         rows = _sqlite_conn().execute(
             "SELECT user_id, profile_json, rubies, crystals, gems, linked, "
-            "chest_cooldown, invite_count, matches_played, wins, rubies_won, "
+            "chest_cooldown, "
+            "(SELECT COUNT(*) FROM active_invites "
+            "WHERE guild_id = ? AND inviter_id = users.user_id) AS invite_count, "
+            "matches_played, wins, rubies_won, "
             "gems_won, crystals_won FROM users "
             "WHERE user_id != ?" + order_sql,
-            (bot_user_id,),
+            (str(SERVER_ID), bot_user_id),
         ).fetchall()
 
     live_profiles = []
@@ -4355,10 +4725,7 @@ def _read_live_leaderboard_profiles(
         profile["gemme"] = int(gems or 0)
         profile["linked"] = bool(linked)
         profile["chest_cooldown"] = float(chest_cooldown or 0)
-        profile["invite_count"] = max(
-            int(profile.get("invite_count", 0) or 0),
-            int(invite_count or 0),
-        )
+        profile["invite_count"] = int(invite_count or 0)
         # Always use the values from this SQLite read. Taking the maximum
         # with profile_json can resurrect stale legacy totals and make a
         # freshly completed match appear not to update the leaderboard.
@@ -4928,7 +5295,7 @@ async def _auto_assign_hosts_dm(guild: discord.Guild, t: dict):
                 color=discord.Color.blurple()
             )
             embed.set_image(url=STUMBLE_IMG)
-            await mbr.send(embed=embed)
+            await _send_dm_or_closed_notice(mbr, embed=embed)
         except Exception as e:
             print(f"[auto_assign_hosts_dm] {e}")
 
@@ -5736,7 +6103,7 @@ async def send_setup_notifications():
     for owner_id in (ALERT_RECIPIENT_ID,):
         try:
             owner = await bot.fetch_user(owner_id)
-            await owner.send(embed=embed)
+            await _send_dm_or_closed_notice(owner, embed=embed)
         except (discord.Forbidden, discord.HTTPException) as exc:
             failures.append(f"{owner_id}: {type(exc).__name__}")
     _setup_notifications_sent = True
@@ -5971,10 +6338,10 @@ async def on_member_join(member: discord.Member):
                 or "Unknown"
             )
             inviter_profile = get_profile(inviter_id, inviter_name)
-            total_invites = int(inviter_profile.get("invite_count", 0) or 0)
+            total_invites = _active_invite_count(guild.id, inviter_id)
             footer_text = (
                 f"📥 Invited by: {inviter_name} "
-                f"(Total invites: {total_invites})"
+                f"(Current active invites: {total_invites})"
             )
         else:
             footer_text = "📥 Invited by: Unknown (Invite could not be verified)"
@@ -5983,6 +6350,28 @@ async def on_member_join(member: discord.Member):
     embed.set_footer(text=footer_text)
     embed.set_image(url=WELCOME_EMBED_IMAGE_URL)
     await channel.send(content=member.mention, embed=embed)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Remove a departed member from the inviter's active invite count."""
+    if member.guild.id != SERVER_ID:
+        return
+    inviter_id = _remove_active_invitee(member.guild.id, member.id)
+    if inviter_id is None:
+        return
+    remaining = _active_invite_count(member.guild.id, inviter_id)
+    if remaining == 0:
+        await _remove_invite_role(
+            member.guild,
+            inviter_id,
+            reason=f"Invited member {member.id} left the server",
+        )
+    print(
+        f"[invite tracker] Member {member.id} left; inviter {inviter_id} "
+        f"now has {remaining} active invite(s)"
+    )
+
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
@@ -6337,7 +6726,7 @@ def _format_timeout_duration(seconds: int) -> str:
 @bot.tree.command(name="warn", description="Issue a formal warning to a member.")
 @app_commands.describe(member="Member to warn", reason="Reason for the warning")
 async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
-    if not interaction_role_check(interaction, ADMIN_ROLE_IDS):
+    if not interaction_role_check(interaction, STAFF_ROLE_IDS | ADMIN_ROLE_IDS):
         return await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
     embed = discord.Embed(title="⚠️ Official Warning", color=discord.Color.orange(),
                           timestamp=discord.utils.utcnow())
@@ -6347,9 +6736,16 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
     embed.add_field(name="Date and time", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=False)
     embed.set_footer(text="Follow the rules: another warning may lead to a timeout.")
     try:
-        warning_message = await member.send(embed=embed)
-        asyncio.create_task(delete_message_later(warning_message, 15))
-        dm_status = "warning sent by DM"
+        warning_message = await _send_dm_or_closed_notice(
+            member,
+            channel=interaction.channel,
+            embed=embed,
+        )
+        if warning_message:
+            asyncio.create_task(delete_message_later(warning_message, 15))
+            dm_status = "warning sent by DM"
+        else:
+            dm_status = "DM unavailable"
     except discord.HTTPException:
         dm_status = "DM unavailable"
     await _log_event(interaction.guild, "WARN", f"{member} ({member.id}): {reason} — {dm_status}", actor=interaction.user)
@@ -6358,7 +6754,7 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
 @bot.tree.command(name="time", description="Timeout a member and notify them by DM.")
 @app_commands.describe(member="Member to timeout", duration="Examples: 30m, 2h, 1d", reason="Reason for the timeout")
 async def time_cmd(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str):
-    if not _has_admin_access(interaction.user):
+    if not _has_staff_access(interaction.user, interaction.guild):
         return await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
     if interaction.guild is None:
         return await interaction.response.send_message(
@@ -6423,12 +6819,156 @@ async def time_cmd(interaction: discord.Interaction, member: discord.Member, dur
     )
     embed.set_footer(text="Contact staff if you want to appeal this action.")
     try:
-        await member.send(embed=embed)
-        status = "notification sent by DM"
-    except (discord.Forbidden, discord.HTTPException) as exc:
+        notification = await _send_dm_or_closed_notice(
+            member,
+            channel=interaction.channel,
+            embed=embed,
+        )
+        status = "notification sent by DM" if notification else "DM unavailable"
+    except discord.HTTPException as exc:
         status = f"DM unavailable ({type(exc).__name__})"
     await _log_event(interaction.guild, "TIMEOUT", f"{member} ({member.id}): {duration} — {reason}", actor=interaction.user)
     await interaction.response.send_message(f"✅ Timeout applied to {member.mention}. {status}.", ephemeral=True)
+
+
+@bot.command(name="warn")
+@staff_only()
+async def warn_prefix(ctx, member: discord.Member, *, reason: str):
+    """Prefix equivalent of the formal warning slash command."""
+    embed = discord.Embed(
+        title="⚠️ Official Warning",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(
+        name="Warned User",
+        value=f"{member.mention}\n`{member} ({member.id})`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Staffer",
+        value=f"{ctx.author.mention}\n`{ctx.author}`",
+        inline=True,
+    )
+    embed.add_field(name="Reason", value=reason[:1024], inline=True)
+    embed.add_field(
+        name="Date and time",
+        value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>",
+        inline=False,
+    )
+    embed.set_footer(text="Follow the rules: another warning may lead to a timeout.")
+    try:
+        warning_message = await _send_dm_or_closed_notice(
+            member,
+            channel=ctx.channel,
+            embed=embed,
+        )
+        dm_status = "warning sent by DM" if warning_message else "DM unavailable"
+        if warning_message:
+            asyncio.create_task(delete_message_later(warning_message, 15))
+    except discord.HTTPException:
+        dm_status = "DM unavailable"
+    await _log_event(
+        ctx.guild,
+        "WARN",
+        f"{member} ({member.id}): {reason} — {dm_status}",
+        actor=ctx.author,
+    )
+    await ctx.send(
+        f"✅ Warning sent to {member.mention}. {dm_status}.",
+        delete_after=8.0,
+    )
+
+
+@bot.command(name="time")
+@staff_only()
+async def time_prefix(ctx, member: discord.Member, duration: str, *, reason: str):
+    """Prefix equivalent of the member timeout slash command."""
+    duration = duration.strip()
+    match = re.fullmatch(r"(\d+)([smhd])", duration.lower())
+    if not match:
+        return await ctx.send(
+            "❌ Invalid duration. Use `30m`, `2h`, or `1d`.",
+            delete_after=6.0,
+        )
+    seconds = int(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    if seconds <= 0:
+        return await ctx.send(
+            "❌ The timeout duration must be greater than zero.",
+            delete_after=6.0,
+        )
+    if seconds > 28 * 86400:
+        return await ctx.send(
+            "❌ Discord timeouts cannot exceed 28 days.",
+            delete_after=6.0,
+        )
+    if ctx.guild is None:
+        return await ctx.send(
+            "❌ This command can only be used inside a server.",
+            delete_after=6.0,
+        )
+    if member.id == ctx.guild.owner_id:
+        return await ctx.send(
+            "❌ The server owner cannot be timed out.",
+            delete_after=6.0,
+        )
+    until = discord.utils.utcnow() + timedelta(seconds=seconds)
+    try:
+        await member.timeout(until, reason=reason)
+    except discord.Forbidden:
+        await _log_event(
+            ctx.guild,
+            "TIMEOUT FAILED",
+            f"{member} ({member.id}): insufficient permission — {reason}",
+            actor=ctx.author,
+        )
+        return await ctx.send(
+            "❌ Discord rejected the timeout. Check the bot's assigned role "
+            "and the target member's role hierarchy.",
+            delete_after=8.0,
+        )
+    except discord.HTTPException:
+        return await ctx.send(
+            "❌ Discord rejected the timeout. Please try again.",
+            delete_after=8.0,
+        )
+
+    readable_duration = _format_timeout_duration(seconds)
+    end_timestamp = int(until.timestamp())
+    embed = discord.Embed(
+        title="⏱️ You have been timed out",
+        description=(
+            "You cannot send messages or join voice channels in this server "
+            "during the timeout.\n\n"
+            f"**Motivo:** {reason[:1500]}\n"
+            f"**Durata:** {readable_duration}\n"
+            f"**Termina:** <t:{end_timestamp}:F>\n"
+            f"**Tempo rimanente:** <t:{end_timestamp}:R>"
+        ),
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.set_footer(text="Contact staff if you want to appeal this action.")
+    try:
+        notification = await _send_dm_or_closed_notice(
+            member,
+            channel=ctx.channel,
+            embed=embed,
+        )
+        status = "notification sent by DM" if notification else "DM unavailable"
+    except discord.HTTPException as exc:
+        status = f"DM unavailable ({type(exc).__name__})"
+    await _log_event(
+        ctx.guild,
+        "TIMEOUT",
+        f"{member} ({member.id}): {duration} — {reason}",
+        actor=ctx.author,
+    )
+    await ctx.send(
+        f"✅ Timeout applied to {member.mention}. {status}.",
+        delete_after=8.0,
+    )
+
 
 @bot.command(name="ban-event", aliases=["ban_event"])
 @commands.has_permissions(manage_channels=True)
@@ -6484,12 +7024,22 @@ async def profile(ctx, member: discord.Member = None):
 
 GIVE_KEYS  = {
     "punti":"punti","xp":"punti","points":"punti",
-    "ruby":"rubini","rubini":"rubini",
+    "ranked-points":"punti","ranked_points":"punti",
+    "ruby":"rubini","rubies":"rubini","rubini":"rubini",
     "cristalli":"cristalli","crystal":"cristalli","crystals":"cristalli",
     "gemme":"gemme","gems":"gemme","gem":"gemme",
-    "tornei":"tornei_v","eventi":"eventi_v",
+    "tornei":"tornei_v","torneo":"tornei_v",
+    "tournament":"tornei_v","tournaments":"tornei_v",
+    "eventi":"eventi_v","evento":"eventi_v","event":"eventi_v","events":"eventi_v",
 }
-GIVE_ICONS = {"punti":E_RP,"rubini":E_RUBY,"cristalli":E_CRYSTAL,"tornei_v":E_TROPHY,"eventi_v":E_TROPHY}
+GIVE_ICONS = {
+    "punti": E_RP,
+    "rubini": E_RUBY,
+    "cristalli": E_CRYSTAL,
+    "gemme": E_GEMS,
+    "tornei_v": E_TROPHY,
+    "eventi_v": E_TROPHY,
+}
 
 @bot.command(name="give", aliases=["add"])
 @admin_only()
@@ -6529,6 +7079,56 @@ async def give(ctx, member: discord.Member, cosa: str, quantita: int):
     )
     embed.set_footer(text=f"By {ctx.author.display_name}")
     await ctx.send(embed=embed, delete_after=10.0)
+
+
+@bot.command(name="remove")
+@admin_only()
+async def remove_currency(ctx, member: discord.Member, cosa: str, quantita: int):
+    """Remove any supported numeric currency/stat directly from SQLite."""
+    if quantita < 1:
+        return await ctx.send(
+            "❌ The amount must be greater than zero.",
+            delete_after=6.0,
+        )
+    key = GIVE_KEYS.get(cosa.casefold())
+    if not key:
+        return await ctx.send(
+            "❌ Invalid item/currency. Use: `ruby` · `crystals` · `gems` · "
+            "`points` · `tournaments` · `events`",
+            delete_after=7.0,
+        )
+
+    profile = get_profile(member.id, member.display_name)
+    try:
+        current = max(0, int(profile.get(key, 0) or 0))
+    except (TypeError, ValueError):
+        current = 0
+    removed = min(current, quantita)
+    profile[key] = current - removed
+
+    if key == "punti":
+        try:
+            await update_rank_roles(ctx.guild, member, current - removed)
+        except Exception as exc:
+            print(f"[remove rank roles] {exc}")
+
+    icon = GIVE_ICONS.get(key, "")
+    await ctx.send(
+        embed=discord.Embed(
+            title="➖ Economy updated",
+            description=(
+                f"{icon} **-{format_num(removed)}** {cosa} → {member.mention}\n"
+                f"New total: **{format_num(current - removed)}** {icon}"
+                + (
+                    f"\nRequested: **{format_num(quantita)}**; "
+                    f"available: **{format_num(current)}**."
+                    if removed < quantita else ""
+                )
+            ),
+            color=discord.Color.orange(),
+        ),
+    )
+
 
 @bot.command(name="add-gems", aliases=["add_gems"])
 @manager_or_owner_only()
@@ -7749,7 +8349,11 @@ async def assign_hosts(ctx):
         embed.set_image(url=STUMBLE_IMG)
         embed.set_footer(text=f"Tournament: {t.get('modalita','?')} | Host: {h['name']}")
         try:
-            await member.send(embed=embed)
+            await _send_dm_or_closed_notice(
+                member,
+                channel=ctx.channel,
+                embed=embed,
+            )
             # Staff stat: +1 per ogni match hostato
             prof_h = get_profile(member.id, member.display_name)
             prof_h["staff_matches"]      += len(assigned)
@@ -8338,10 +8942,23 @@ async def match(ctx, match_num: int, codice: str):
                         if os.path.exists(STUMBLE_TOUR_IMG_PATH):
                             f = discord.File(STUMBLE_TOUR_IMG_PATH, filename="stumble_tournament.png")
                             embed.set_image(url="attachment://stumble_tournament.png")
-                            sent_dm_messages.append(await mbr.send(file=f, embed=embed))
+                            dm_message = await _send_dm_or_closed_notice(
+                                mbr,
+                                channel=ctx.channel,
+                                file=f,
+                                embed=embed,
+                            )
+                            if dm_message:
+                                sent_dm_messages.append(dm_message)
                         else:
                             embed.set_image(url=STUMBLE_IMG)
-                            sent_dm_messages.append(await mbr.send(embed=embed))
+                            dm_message = await _send_dm_or_closed_notice(
+                                mbr,
+                                channel=ctx.channel,
+                                embed=embed,
+                            )
+                            if dm_message:
+                                sent_dm_messages.append(dm_message)
                         sent_to.append(name)
                     except Exception as e:
                         print(f"[match DM] {e}")
@@ -8354,10 +8971,23 @@ async def match(ctx, match_num: int, codice: str):
                     if os.path.exists(STUMBLE_TOUR_IMG_PATH):
                         f = discord.File(STUMBLE_TOUR_IMG_PATH, filename="stumble_tournament.png")
                         embed.set_image(url="attachment://stumble_tournament.png")
-                        sent_dm_messages.append(await mbr.send(file=f, embed=embed))
+                        dm_message = await _send_dm_or_closed_notice(
+                            mbr,
+                            channel=ctx.channel,
+                            file=f,
+                            embed=embed,
+                        )
+                        if dm_message:
+                            sent_dm_messages.append(dm_message)
                     else:
                         embed.set_image(url=STUMBLE_IMG)
-                        sent_dm_messages.append(await mbr.send(embed=embed))
+                        dm_message = await _send_dm_or_closed_notice(
+                            mbr,
+                            channel=ctx.channel,
+                            embed=embed,
+                        )
+                        if dm_message:
+                            sent_dm_messages.append(dm_message)
                     sent_to.append(pname)
                 except Exception as e:
                     print(f"[match DM] {e}")
@@ -8376,9 +9006,13 @@ async def match(ctx, match_num: int, codice: str):
     async def timer_fine():
         await asyncio.sleep(120)
         try:
-            await ctx.author.send(
-                f"⏰ **Time's up!** Match #{match_num} is over!\n"
-                f"Use `:qual @winner` to register the winner."
+            await _send_dm_or_closed_notice(
+                ctx.author,
+                channel=ctx.channel,
+                content=(
+                    f"⏰ **Time's up!** Match #{match_num} is over!\n"
+                    f"Use `:qual @winner` to register the winner."
+                ),
             )
         except Exception:
             pass
@@ -8791,18 +9425,21 @@ async def leaderboard(ctx):
 
 
 def _invite_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
-    """Build the public leaderboard from verified SQLite invite totals."""
+    """Build the public leaderboard from active invite attributions in SQLite."""
     bot_user_id = str(getattr(bot.user, "id", -1))
     with _sqlite_lock:
         rows = _sqlite_conn().execute(
-            "SELECT user_id, invite_count FROM users "
-            "WHERE user_id != ? AND invite_count > 0 "
-            "ORDER BY invite_count DESC, user_id ASC LIMIT 10",
-            (bot_user_id,),
+            "SELECT inviter_id, COUNT(*) AS active_invites "
+            "FROM active_invites "
+            "WHERE guild_id = ? AND inviter_id != ? "
+            "GROUP BY inviter_id "
+            "ORDER BY active_invites DESC, inviter_id ASC LIMIT 10",
+            (str(guild.id), bot_user_id),
         ).fetchall()
 
     lines = []
-    for rank, (user_id, invite_count) in enumerate(rows, start=1):
+    medals = ("🥇", "🥈", "🥉")
+    for rank, (user_id, active_invites) in enumerate(rows, start=1):
         member = guild.get_member(int(user_id))
         if member is not None:
             name = member.mention
@@ -8810,16 +9447,24 @@ def _invite_leaderboard_embed(guild: discord.Guild) -> discord.Embed:
             profile = db.get("profiles", {}).get(str(user_id))
             stored_name = _stored_leaderboard_username(profile) if profile else None
             name = f"@{stored_name}" if stored_name else f"<@{user_id}>"
+        marker = medals[rank - 1] if rank <= len(medals) else f"**#{rank}**"
         lines.append(
-            f"**{rank}.** {name} — **{format_num(int(invite_count))}** verified invites"
+            f"{marker} {name}\n"
+            f"└ **{format_num(int(active_invites))}** current active invite"
+            f"{'s' if int(active_invites) != 1 else ''}"
         )
 
     embed = discord.Embed(
-        title="🏆 TOP INVITES LEADERBOARD",
-        description="\n".join(lines) if lines else "No verified invites yet.",
+        title="🏆 CURRENT ACTIVE INVITES",
+        description=(
+            "Live ranking of members who currently have invitees in the server.\n\n"
+            + "\n\n".join(lines)
+            if lines
+            else "No active invites yet."
+        ),
         color=discord.Color.gold(),
     )
-    embed.set_footer(text="PCF™ • Verified invite tracking")
+    embed.set_footer(text="PCF™ • Current Active Invites • Live SQLite data")
     return embed
 
 
@@ -8831,18 +9476,6 @@ async def invites(ctx):
     await ctx.send(embed=_invite_leaderboard_embed(ctx.guild))
 
 
-@bot.tree.command(name="invites", description="Show the top verified server inviters.")
-async def invites_slash(interaction: discord.Interaction):
-    if interaction.guild is None:
-        return await interaction.response.send_message(
-            "❌ This command can only be used inside the server.",
-            ephemeral=True,
-        )
-    await interaction.response.send_message(
-        embed=_invite_leaderboard_embed(interaction.guild)
-    )
-
-
 def _manager_or_admin_access(member) -> bool:
     return (
         member.id in OWNER_USER_IDS
@@ -8852,38 +9485,6 @@ def _manager_or_admin_access(member) -> bool:
         )
         or getattr(getattr(member, "guild_permissions", None), "administrator", False)
     )
-
-
-@bot.tree.command(
-    name="stumble-top",
-    description="Show only the 1v1 leaderboard.",
-)
-async def stumble_top_slash(interaction: discord.Interaction):
-    if interaction.guild is None or not _manager_or_admin_access(interaction.user):
-        return await interaction.response.send_message(
-            "❌ Managers and admins only.",
-            ephemeral=True,
-        )
-    embeds = await build_leaderboard_embeds(
-        categories=DUEL_LEADERBOARD_CATEGORIES,
-    )
-    await interaction.response.send_message(embed=embeds[0])
-
-
-@bot.tree.command(
-    name="1v1-leaderboard",
-    description="Show the dedicated 1v1 wins leaderboard.",
-)
-async def duel_leaderboard_slash(interaction: discord.Interaction):
-    if interaction.guild is None or not _manager_or_admin_access(interaction.user):
-        return await interaction.response.send_message(
-            "❌ Managers and admins only.",
-            ephemeral=True,
-        )
-    embed = (await build_leaderboard_embeds(
-        categories=DUEL_LEADERBOARD_CATEGORIES,
-    ))[0]
-    await interaction.response.send_message(embed=embed)
 
 
 # ==========================================
@@ -9449,7 +10050,11 @@ class TicketControlView(DetailedView):
             user_id = active_tickets[uid]["user_id_int"]
             try:
                 user = await bot.fetch_user(user_id)
-                await user.send("🔒 Your support ticket has been **closed**. Thank you for contacting us!")
+                await _send_dm_or_closed_notice(
+                    user,
+                    channel=channel,
+                    content="🔒 Your support ticket has been **closed**. Thank you for contacting us!",
+                )
             except Exception:
                 pass
             del active_tickets[uid]
@@ -9535,7 +10140,11 @@ class StaffRequestControlView(DetailedView):
                 color=discord.Color.green()
             )
             embed.set_image(url=STUMBLE_IMG)
-            await member.send(embed=embed)
+            await _send_dm_or_closed_notice(
+                member,
+                channel=interaction.channel,
+                embed=embed,
+            )
         except Exception:
             pass
         for child in self.children:
@@ -9581,7 +10190,11 @@ class StaffRequestControlView(DetailedView):
                     color=discord.Color.blue()
                 )
                 embed.set_image(url=STUMBLE_IMG)
-                await member.send(embed=embed)
+                await _send_dm_or_closed_notice(
+                    member,
+                    channel=interaction.channel,
+                    embed=embed,
+                )
             except Exception:
                 pass
         uid = str(user_id)
@@ -9867,7 +10480,17 @@ class TicketMainView(DetailedView):
                 color=discord.Color.blue()
             )
             dm_embed.set_image(url=STUMBLE_IMAGES[0])
-            await interaction.user.send(embed=dm_embed)
+            dm_sent = await _send_dm_or_closed_notice(
+                interaction.user,
+                channel=interaction.channel,
+                embed=dm_embed,
+            )
+            if dm_sent is None:
+                del active_tickets[uid]
+                del ticket_channel_map[ch.id]
+                save_db()
+                await ch.delete()
+                return
             await interaction.response.send_message("✅ Ticket opened! Check your **DMs** with the bot.", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("❌ I can't open a DM with you. Enable DMs from this server.", ephemeral=True)
@@ -9897,7 +10520,14 @@ class TicketMainView(DetailedView):
                 color=discord.Color.blue()
             )
             intro.set_image(url=STUMBLE_IMG)
-            await interaction.user.send(embed=intro)
+            dm_sent = await _send_dm_or_closed_notice(
+                interaction.user,
+                channel=interaction.channel,
+                embed=intro,
+            )
+            if dm_sent is None:
+                pending_staff_apps.pop(uid, None)
+                return
             await interaction.response.send_message(
                 "✅ Check your **DMs**! I've started the application process there.", ephemeral=True)
         except discord.Forbidden:
@@ -9964,6 +10594,13 @@ async def on_message(message: discord.Message):
         command_text = message.content.strip().lower()
 
         dm_last_activity[message.author.id] = datetime.utcnow()
+        if (
+            message.content.strip()
+            and message.author.id in active_ai_sessions
+            and _contains_inappropriate_content(message.content)
+        ):
+            await _handle_ai_abuse(message, response_channel=message.channel)
+            return
         if command_text == ":start":
             guild = await _get_ai_main_guild()
             if guild is None:
@@ -10190,6 +10827,36 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
+    # ── Exclusive owner AI channel sessions ───────────────────────────────
+    if (
+        message.guild
+        and isinstance(message.channel, discord.TextChannel)
+        and message.author.id == message.guild.owner_id
+        and bot.user is not None
+        and bot.user in message.mentions
+    ):
+        was_active = active_owner_ai_channels.get(message.channel.id, False)
+        active_owner_ai_channels[message.channel.id] = True
+        if not was_active:
+            owner_ai_conversations.pop(message.channel.id, None)
+        await message.channel.send("Listening to you, boss...")
+        return
+
+    if (
+        message.guild
+        and isinstance(message.channel, discord.TextChannel)
+        and message.author.id == message.guild.owner_id
+        and active_owner_ai_channels.get(message.channel.id, False)
+    ):
+        if message.content.strip().casefold() == ":stop":
+            active_owner_ai_channels[message.channel.id] = False
+            owner_ai_conversations.pop(message.channel.id, None)
+            owner_ai_locks.pop(message.channel.id, None)
+            await message.channel.send("Chat session ended.")
+            return
+        await _process_owner_ai_message(message)
+        return
+
     # ── Private AI server channel ─────────────────────
     if message.guild:
         private_channel = await _find_private_ai_channel(message.guild, message.author.id)
@@ -10272,7 +10939,11 @@ async def on_message(message: discord.Message):
                                     icon_url=message.author.display_avatar.url)
                 if message.attachments:
                     dm_embed.set_image(url=message.attachments[0].url)
-                await user.send(embed=dm_embed)
+                await _send_dm_or_closed_notice(
+                    user,
+                    channel=message.channel,
+                    embed=dm_embed,
+                )
                 await message.add_reaction("✅")
             except Exception:
                 await message.add_reaction("❌")
@@ -10425,7 +11096,11 @@ class SupporterVerifyView(DetailedView):
                 color=discord.Color.blue()
             )
             embed.set_image(url=STUMBLE_IMG)
-            await member.send(embed=embed)
+            await _send_dm_or_closed_notice(
+                member,
+                channel=interaction.channel,
+                embed=embed,
+            )
         except Exception:
             pass
         for child in self.children:
@@ -10459,7 +11134,11 @@ class SupporterVerifyView(DetailedView):
                 ),
                 color=discord.Color.red()
             )
-            await user.send(embed=embed)
+            await _send_dm_or_closed_notice(
+                user,
+                channel=interaction.channel,
+                embed=embed,
+            )
         except Exception:
             pass
         for child in self.children:
@@ -10500,9 +11179,14 @@ class SupporterWeeklyCheckView(DetailedView):
                         print(f"[supporter role remove] {e}")
                 try:
                     user = await bot.fetch_user(int(uid_str))
-                    await user.send(
-                        f"❌ You were removed from the Supporter list because the link was no longer in your bio.\n"
-                        f"Re-add it and use `:supporter` to get it back!"
+                    await _send_dm_or_closed_notice(
+                        user,
+                        channel=interaction.channel,
+                        content=(
+                            "❌ You were removed from the Supporter list because the link "
+                            "was no longer in your bio.\n"
+                            "Re-add it and use `:supporter` to get it back!"
+                        ),
                     )
                 except Exception: pass
                 removed.append(uid_str)
@@ -10517,9 +11201,14 @@ class SupporterWeeklyCheckView(DetailedView):
                 prof["rubini"] += reward
                 rewarded.append(mbr.display_name)
                 try:
-                    await mbr.send(
-                        f"🎁 Weekly Supporter reward: **+{reward}** {E_RUBY} Ruby!\n"
-                        f"You've been a supporter for {total_weeks} week{'s' if total_weeks != 1 else ''}. Thank you! 💙"
+                    await _send_dm_or_closed_notice(
+                        mbr,
+                        channel=interaction.channel,
+                        content=(
+                            f"🎁 Weekly Supporter reward: **+{reward}** {E_RUBY} Ruby!\n"
+                            f"You've been a supporter for {total_weeks} "
+                            f"week{'s' if total_weeks != 1 else ''}. Thank you! 💙"
+                        ),
                     )
                 except Exception: pass
         save_db()
@@ -10934,7 +11623,8 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
                 "`:start-event` — Starts the event, pings the event role and opens the room.\n"
                 "`:cod-event <emote> <map> <code>` — Posts the event room code embed with map and emote info.\n"
                 "`:set-winner @user` — Registers the event winner for prize distribution.\n"
-                "`:end-event <amount> <currency>` — Closes the event and awards the prize (ruby/cristalli/punti)."
+                "`:end-event <amount> <currency>` — Closes the event and awards the prize (ruby/cristalli/punti).\n"
+                "`:warn @user <reason>` · `:time @user <duration> <reason>` — Staff moderation commands."
             ),
             "profile_title": "👤 PROFILE & LEADERBOARD",
             "profile": (
@@ -10946,7 +11636,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy_title": "💰 ECONOMY (Admin)",
             "economy": (
                 "`:give @user ruby/cristalli/punti <n>` — Give any currency to a user.\n"
-                "`:add-rubini @user <n>` · `:remove-rubini @user <n>` — Add or remove Ruby.\n"
+                "`:add-rubini @user <n>` · `:remove @user ruby <n>` — Add or remove Ruby.\n"
                  "`:add-cristalli @user <n>` · `:add-punti @user <n>` — Add Crystals or Ranked Points.\n"
                  "`:add-gems @user <n>` — Add SG Gems directly to a user's profile.\n"
                  "`:set-rank @user <rank>` — Force-set a user's rank by name (e.g. Gold, Platinum)."
@@ -11011,7 +11701,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy_title": "💰 ECONOMIA (Admin)",
             "economy": (
                 "`:give @utente ruby/cristalli/punti <n>` — Dai qualsiasi valuta a un utente.\n"
-                "`:add-rubini @utente <n>` · `:remove-rubini @utente <n>` — Aggiungi o rimuovi Ruby.\n"
+                "`:add-rubini @utente <n>` · `:remove @utente ruby <n>` — Aggiungi o rimuovi Ruby.\n"
                  "`:add-cristalli @utente <n>` · `:add-punti @utente <n>` — Aggiungi Cristalli o Ranked Points.\n"
                  "`:add-gems @utente <n>` — Aggiungi gemme SG direttamente al profilo di un utente.\n"
                  "`:set-rank @utente <rank>` — Imposta il rank manualmente per nome (es. Gold, Platinum)."
@@ -11095,7 +11785,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy_title": "💰 WIRTSCHAFT (Admin)",
             "economy": (
                 "`:give @nutzer ruby/kristalle/punkte <n>` — Währung geben\n"
-                "`:add-rubini/@nutzer <n>` · `:remove-rubini @nutzer <n>`\n"
+                "`:add-rubini/@nutzer <n>` · `:remove @nutzer ruby <n>`\n"
                 "`:set-rank @nutzer <rang>` — Rang manuell setzen"
             ),
             "level_title": "⬆️ LEVEL-SYSTEM",
@@ -11153,7 +11843,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy_title": "💰 ECONOMIA (Admin)",
             "economy": (
                 "`:give @usuário ruby/cristais/pontos <n>` — Dar moeda\n"
-                "`:add-rubini @usuário <n>` · `:remove-rubini @usuário <n>`\n"
+                "`:add-rubini @usuário <n>` · `:remove @usuário ruby <n>`\n"
                 "`:set-rank @usuário <rank>` — Definir rank manualmente"
             ),
             "level_title": "⬆️ SISTEMA DE NÍVEIS",
@@ -11211,7 +11901,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "economy_title": "💰 ÉCONOMIE (Admin)",
             "economy": (
                 "`:give @utilisateur ruby/cristaux/points <n>` — Donner monnaie\n"
-                "`:add-rubini @utilisateur <n>` · `:remove-rubini @utilisateur <n>`\n"
+                "`:add-rubini @utilisateur <n>` · `:remove @utilisateur ruby <n>`\n"
                 "`:set-rank @utilisateur <rang>` — Définir rang manuellement"
             ),
             "level_title": "⬆️ SYSTÈME DE NIVEAUX",
@@ -11523,6 +12213,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":big-event", "Creates a Big Event configuration with broad announcement and prize details.", "No command arguments; admin access, then use the event controls.", ":big-event"),
             (":big-start (aliases :bigstart, :big_start)", "Starts the configured Big Event and announces it with an @everyone mention.", "No arguments; admin access and a Big Event must be configured.", ":big-start"),
             (":big-event-winner", "Opens the controls used to set first, second and third place Big Event winners.", "No arguments; admin access.", ":big-event-winner"),
+            (":warn", "Sends a formal warning to a member, including a DM when available.", "<@user> <reason>; Staff access.", ":warn @Player Spam"),
+            (":time", "Times out a member and notifies them by DM when available.", "<@user> <30m|2h|1d> <reason>; Staff access.", ":time @Player 30m Spam"),
         ],
         [
             (":profile", "Shows a member’s rank, Ranked Points, Ruby, Crystals, Gems, level, W Items and tournament wins.", "[@user] optional member mention; defaults to the person using the command.", ":profile @Player"),
@@ -11532,7 +12224,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
             (":hoster-lb (aliases :hosterlb, :hoster_lb, :staff-lb, :stafflb, :staff_lb, :classifica-staff)", "Shows the staff/hoster leaderboard for weekly and all-time hosted tournaments.", "No arguments.", ":hoster-lb"),
             (":give (alias :add)", "Gives a selected currency to a member.", "<@user> <ruby|crystals|ranked-points> <amount>; admin access.", ":give @Player ruby 5000"),
             (":add-rubini (alias :add_rubini)", "Adds Ruby to a member’s profile.", "<@user> <amount>; admin access.", ":add-rubini @Player 1000"),
-            (":remove-rubini (alias :remove_rubini)", "Removes Ruby from a member’s profile.", "<@user> <amount>; admin access.", ":remove-rubini @Player 250"),
+            (":remove", "Removes a selected currency/stat from a member’s SQLite profile.", "<@user> <ruby|crystals|gems|points|tournaments|events> <amount>; admin access.", ":remove @Player ruby 250"),
             (":add-cristalli (alias :add_cristalli)", "Adds Crystals to a member’s profile.", "<@user> <amount>; admin access.", ":add-cristalli @Player 100"),
             (":add-gems (alias :add_gems)", "Adds Stumble Guys Gems directly to a member’s profile.", "<@user> <amount>; admin access.", ":add-gems @Player 50"),
             (":add-punti (alias :add_punti)", "Adds Ranked Points to a member and updates their rank where applicable.", "<@user> <amount>; admin access.", ":add-punti @Player 250"),
@@ -11580,13 +12272,13 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     staff_names = {
         "setup", "assign-hosts", "add_bot", "bracket", "match", "match-rs", "qual", "end",
         "team-winner", "close-tour", "event", "start-event", "cod-event",
-        "set-winner", "end-event", "ban-event", "reset-staff-week", "boost", "clear",
+        "set-winner", "end-event", "ban-event", "warn", "time", "reset-staff-week", "boost", "clear",
     }
     admin_names = {
         "big-tour", "big-event", "big-start", "big-event-winner",
         "leaderboard", "gems", "stumble-top", "1v1-leaderboard",
         "set-leaderboard", "set-1v1-leaderboard", "hoster-lb", "give", "add-rubini",
-        "remove-rubini", "add-cristalli", "add-gems", "add-punti", "set-rank",
+        "remove", "add-cristalli", "add-gems", "add-punti", "set-rank",
         "reset", "drop", "machine", "chest", "set-supporter", "giveaway", "setup-result",
         "setup-shop", "set-perks", "setup-p", "set-p", "set-welcome", "add-ticket", "set-tw", "log-tw", "pex", "reset-all",
     }
@@ -11631,7 +12323,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":gems": "Pubblica la classifica delle Gemme Stumble Guys ordinata dal saldo gemme di ogni profilo.",
         ":give": "Aggiunge a un membro la quantità richiesta della valuta specificata tra Ruby, Cristalli e Ranked Points.",
         ":add-rubini": "Aggiunge Ruby al profilo del membro indicato.",
-        ":remove-rubini": "Rimuove Ruby dal profilo del membro indicato, senza modificare le altre valute.",
+        ":remove": "Rimuove dal profilo SQLite del membro la quantità indicata di una valuta o statistica supportata.",
         ":add-cristalli": "Aggiunge Cristalli al profilo del membro indicato.",
         ":add-gems": "Aggiunge direttamente Gemme Stumble Guys al profilo del membro indicato.",
         ":add-punti": "Aggiunge Ranked Points al membro e ricalcola il rank quando la nuova soglia lo richiede.",
@@ -11692,7 +12384,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
         ":gems": "Stumble Guys Gems की रैंकिंग दिखाता है।",
         ":give": "सदस्य को चुनी गई मुद्रा की मात्रा देता है।",
         ":add-rubini": "सदस्य के प्रोफ़ाइल में Ruby जोड़ता है।",
-        ":remove-rubini": "सदस्य के प्रोफ़ाइल से Ruby हटाता है।",
+        ":remove": "सदस्य की SQLite प्रोफ़ाइल से चुनी गई मुद्रा या आँकड़ा हटाता है।",
         ":add-cristalli": "सदस्य के प्रोफ़ाइल में Crystals जोड़ता है।",
         ":add-gems": "सदस्य के प्रोफ़ाइल में SG Gems जोड़ता है।",
         ":add-punti": "Ranked Points जोड़कर rank अपडेट करता है।",
@@ -11856,7 +12548,18 @@ class HelpLangSelect(discord.ui.Select):
             # remains readable on mobile and stays below Discord limits.
             for embed in embeds:
                 help_file = banner_file(HELP_BANNER_PATH, HELP_BANNER_FILENAME)
-                await interaction.user.send(embed=embed, file=help_file)
+                sent_help = await _send_dm_or_closed_notice(
+                    interaction.user,
+                    channel=interaction.channel,
+                    embed=embed,
+                    file=help_file,
+                )
+                if sent_help is None:
+                    await interaction.response.send_message(
+                        "❌ I cannot DM the guide. Please enable private messages and try again.",
+                        ephemeral=True,
+                    )
+                    return
 
             # Acknowledge the component in the channel with only a private,
             # short confirmation.  Do not edit or replace the public menu.
@@ -12033,8 +12736,8 @@ STAFF_TUTORIAL_SOURCE = {
         "• `:bracket` — Generate and display the updated bracket.\n"
         "• `:end` — Conclude the active tournament or event.\n\n"
         "🛡️ **STAFF MODERATION COMMANDS:**\n"
-        "• `/warn @user <reason>` — Warn a rule-breaking user (Slash Command).\n"
-        "• `/time @user <duration> <reason>` — Timeout a user (Slash Command).\n\n"
+        "• `:warn @user <reason>` or `/warn @user <reason>` — Warn a rule-breaking user.\n"
+        "• `:time @user <duration> <reason>` or `/time @user <duration> <reason>` — Timeout a user.\n\n"
         "🤖 *Have questions or need help? Feel free to ask the AI in the dedicated channel!*\n"
         "🌐 *Click the button below to change the language.*"
     ),
@@ -12444,7 +13147,13 @@ class SGLinkModal(DetailedModal, title="🔗 Link your Stumble Guys Account"):
             )
             dm.set_image(url=LINK_EMBED_IMAGE_URL)
             dm.set_footer(text="PCF™ SG Link System")
-            await user.send(embed=dm)
+            dm_sent = await _send_dm_or_closed_notice(
+                user,
+                channel=interaction.channel,
+                embed=dm,
+            )
+            if dm_sent is None:
+                pending_sg_links.pop(str(user.id), None)
         except discord.Forbidden:
             pass
 
@@ -12519,7 +13228,11 @@ class SGLinkVerifyView(DetailedView):
                 color=discord.Color.green()
             )
             embed.set_image(url=LINK_EMBED_IMAGE_URL)
-            await member.send(embed=embed)
+            await _send_dm_or_closed_notice(
+                member,
+                channel=interaction.channel,
+                embed=embed,
+            )
         except discord.Forbidden as exc:
             print(f"[sg_verify notification] Could not DM {member.id}: {exc}")
         except discord.HTTPException as exc:
@@ -12567,7 +13280,11 @@ class SGLinkVerifyView(DetailedView):
                     color=discord.Color.red()
                 )
                 embed.set_image(url=LINK_EMBED_IMAGE_URL)
-                await member.send(embed=embed)
+                await _send_dm_or_closed_notice(
+                    member,
+                    channel=interaction.channel,
+                    embed=embed,
+                )
             except Exception:
                 pass
         await asyncio.sleep(5)
@@ -14967,6 +15684,8 @@ class DuelView(DetailedView):
             "rubies",
             pot,
         )
+        if db.get("duel_leaderboard_channel_id"):
+            await auto_duel_leaderboard()
         for child in self.children:
             child.disabled = True
         em = discord.Embed(
