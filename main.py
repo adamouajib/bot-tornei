@@ -184,6 +184,11 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "linked INTEGER NOT NULL DEFAULT 0, "
                 "chest_cooldown REAL NOT NULL DEFAULT 0, "
                 "invite_count INTEGER NOT NULL DEFAULT 0, "
+                "matches_played INTEGER NOT NULL DEFAULT 0, "
+                "wins INTEGER NOT NULL DEFAULT 0, "
+                "rubies_won INTEGER NOT NULL DEFAULT 0, "
+                "gems_won INTEGER NOT NULL DEFAULT 0, "
+                "crystals_won INTEGER NOT NULL DEFAULT 0, "
                 "profile_json TEXT NOT NULL DEFAULT '{}'"
                 ")"
             )
@@ -195,6 +200,21 @@ def _sqlite_conn() -> sqlite3.Connection:
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+            for column in (
+                "matches_played",
+                "wins",
+                "rubies_won",
+                "gems_won",
+                "crystals_won",
+            ):
+                try:
+                    _sqlite_connection.execute(
+                        f"ALTER TABLE users ADD COLUMN {column} "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
             _sqlite_connection.execute(
                 "CREATE TABLE IF NOT EXISTS invites_tracker ("
                 "guild_id TEXT NOT NULL, "
@@ -232,24 +252,74 @@ def _sqlite_conn() -> sqlite3.Connection:
             # Existing imports may already have invite_count only inside the
             # legacy profile JSON. Promote it to the indexed users column so
             # the leaderboard sees those historical totals too.
-            for user_id, profile_json, column_count in _sqlite_connection.execute(
-                "SELECT user_id, profile_json, invite_count FROM users"
+            for (
+                user_id,
+                profile_json,
+                column_count,
+                matches_played,
+                wins,
+                rubies_won,
+                gems_won,
+                crystals_won,
+            ) in _sqlite_connection.execute(
+                "SELECT user_id, profile_json, invite_count, matches_played, "
+                "wins, rubies_won, gems_won, crystals_won FROM users"
             ).fetchall():
                 try:
-                    json_count = int(
-                        (json.loads(profile_json or "{}") or {}).get(
-                            "invite_count",
-                            0,
-                        )
-                        or 0
-                    )
+                    legacy_profile = json.loads(profile_json or "{}") or {}
                 except (TypeError, ValueError, json.JSONDecodeError):
+                    legacy_profile = {}
+                if not isinstance(legacy_profile, dict):
+                    legacy_profile = {}
+                try:
+                    json_count = int(legacy_profile.get("invite_count", 0) or 0)
+                except (TypeError, ValueError):
                     json_count = 0
                 if json_count > int(column_count or 0):
                     _sqlite_connection.execute(
                         "UPDATE users SET invite_count = ? WHERE user_id = ?",
                         (json_count, user_id),
                     )
+                legacy_matches = legacy_profile.get("matches_played")
+                if legacy_matches is None:
+                    legacy_matches = (
+                        int(legacy_profile.get("duel_matches", 0) or 0)
+                        + int(legacy_profile.get("wager_matches", 0) or 0)
+                    )
+                legacy_wins = legacy_profile.get("wins")
+                if legacy_wins is None:
+                    legacy_wins = (
+                        int(legacy_profile.get("duel_wins", 0) or 0)
+                        + int(legacy_profile.get("wager_wins", 0) or 0)
+                    )
+                legacy_stats = {
+                    "matches_played": legacy_matches,
+                    "wins": legacy_wins,
+                    "rubies_won": legacy_profile.get(
+                        "rubies_won",
+                        legacy_profile.get("duel_rubies_won", 0),
+                    ),
+                    "gems_won": legacy_profile.get("gems_won", 0),
+                    "crystals_won": legacy_profile.get("crystals_won", 0),
+                }
+                current_stats = {
+                    "matches_played": matches_played,
+                    "wins": wins,
+                    "rubies_won": rubies_won,
+                    "gems_won": gems_won,
+                    "crystals_won": crystals_won,
+                }
+                for column, value in legacy_stats.items():
+                    try:
+                        legacy_value = max(0, int(value or 0))
+                        current_value = max(0, int(current_stats[column] or 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if legacy_value > current_value:
+                        _sqlite_connection.execute(
+                            f"UPDATE users SET {column} = ? WHERE user_id = ?",
+                            (legacy_value, user_id),
+                        )
             _sqlite_connection.commit()
         return _sqlite_connection
 
@@ -265,7 +335,8 @@ def _read_profile(user_id: str) -> dict:
     with _sqlite_lock:
         row = _sqlite_conn().execute(
             "SELECT profile_json, rubies, crystals, gems, linked, chest_cooldown, "
-            "invite_count "
+            "invite_count, matches_played, wins, rubies_won, gems_won, "
+            "crystals_won "
             "FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
@@ -283,6 +354,26 @@ def _read_profile(user_id: str) -> dict:
     profile["invite_count"] = max(
         int(profile.get("invite_count", 0) or 0),
         int(row[6] or 0),
+    )
+    profile["matches_played"] = max(
+        int(profile.get("matches_played", 0) or 0),
+        int(row[7] or 0),
+    )
+    profile["wins"] = max(
+        int(profile.get("wins", 0) or 0),
+        int(row[8] or 0),
+    )
+    profile["rubies_won"] = max(
+        int(profile.get("rubies_won", 0) or 0),
+        int(row[9] or 0),
+    )
+    profile["gems_won"] = max(
+        int(profile.get("gems_won", 0) or 0),
+        int(row[10] or 0),
+    )
+    profile["crystals_won"] = max(
+        int(profile.get("crystals_won", 0) or 0),
+        int(row[11] or 0),
     )
     return profile
 
@@ -497,6 +588,64 @@ def _refund_gems_transfer_request(request_id: str) -> None:
             raise
 
 
+_COMPETITIVE_STAT_CURRENCY_COLUMNS = {
+    "ruby": "rubies_won",
+    "rubies": "rubies_won",
+    "rubini": "rubies_won",
+    "gem": "gems_won",
+    "gems": "gems_won",
+    "gemme": "gems_won",
+    "crystal": "crystals_won",
+    "crystals": "crystals_won",
+    "cristalli": "crystals_won",
+}
+
+
+def _record_competitive_match_stats(
+    player_ids: list[int],
+    winner_ids: list[int],
+    currency: str,
+    amount_won: int,
+) -> None:
+    """Commit live 1v1/2v2 match totals directly to the normalized SQLite row."""
+    currency_column = _COMPETITIVE_STAT_CURRENCY_COLUMNS.get(
+        str(currency).casefold().strip()
+    )
+    if currency_column is None:
+        raise ValueError(f"Unsupported competitive currency: {currency}")
+    participants = list(dict.fromkeys(str(user_id) for user_id in player_ids))
+    winners = {str(user_id) for user_id in winner_ids}
+    payout = max(0, int(amount_won))
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for user_id in participants:
+                conn.execute(
+                    "INSERT OR IGNORE INTO users(user_id, profile_json) "
+                    "VALUES (?, '{}')",
+                    (user_id,),
+                )
+                if user_id in winners:
+                    conn.execute(
+                        "UPDATE users SET matches_played = matches_played + 1, "
+                        "wins = wins + 1, "
+                        f"{currency_column} = {currency_column} + ? "
+                        "WHERE user_id = ?",
+                        (payout, user_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE users SET matches_played = matches_played + 1 "
+                        "WHERE user_id = ?",
+                        (user_id,),
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _delete_profile(user_id: str) -> None:
     with _sqlite_lock:
         conn = _sqlite_conn()
@@ -584,6 +733,7 @@ def _normalise_legacy_profile(profile: dict, username: str) -> dict:
         "staff_week_tours", "staff_week_matches", "staff_week_rounds",
         "slot_wins", "slot_ruby_won", "duel_matches", "duel_wins",
         "duel_rubies_won", "wager_matches", "wager_wins",
+        "matches_played", "wins", "rubies_won", "gems_won", "crystals_won",
         "boost_count", "invite_count",
     ):
         try:
@@ -659,11 +809,26 @@ def _insert_user_profile(
     normalized["gemme"] = gems
     normalized["linked"] = bool(linked)
     normalized["chest_cooldown"] = chest_cooldown
+    matches_played = max(
+        int(normalized.get("matches_played", 0) or 0),
+        int(normalized.get("duel_matches", 0) or 0)
+        + int(normalized.get("wager_matches", 0) or 0),
+    )
+    wins = max(
+        int(normalized.get("wins", 0) or 0),
+        int(normalized.get("duel_wins", 0) or 0)
+        + int(normalized.get("wager_wins", 0) or 0),
+    )
+    rubies_won = max(
+        int(normalized.get("rubies_won", 0) or 0),
+        int(normalized.get("duel_rubies_won", 0) or 0),
+    )
     conn.execute(
         "INSERT OR IGNORE INTO users("
         "user_id, rubies, crystals, gems, linked, chest_cooldown, "
-        "invite_count, profile_json"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "invite_count, matches_played, wins, rubies_won, gems_won, "
+        "crystals_won, profile_json"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             str(user_id),
             rubies,
@@ -672,6 +837,11 @@ def _insert_user_profile(
             linked,
             chest_cooldown,
             normalized.get("invite_count", 0),
+            matches_played,
+            wins,
+            rubies_won,
+            int(normalized.get("gems_won", 0) or 0),
+            int(normalized.get("crystals_won", 0) or 0),
             json.dumps(normalized, ensure_ascii=False),
         ),
     )
@@ -4020,7 +4190,7 @@ MAIN_LEADERBOARD_CATEGORIES = [
     (f"{E_RP} Top 10 — Ranked Points", "punti", E_RP, discord.Color.blurple()),
 ]
 DUEL_LEADERBOARD_CATEGORIES = [
-    ("⚔️ Top 10 — 1v1 Leaderboard", "duel_wins", "⚔️", discord.Color.gold()),
+    ("⚔️ Top 10 — 1v1 Leaderboard", "wins", "⚔️", discord.Color.gold()),
 ]
 LEADERBOARD_CATEGORIES = [
     ("🏆 Top 10 — Chat XP", "xp_msg", E_LEVEL, discord.Color.from_rgb(255, 165, 0)),
@@ -4050,17 +4220,16 @@ def _read_live_leaderboard_profiles(
     live database path from end to end.
     """
     order_sql = " ORDER BY user_id ASC"
-    if sort_key == "duel_wins":
+    if sort_key in {"wins", "duel_wins"}:
         order_sql = (
-            " ORDER BY COALESCE("
-            "CAST(json_extract(profile_json, '$.duel_wins') AS INTEGER), 0"
-            ") DESC, user_id ASC"
+            " ORDER BY wins DESC, user_id ASC"
         )
     bot_user_id = str(getattr(bot.user, "id", -1))
     with _sqlite_lock:
         rows = _sqlite_conn().execute(
             "SELECT user_id, profile_json, rubies, crystals, gems, linked, "
-            "chest_cooldown, invite_count FROM users "
+            "chest_cooldown, invite_count, matches_played, wins, rubies_won, "
+            "gems_won, crystals_won FROM users "
             "WHERE user_id != ?" + order_sql,
             (bot_user_id,),
         ).fetchall()
@@ -4075,6 +4244,11 @@ def _read_live_leaderboard_profiles(
         linked,
         chest_cooldown,
         invite_count,
+        matches_played,
+        wins,
+        rubies_won,
+        gems_won,
+        crystals_won,
     ) in rows:
         try:
             raw_profile = json.loads(profile_json or "{}")
@@ -4096,6 +4270,26 @@ def _read_live_leaderboard_profiles(
         profile["invite_count"] = max(
             int(profile.get("invite_count", 0) or 0),
             int(invite_count or 0),
+        )
+        profile["matches_played"] = max(
+            int(profile.get("matches_played", 0) or 0),
+            int(matches_played or 0),
+        )
+        profile["wins"] = max(
+            int(profile.get("wins", 0) or 0),
+            int(wins or 0),
+        )
+        profile["rubies_won"] = max(
+            int(profile.get("rubies_won", 0) or 0),
+            int(rubies_won or 0),
+        )
+        profile["gems_won"] = max(
+            int(profile.get("gems_won", 0) or 0),
+            int(gems_won or 0),
+        )
+        profile["crystals_won"] = max(
+            int(profile.get("crystals_won", 0) or 0),
+            int(crystals_won or 0),
         )
         live_profiles.append((str(user_id), profile))
     return live_profiles
@@ -4152,7 +4346,7 @@ async def build_leaderboard_embeds(
 ) -> list:
     categories = MAIN_LEADERBOARD_CATEGORIES if categories is None else categories
     live_sort_key = (
-        "duel_wins"
+        "wins"
         if categories and all(category[1] == "duel_wins" for category in categories)
         else None
     )
@@ -4178,14 +4372,19 @@ async def build_leaderboard_embeds(
                     f"{medal} {rank_emoji} **{username}** — {icon} "
                     f"**{format_num(value)} XP** `(Lv. {level})`\n\n"
                 )
-            elif key == "duel_wins":
-                matches = profile.get("duel_matches", 0)
-                rubies = profile.get("duel_rubies_won", 0)
+            elif key == "wins":
+                matches = profile.get("matches_played", 0)
+                wins = profile.get("wins", 0)
+                rubies = profile.get("rubies_won", 0)
+                gems = profile.get("gems_won", 0)
+                crystals = profile.get("crystals_won", 0)
                 desc += (
-                    f"{medal} **{username}**\n"
-                    f"> 1v1 Matches: **{format_num(matches)}**\n"
-                    f"> 1v1 Wins: **{format_num(value)}**\n"
-                    f"> Rubies Won: **{format_num(rubies)}** {E_RUBY}\n\n"
+                    f"{medal} {username}\n"
+                    f"│ 1v1 Matches: {format_num(matches)}\n"
+                    f"│ 1v1 Wins: {format_num(wins)}\n"
+                    f"│ Rubies Won: {format_num(rubies)} {E_RUBY}\n"
+                    f"│ Gems Won: {format_num(gems)} {E_GEMS}\n"
+                    f"│ Crystals Won: {format_num(crystals)} {E_CRYSTAL}\n\n"
                 )
             else:
                 desc += (
@@ -5121,59 +5320,87 @@ async def twitch_live_dashboard():
 # ==========================================
 # 🔄 BACKGROUND TASKS
 # ==========================================
-@tasks.loop(minutes=5)
+async def _refresh_live_leaderboard(
+    channel_id: int | str,
+    message_ids: list[int] | None,
+    categories: list,
+    label: str,
+) -> list[int]:
+    """Edit the configured leaderboard messages using a fresh SQLite read."""
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except (TypeError, ValueError):
+        channel = None
+    if channel is None:
+        raise RuntimeError(f"[{label}] configured channel {channel_id!r} is unavailable")
+
+    embeds = await build_leaderboard_embeds(
+        updated_at=datetime.now().astimezone(),
+        categories=categories,
+    )
+    existing_ids = list(message_ids or [])
+    refreshed_ids = []
+    for index, embed in enumerate(embeds):
+        message = None
+        edited = False
+        if index < len(existing_ids):
+            message_id = existing_ids[index]
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.edit(embed=embed)
+                refreshed_ids.append(message.id)
+                edited = True
+            except discord.NotFound:
+                print(f"[{label}] Message {message_id} no longer exists; sending replacement")
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[{label}] Could not edit message {message_id}: {exc}")
+        if not edited:
+            try:
+                message = await channel.send(embed=embed)
+                refreshed_ids.append(message.id)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[{label}] Could not send refreshed embed: {exc}")
+
+    for message_id in existing_ids[len(embeds):]:
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.delete()
+        except discord.NotFound:
+            continue
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[{label}] Could not remove stale message {message_id}: {exc}")
+    return refreshed_ids
+
+
+@tasks.loop(minutes=30)
 async def auto_leaderboard():
     try:
         cid = db.get("leaderboard_channel_id")
         if not cid:
             return
-        channel = bot.get_channel(cid)
-        if not channel:
-            return
-        embeds = await build_leaderboard_embeds(
-            updated_at=datetime.now().astimezone(),
-            categories=LEADERBOARD_CATEGORIES,
+        db["leaderboard_msg_ids"] = await _refresh_live_leaderboard(
+            cid,
+            db.get("leaderboard_msg_ids", []),
+            LEADERBOARD_CATEGORIES,
+            "LEADERBOARD",
         )
-        for mid in db.get("leaderboard_msg_ids", []):
-            try:
-                msg = await channel.fetch_message(mid)
-                await msg.delete()
-            except Exception:
-                pass
-        new_ids = []
-        for embed in embeds:
-            message = await channel.send(embed=embed)
-            new_ids.append(message.id)
-        db["leaderboard_msg_ids"] = new_ids
         save_db()
     except Exception as exc:
         print(f"[LEADERBOARD] Refresh failed: {type(exc).__name__}: {exc}")
 
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=30)
 async def auto_duel_leaderboard():
     try:
         cid = db.get("duel_leaderboard_channel_id")
         if not cid:
             return
-        channel = bot.get_channel(cid)
-        if not channel:
-            return
-        embeds = await build_leaderboard_embeds(
-            updated_at=datetime.now().astimezone(),
-            categories=DUEL_LEADERBOARD_CATEGORIES,
+        db["duel_leaderboard_msg_ids"] = await _refresh_live_leaderboard(
+            cid,
+            db.get("duel_leaderboard_msg_ids", []),
+            DUEL_LEADERBOARD_CATEGORIES,
+            "1V1 LEADERBOARD",
         )
-        for mid in db.get("duel_leaderboard_msg_ids", []):
-            try:
-                msg = await channel.fetch_message(mid)
-                await msg.delete()
-            except Exception:
-                pass
-        new_ids = []
-        for embed in embeds:
-            message = await channel.send(embed=embed)
-            new_ids.append(message.id)
-        db["duel_leaderboard_msg_ids"] = new_ids
         save_db()
     except Exception as exc:
         print(f"[1V1 LEADERBOARD] Refresh failed: {type(exc).__name__}: {exc}")
@@ -8143,7 +8370,9 @@ async def team_winner(ctx):
 async def set_leaderboard(ctx, channel: discord.TextChannel):
     db["leaderboard_channel_id"] = channel.id
     save_db()
-    await ctx.send(f"✅ Leaderboard set to {channel.mention}. It will update every 5 minutes.")
+    await ctx.send(
+        f"✅ Leaderboard set to {channel.mention}. It will update every 30 minutes."
+    )
     await auto_leaderboard()
 
 
@@ -8154,7 +8383,7 @@ async def set_1v1_leaderboard(ctx, channel: discord.TextChannel):
     save_db()
     await ctx.send(
         f"✅ 1v1 leaderboard set to {channel.mention}. "
-        "It will update every 5 minutes."
+        "It will update every 30 minutes."
     )
     await auto_duel_leaderboard()
 
@@ -13344,6 +13573,9 @@ async def machine_cmd(ctx):
 
 
 WAGER_CURRENCY_LABELS = {
+    "rubies": ("rubini", E_RUBY),
+    "ruby": ("rubini", E_RUBY),
+    "rubini": ("rubini", E_RUBY),
     "gems": ("gemme", E_GEMS),
     "gem": ("gemme", E_GEMS),
     "crystals": ("cristalli", E_CRYSTAL),
@@ -13364,7 +13596,7 @@ def _wager_balance_parts(profile: MutableMapping, currency: str) -> list[tuple[s
                 "gems_pending",
             )
         )
-    else:
+    elif base_key == "cristalli":
         field_names.extend(
             (
                 "available_crystals",
@@ -13607,13 +13839,14 @@ async def two_v_two(
         return await ctx.send("❌ This command can only be used inside the server.")
     if None in (partner, opponent1, opponent2, amount, currency):
         return await ctx.send(
-            "❌ Use: `:2v2 @partner @opponent1 @opponent2 <amount> <gems|crystals>`",
+            "❌ Use: `:2v2 @partner @opponent1 @opponent2 "
+            "<amount> <gems|crystals|rubies>`",
             delete_after=8.0,
         )
     currency_key = currency.casefold()
     if currency_key not in WAGER_CURRENCY_LABELS:
         return await ctx.send(
-            "❌ Currency must be `gems` or `crystals`.",
+            "❌ Currency must be `gems`, `crystals`, or `rubies`.",
             delete_after=6.0,
         )
     if amount < 1:
@@ -13711,6 +13944,12 @@ async def two_v_two_result(
         # surrounding bot state too so this settlement is visible immediately
         # to every subsequent live leaderboard query.
         save_db()
+        _record_competitive_match_stats(
+            winners + losers,
+            winners,
+            currency,
+            payout_each,
+        )
 
     winner_mentions = []
     for user_id in winners:
@@ -14187,6 +14426,12 @@ class DuelView(DetailedView):
         prof_w["duel_rubies_won"] = prof_w.get("duel_rubies_won", 0) + pot
         prof_l["duel_matches"] = prof_l.get("duel_matches", 0) + 1
         save_db()
+        _record_competitive_match_stats(
+            [self.challenger.id, self.challenged.id],
+            [winner.id],
+            "rubies",
+            pot,
+        )
         for child in self.children:
             child.disabled = True
         em = discord.Embed(
