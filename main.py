@@ -5946,6 +5946,7 @@ async def cleanup_idle_ai_channels():
                 continue
             ai_private_channels[user_id] = channel.id
             ai_channel_last_activity.setdefault(user_id, last_seen)
+            active_ai_sessions.add(user_id)
     for user_id, last_seen in list(ai_channel_last_activity.items()):
         if (now - last_seen).total_seconds() < DM_IDLE_SECONDS:
             continue
@@ -10613,6 +10614,7 @@ async def on_message(message: discord.Message):
                 if existing:
                     ai_private_channels[message.author.id] = existing.id
                     ai_channel_last_activity[message.author.id] = datetime.utcnow()
+                    active_ai_sessions.add(message.author.id)
                     await message.channel.send(
                         f"✅ Your private chat with the PCF™ Assistant is already open: {existing.mention}"
                     )
