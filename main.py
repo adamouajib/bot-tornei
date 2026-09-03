@@ -5239,6 +5239,7 @@ async def _advance_round_if_complete(ctx, t: dict) -> bool:
     ]
     if len(winners) < 2:
         return False
+    _archive_completed_matches(t)
     t["round"] = int(t.get("round", 1)) + 1
     t["matches"] = (
         _build_ffa_matches(winners)
@@ -8564,6 +8565,124 @@ def _winner_id_for_match(t: dict, match_data: dict):
     return None
 
 
+def _archive_completed_matches(t: dict) -> None:
+    """Keep completed rounds available for final standings after advancement."""
+    history = t.setdefault("match_history", [])
+    round_number = int(t.get("round", 1) or 1)
+    for match_number, match_data in t.get("matches", {}).items():
+        if not match_data.get("winner"):
+            continue
+        # Match dictionaries are replaced when a new round starts, so copy
+        # the result before advancing. Copy the FFA loser list as well.
+        snapshot = dict(match_data)
+        snapshot["losers"] = list(match_data.get("losers", []))
+        snapshot["round_number"] = round_number
+        snapshot["match_number"] = str(match_number)
+        already_archived = any(
+            str(item.get("match_number")) == str(match_number)
+            and int(item.get("round_number", 0) or 0) == round_number
+            for item in history
+        )
+        if not already_archived:
+            history.append(snapshot)
+
+
+def _standing_player_ref(
+    t: dict,
+    match_data: dict | None,
+    player_name: str | None,
+    player_id=None,
+) -> dict | None:
+    """Return a name/ID pair that can be rendered in a results embed."""
+    if not player_name or player_name == "BYE":
+        return None
+    resolved_id = player_id
+    if resolved_id is None and match_data is not None:
+        for slot in range(1, 4):
+            if str(match_data.get(f"p{slot}")).casefold() == str(player_name).casefold():
+                resolved_id = _match_slot_player_id(t, match_data, slot)
+                break
+    return {"name": str(player_name), "id": resolved_id}
+
+
+def _final_standing_refs(t: dict, fallback_refs: list[dict]) -> list[tuple[int, list[dict]]]:
+    """Build first, second, and tied third-place references from bracket data."""
+    matches = t.get("matches", {})
+    final_match = None
+    if len(matches) == 1:
+        candidate = next(iter(matches.values()))
+        if candidate.get("p2") != "BYE":
+            final_match = candidate
+
+    first_ref = None
+    second_refs: list[dict] = []
+    if final_match is not None:
+        first_ref = _standing_player_ref(
+            t,
+            final_match,
+            final_match.get("winner"),
+            _winner_id_for_match(t, final_match),
+        )
+        final_losers = final_match.get("losers", [])
+        if not final_losers and final_match.get("loser"):
+            final_losers = [final_match["loser"]]
+        second_refs = [
+            ref
+            for ref in (
+                _standing_player_ref(t, final_match, loser)
+                for loser in final_losers
+            )
+            if ref is not None
+        ][:1]
+
+    if first_ref is None and fallback_refs:
+        first_ref = fallback_refs[0]
+    if not second_refs and len(fallback_refs) > 1:
+        second_refs = [fallback_refs[1]]
+
+    occupied = {
+        str(ref.get("id"))
+        if ref.get("id") is not None
+        else ref.get("name", "").casefold()
+        for ref in [first_ref, *second_refs]
+        if ref is not None
+    }
+    semifinal_round = int(t.get("total_rounds", t.get("round", 1)) or 1) - 1
+    third_refs: list[dict] = []
+    for match_data in t.get("match_history", []):
+        if int(match_data.get("round_number", 0) or 0) != semifinal_round:
+            continue
+        losers = match_data.get("losers", [])
+        if not losers and match_data.get("loser"):
+            losers = [match_data["loser"]]
+        for loser in losers:
+            ref = _standing_player_ref(t, match_data, loser)
+            if ref is None:
+                continue
+            key = (
+                str(ref.get("id"))
+                if ref.get("id") is not None
+                else ref.get("name", "").casefold()
+            )
+            if key not in occupied:
+                occupied.add(key)
+                third_refs.append(ref)
+
+    # Legacy tournaments and manually entered results have no match history.
+    # Preserve their explicit third-place entries as a safe fallback.
+    if not third_refs and len(fallback_refs) > 2:
+        third_refs = fallback_refs[2:]
+
+    standings: list[tuple[int, list[dict]]] = []
+    if first_ref is not None:
+        standings.append((1, [first_ref]))
+    if second_refs:
+        standings.append((2, second_refs))
+    if third_refs:
+        standings.append((3, third_refs))
+    return standings
+
+
 def _remove_player_from_future_match(
     t: dict,
     match_data: dict,
@@ -8708,6 +8827,7 @@ async def bracket(ctx, next_round: int = None):
         ]
         if len(winners) < 2:
             return await ctx.send("🏆 Only 1 winner remains — use `:winner-tour` or `:team-winner` to close!")
+        _archive_completed_matches(t)
         t["round"] = next_round
         if modalita == "FFA":
             t["matches"] = _build_ffa_matches(winners)
@@ -9212,8 +9332,9 @@ async def winner_tour(ctx, *winners: discord.Member):
         if prize_text:
             grant_prize(prize_text, member, tournament_reward=True)
         await update_rank_roles(ctx.guild, member, prof["punti"])
-    # Publish only the actual placements entered by the host, bounded by the
-    # configured prize tiers. This prevents empty 2nd/3rd/etc. rows.
+    # Publish the actual final bracket standings. The first three places are
+    # recovered from the final and semifinal results; explicit placements
+    # beyond third remain supported for larger tournaments.
     placement_medals = {
         1: "🥇",
         2: "🥈",
@@ -9225,18 +9346,42 @@ async def winner_tour(ctx, *winners: discord.Member):
         8: "🎖️",
         9: "🎖️",
     }
+    fallback_refs = [
+        {"name": member.display_name, "id": member.id}
+        for member in placements
+    ]
+    standing_refs = _final_standing_refs(t, fallback_refs)
+
+    def _display_standing_ref(ref: dict) -> str:
+        player_id = ref.get("id")
+        if player_id is not None and str(player_id).isdigit():
+            member = ctx.guild.get_member(int(player_id))
+            if member is not None:
+                return member.mention
+            return f"<@{player_id}>"
+        return f"**{ref['name']}**"
+
     result_lines = []
-    for position, member in enumerate(placements, start=1):
-        if is_big:
-            prize_text = _big_tournament_prize_for_position(t, position)
-        else:
-            prize_text = prize_map.get(position, "")
-        result_lines.append(
-            f"**{position}.** {placement_medals.get(position, '🏅')} "
-            f"{member.mention} — "
-            f"**{_format_prize(prize_text) if prize_text else 'No prize'}**"
+    for position, refs in standing_refs:
+        players_text = ", ".join(_display_standing_ref(ref) for ref in refs)
+        ordinal = {1: "1st", 2: "2nd", 3: "3rd"}.get(
+            position,
+            f"{position}th",
         )
+        result_lines.append(
+            f"{placement_medals.get(position, '🏅')} **{ordinal} Place:** "
+            f"{players_text}"
+        )
+
+    # Keep any manually entered lower placements in the published embed.
+    if len(placements) > 3:
+        for position, member in enumerate(placements[3:], start=4):
+            result_lines.append(
+                f"{placement_medals.get(position, '🏅')} "
+                f"**{position}th Place:** {member.mention}"
+            )
     result_lines = "\n".join(result_lines)
+    standing_count = sum(len(refs) for _, refs in standing_refs)
     result_prizes = format_tournament_prizes(t.get("premio", ""))
     if is_big:
         result_prizes = (
@@ -9246,7 +9391,7 @@ async def winner_tour(ctx, *winners: discord.Member):
         )
     embed = discord.Embed(
         title=f"🏆 {t.get('nome', 'Tournament')} — Results",
-        description=f"Final standings for **{len(placements)}** paid placement(s).",
+        description=f"Final standings for **{standing_count}** player(s).",
         color=discord.Color.gold()
     )
     embed.add_field(name="🎁 Prize Distribution", value=result_prizes[:1024], inline=False)
