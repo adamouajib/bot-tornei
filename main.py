@@ -598,21 +598,26 @@ _COMPETITIVE_STAT_CURRENCY_COLUMNS = {
 
 
 def _record_competitive_match_stats(
-    player_ids: list[int],
-    winner_ids: list[int],
-    currency: str,
+    player_ids: list[int | str],
+    winner_ids: list[int | str],
+    currency: str | None,
     amount_won: int,
 ) -> None:
-    """Commit one completed 1v1/2v2 result to normalized SQLite columns.
+    """Commit one completed match result to normalized SQLite columns.
 
     This deliberately bypasses the in-memory profile store. A completed
-    match is visible to commands and the 30-minute refresh loop as soon as
-    this transaction commits.
+    match is visible to commands and the automatic refresh loop as soon as
+    this transaction commits. Tournament matches pass no currency because
+    their prize handling is separate from 1v1 statistics.
     """
-    currency_column = _COMPETITIVE_STAT_CURRENCY_COLUMNS.get(
-        str(currency).casefold().strip()
+    currency_column = (
+        _COMPETITIVE_STAT_CURRENCY_COLUMNS.get(
+            str(currency).casefold().strip()
+        )
+        if currency is not None
+        else None
     )
-    if currency_column is None:
+    if currency is not None and currency_column is None:
         raise ValueError(f"Unsupported competitive currency: {currency}")
     participants = list(dict.fromkeys(str(user_id) for user_id in player_ids))
     winners = {str(user_id) for user_id in winner_ids}
@@ -628,13 +633,20 @@ def _record_competitive_match_stats(
                     (user_id,),
                 )
                 if user_id in winners:
-                    conn.execute(
-                        "UPDATE users SET matches_played = matches_played + 1, "
-                        "wins = wins + 1, "
-                        f"{currency_column} = {currency_column} + ? "
-                        "WHERE user_id = ?",
-                        (payout, user_id),
-                    )
+                    if currency_column:
+                        conn.execute(
+                            "UPDATE users SET matches_played = matches_played + 1, "
+                            "wins = wins + 1, "
+                            f"{currency_column} = {currency_column} + ? "
+                            "WHERE user_id = ?",
+                            (payout, user_id),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE users SET matches_played = matches_played + 1, "
+                            "wins = wins + 1 WHERE user_id = ?",
+                            (user_id,),
+                        )
                 else:
                     conn.execute(
                         "UPDATE users SET matches_played = matches_played + 1 "
@@ -667,6 +679,37 @@ def _record_competitive_match_stats(
         except Exception:
             conn.rollback()
             raise
+    _schedule_live_leaderboard_refresh("wins")
+
+
+def _record_tournament_1v1_stats(
+    tournament: dict,
+    match_data: dict,
+    winner_id,
+) -> None:
+    """Record a completed standard tournament 1v1 in the live leaderboard."""
+    participant_ids = []
+    for slot in (1, 2):
+        player_id = _match_slot_player_id(tournament, match_data, slot)
+        if player_id is not None and str(player_id).isdigit():
+            participant_ids.append(int(player_id))
+
+    if winner_id is not None and str(winner_id).isdigit():
+        winner_id = int(winner_id)
+        participant_ids.append(winner_id)
+        winner_ids = [winner_id]
+    else:
+        winner_ids = []
+
+    participant_ids = list(dict.fromkeys(participant_ids))
+    if not participant_ids:
+        return
+    _record_competitive_match_stats(
+        participant_ids,
+        winner_ids,
+        None,
+        0,
+    )
 
 
 def _delete_profile(user_id: str) -> None:
@@ -1896,6 +1939,9 @@ def display_with_rank(
     role_badges = _bracket_role_badges(member)
     badge_text = f" {' '.join(role_badges)}" if role_badges else ""
     return f"{rank_emoji} {formatted_name}{purchased_w}{badge_text}"
+
+
+BRACKET_VS_EMOJI = "<:VS:1388988636485390477>"
 
 
 _invite_cache: dict[int, dict[str, dict[str, int | None]]] = {}
@@ -5064,28 +5110,28 @@ def generate_bracket_embeds(tournament: dict | None = None) -> list[tuple]:
                 s1 = f"~~{d1}~~" if p1 in losers else (f"**{d1}**" if p1 == win else d1)
                 s2 = f"~~{d2}~~" if p2 in losers else (f"**{d2}**" if p2 == win else d2)
                 s3 = f"~~{d3}~~" if p3 in losers else (f"**{d3}**" if p3 == win else d3)
-                match_lines.append(f"✅ **Match #{m_id}** — FFA Done\n　{s1} ⚔️ {s2} ⚔️ {s3}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
+                match_lines.append(f"**Match #{m_id}**\n{s1} {BRACKET_VS_EMOJI} {s2} {BRACKET_VS_EMOJI} {s3}\n✅ FFA Done\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
             elif in_prog:
-                match_lines.append(f"💥 **Match #{m_id}** — FFA In Progress\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n\n")
+                match_lines.append(f"**Match #{m_id}**\n{d1} {BRACKET_VS_EMOJI} {d2} {BRACKET_VS_EMOJI} {d3}\n💥 FFA In Progress\n━━━━━━━━━━━━━━━━\n\n")
             else:
-                match_lines.append(f"⏳ **Match #{m_id}** — FFA\n　{d1} ⚔️ {d2} ⚔️ {d3}\n━━━━━━━━━━━━━━━━\n\n")
+                match_lines.append(f"**Match #{m_id}**\n{d1} {BRACKET_VS_EMOJI} {d2} {BRACKET_VS_EMOJI} {d3}\n━━━━━━━━━━━━━━━━\n\n")
         else:
             d2 = display_with_rank(p2, member_map) if p2 != "BYE" else "~~BYE~~"
             if p2 == "BYE":
                 if win:
-                    match_lines.append(f"✅ **Match #{m_id}** — Done\n　**{d1}** ⚔️ {d2}\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n\n")
+                    match_lines.append(f"**Match #{m_id}**\n**{d1}** {BRACKET_VS_EMOJI} {d2}\n✅ Done\n　🏅 Winner: **{d1}**\n━━━━━━━━━━━━━━━━\n\n")
                 else:
-                    match_lines.append(f"⏳ **Match #{m_id}**\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
+                    match_lines.append(f"**Match #{m_id}**\n{d1} {BRACKET_VS_EMOJI} {d2}\n━━━━━━━━━━━━━━━━\n\n")
             elif win:
                 los = m_data.get("loser")
                 s1  = f"~~{d1}~~" if los == p1 else f"**{d1}**"
                 s2  = f"~~{d2}~~" if los == p2 else f"**{d2}**"
                 dw  = display_with_rank(win, member_map)
-                match_lines.append(f"✅ **Match #{m_id}** — Done\n　{s1} ⚔️ {s2}\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
+                match_lines.append(f"**Match #{m_id}**\n{s1} {BRACKET_VS_EMOJI} {s2}\n✅ Done\n　🏅 Winner: **{dw}**\n━━━━━━━━━━━━━━━━\n\n")
             elif in_prog:
-                match_lines.append(f"💥 **Match #{m_id}** — In Progress\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
+                match_lines.append(f"**Match #{m_id}**\n{d1} {BRACKET_VS_EMOJI} {d2}\n💥 In Progress\n━━━━━━━━━━━━━━━━\n\n")
             else:
-                match_lines.append(f"⏳ **Match #{m_id}**\n　{d1} ⚔️ {d2}\n━━━━━━━━━━━━━━━━\n\n")
+                match_lines.append(f"**Match #{m_id}**\n{d1} {BRACKET_VS_EMOJI} {d2}\n━━━━━━━━━━━━━━━━\n\n")
 
     if not match_lines:
         match_lines = ["*No matches yet.*\n"]
@@ -8901,6 +8947,12 @@ async def qual(ctx):
                 m["p1"],
                 _match_slot_player_id(t, m, 2),
             )
+        if modalita not in TEAM_MODES and modalita != "FFA":
+            _record_tournament_1v1_stats(
+                t,
+                m,
+                _winner_id_for_match(t, m),
+            )
         save_db()
         await ctx.send(f"✅ **{m['winner']}** qualified (bot)!", delete_after=5.0)
         await _update_bracket_messages(t)
@@ -9011,6 +9063,7 @@ async def qual(ctx):
             else win_name
         )
         await _give_xp_and_rank(ctx, winner, match_data, winner_name)
+        _record_tournament_1v1_stats(t, match_data, winner.id)
         await assign_winner_role(ctx.guild, winner)
 
     save_db()
