@@ -1906,7 +1906,7 @@ def display_with_rank(
     name: str,
     member_map: dict[str, discord.Member] | None = None,
 ) -> str:
-    """Return a bracket slot using live usernames and role badges."""
+    """Return a bracket slot with player tags immediately before the name."""
     player_name = str(name)
     if " × " in player_name:
         return " × ".join(
@@ -1938,7 +1938,7 @@ def display_with_rank(
     purchased_w = f" {''.join(owned_w_items)}" if owned_w_items else ""
     role_badges = _bracket_role_badges(member)
     badge_text = f" {' '.join(role_badges)}" if role_badges else ""
-    return f"{rank_emoji} {formatted_name}{purchased_w}{badge_text}"
+    return f"{rank_emoji}{purchased_w}{badge_text} {formatted_name}"
 
 
 BRACKET_VS_EMOJI = "<:VS:1388988636485390477>"
