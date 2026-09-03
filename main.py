@@ -374,6 +374,47 @@ def _read_profile(user_id: str) -> dict:
     return profile
 
 
+def _read_linked_stumble_name(user_id: int | str) -> str:
+    """Read the linked SG name directly from the persistent SQLite records."""
+    uid = str(user_id)
+    with _sqlite_lock:
+        conn = _sqlite_conn()
+        row = conn.execute(
+            "SELECT profile_json FROM users WHERE user_id = ?",
+            (uid,),
+        ).fetchone()
+        state_row = conn.execute(
+            "SELECT value_json FROM state WHERE key = 'sg_links'",
+        ).fetchone()
+
+    profile_data = {}
+    if row:
+        try:
+            profile_data = json.loads(row[0] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            profile_data = {}
+    if not isinstance(profile_data, dict):
+        profile_data = {}
+
+    for key in ("sg_name", "stumble_id", "linked_account"):
+        value = profile_data.get(key)
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("username")
+        if str(value or "").strip():
+            return str(value).strip()
+
+    if state_row:
+        try:
+            links = json.loads(state_row[0] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            links = {}
+        if isinstance(links, dict):
+            value = links.get(uid)
+            if str(value or "").strip():
+                return str(value).strip()
+    return ""
+
+
 def _profile_column_values(profile: dict, existing: sqlite3.Row | None = None) -> tuple[int, int, int, int, float]:
     """Map the bot's legacy profile keys to the normalized users columns."""
     def integer_value(key: str, fallback: int = 0) -> int:
@@ -1889,6 +1930,11 @@ async def assign_yellow_w_role(
         except (discord.Forbidden, discord.HTTPException) as exc:
             print(f"[yellow W] Could not assign protected role: {exc}")
             return False
+    prof = get_profile(member.id, member.display_name)
+    owned_items = list(prof.get("w_owned", []))
+    if "Yellow" not in owned_items:
+        owned_items.append("Yellow")
+        prof["w_owned"] = owned_items
     return True
 
 def get_profile_by_name(name: str):
@@ -7118,10 +7164,94 @@ async def ban_event(ctx, member: discord.Member, channel: discord.TextChannel):
 # ==========================================
 # 👤 PROFILO ED ECONOMIA
 # ==========================================
+def _profile_won_tags(profile: dict) -> list[str]:
+    """Build the profile's earned W badges and tournament/event titles."""
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def add_tag(value) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = text.casefold()
+        if key not in seen:
+            seen.add(key)
+            tags.append(text)
+
+    def add_entry(entry) -> None:
+        if isinstance(entry, dict):
+            emoji = str(
+                entry.get("emoji")
+                or entry.get("icon")
+                or entry.get("emote")
+                or ""
+            ).strip()
+            label = str(
+                entry.get("title")
+                or entry.get("name")
+                or entry.get("tag")
+                or entry.get("label")
+                or ""
+            ).strip()
+            add_tag(f"{emoji} {label}".strip() if emoji else label)
+        elif isinstance(entry, (list, tuple, set)):
+            for nested in entry:
+                add_entry(nested)
+        else:
+            add_tag(entry)
+
+    # Support the existing and any older profile JSON names for earned tags.
+    for key in (
+        "won_tags",
+        "won_badges",
+        "earned_tags",
+        "earned_badges",
+        "titles",
+    ):
+        add_entry(profile.get(key))
+
+    owned_items = profile.get("w_owned", [])
+    if isinstance(owned_items, (list, tuple, set)):
+        w_items = globals().get("W_ITEMS", {})
+        for item in owned_items:
+            item_name = str(item or "").strip()
+            if not item_name:
+                continue
+            if item_name.casefold() in {"yellow", "w yellow", "w gialla"}:
+                add_tag(f"{EMOJIS['w_yellow']} **W gialla**")
+            elif item_name.casefold() == "w":
+                add_tag(f"{E_W} **W — Tournament Winner**")
+            elif item_name in w_items:
+                add_tag(
+                    f"{w_items[item_name]['emoji']} **W {item_name}**"
+                )
+            else:
+                add_tag(item_name)
+
+    try:
+        tournament_wins = max(0, int(profile.get("tornei_v", 0) or 0))
+    except (TypeError, ValueError):
+        tournament_wins = 0
+    if tournament_wins:
+        add_tag(f"{E_TROPHY} **Tournament Winner ×{tournament_wins}**")
+
+    try:
+        event_wins = max(0, int(profile.get("eventi_v", 0) or 0))
+    except (TypeError, ValueError):
+        event_wins = 0
+    if event_wins:
+        add_tag(f"⚡ **Event Winner ×{event_wins}**")
+
+    return tags
+
+
 @bot.command()
 async def profile(ctx, member: discord.Member = None):
     target = member or ctx.author
     prof   = get_profile(target.id, target.display_name)
+    discord_username = f"@{target.name}"
+    linked_sg_name = _read_linked_stumble_name(target.id) or "Not linked"
+    won_tags = _profile_won_tags(prof)
     punti  = prof["punti"]
     _, _, rank_emoji, rank_name = get_rank_info(punti)
     next_rank = next((e for e in RANK_DATA if e[0] > punti), None)
@@ -7140,6 +7270,14 @@ async def profile(ctx, member: discord.Member = None):
                     f"Profile for {target.mention} · personal progress and statistics",
         color=discord.Color.blue()
     )
+    embed.add_field(
+        name="👤 Accounts",
+        value=(
+            f"**Discord:** `{discord_username}`\n"
+            f"**Stumble Guys:** `{linked_sg_name}`"
+        ),
+        inline=False,
+    )
     level_msg = prof.get("level_msg", 0)
     embed.add_field(name=f"{E_RP} Ranked Points",
         value=f"**{format_num(punti)}** Ranked Points\n{prog}", inline=False)
@@ -7149,6 +7287,11 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(name="🏅 Statistics",
          value=f"{E_TROPHY} **{prof['tornei_v']}** tournaments won · {E_TROPHY} **{prof['eventi_v']}** events won",
         inline=False)
+    embed.add_field(
+        name="🏆 Won Tags / Titles",
+        value="\n".join(won_tags)[:1024] if won_tags else "No won tags or titles yet.",
+        inline=False,
+    )
     embed.add_field(name=f"{E_XP} Chat Level",
          value=f"Level **{level_msg}** · {format_num(prof.get('xp_msg',0))} {E_XP} XP",
         inline=True)
