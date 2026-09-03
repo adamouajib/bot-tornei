@@ -3591,9 +3591,10 @@ TOURNAMENTS
   optional maximum players, region, notes, and embed color. The default maximum
   is 30 for FFA and 32 for other formats. The registration panel has Register,
   Unregister, Players, and Host controls.
- - To register for any tournament, a member must have invited at least one person
-   into this server. They do not need to join another server; the invite can be
-   created and used here. Registration is done with the active tournament panel.
+ - Classic/regular tournaments do not check invite history or the Linked role.
+   Registration is done with the active tournament panel. Big Tournaments check
+   both requirements: the member must have invited at least one person and must
+   have the Linked role.
 - Team formats require a team before registration. :team accepts mentioned
   players or Bot slots, supports 2 to 8 total players, and creates modes from
   2V2 through 8V8. Real invitees have 2 minutes to accept. A team can then
@@ -3616,10 +3617,10 @@ TOURNAMENTS
 BIG TOURNAMENTS AND BIG EVENTS
 - :big-tour is the setup entry point for a Big Tournament. It supports
   Classic and FFA, announces the registration, and requires every registrant
-  to have the Linked role. The administrator configures the
+  to have both the 1 Invite eligibility and Linked roles. The administrator configures the
   schedule, prizes, and capacity just like a tournament.
 - A Big Tournament is not the same as a Big Event. A Big Tournament is a
-  player bracket with Linked-role gating. A Big Event is
+  player bracket with invite and Linked-role gating. A Big Event is
   an administrator-configured event with a name, schedule, and separate first,
   second, and third prizes.
 - :big-event configures a Big Event; :big-start announces it with @everyone;
@@ -3931,11 +3932,10 @@ def build_ai_system_instruction() -> str:
          "- TOURNAMENT REGISTRATION (STRICT): Never tell a normal user to use "
          "`:setup`. Instruct exactly: \"Vai nel canale dei tornei e premi il "
          "pulsante 'Iscriviti / Register' sotto al tabellone del torneo attivo.\"\n"
-         "- TOURNAMENT REGISTRATION (CLASSIC/BIG): If a user asks how to register "
-         "for a tournament, answer specifically: \"For Classic Tournaments, just "
-         "click the Register button. For Big Tournaments, you need an invite "
-         "(get link in #get-link) and to link your SG account in the designated "
-         "channel.\"\n"
+          "- TOURNAMENT REGISTRATION (CLASSIC/BIG): If a user asks how to register "
+          "for a tournament, answer specifically: \"For Classic Tournaments, "
+          "just click the Register button; there is no invite or Linked check. "
+          "For Big Tournaments, you need both an invite and the Linked role.\"\n"
          "- CREDITS (STRICT): The Server Creator/Owner is Piccolofe and the Bot "
          "Creator/Developer is Adam. For public announcements, say exactly: "
          "\"Bot created by Adam with the help of Piccolofe\".\n"
@@ -7500,7 +7500,7 @@ class TourRegisterView(DetailedView):
                 return await interaction.followup.send("❌ No active tournament.", ephemeral=True)
             modalita = t.get("modalita", "1V1")
             uid      = str(interaction.user.id)
-            if uid not in t["players"]:
+            if t.get("is_big") and uid not in t["players"]:
                 invited = await _has_invited_member(interaction.guild, interaction.user.id)
                 if invited is None:
                     return await interaction.followup.send(
@@ -8045,7 +8045,12 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     info_val += f"\n\n🆔 **Tournament ID:** `{tourney_id}`"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
     rules_text = (
-        TOURNAMENT_RULES_WITH_INVITE_TEXT
+        (
+            "📌 **Big Tournament requirements:**\n"
+            "• Invite at least 1 member to the server.\n"
+            "• Have the **Linked** role.\n\n"
+            f"{TOURNAMENT_RULES_TEXT}"
+        )
         if is_big
         else TOURNAMENT_RULES_TEXT
     )
@@ -8398,9 +8403,9 @@ async def setup_tour_hub(ctx):
             "*Admin only — 9 / 27-player brackets*\n\n"
             "🌍 **World Cup** — Bracket tournament, earn 🌐 **WC Points**\n"
             "*Admin only*\n\n"
-            "📜 **Rules:** Players need the **1 Invite** role to register. "
-            "Follow the host's instructions, be ready on time and respect staff decisions.\n\n"
-            f"{PERSONAL_INVITE_NOTICE}\n\n"
+            "📜 **Rules:** Classic tournaments do not check invites or the "
+            "Linked role. Follow the host's instructions, be ready on time and "
+            "respect staff decisions.\n\n"
             "─────────────────────────────────────\n\n"
             "📐 Bracket **auto-generates** when slots fill\n"
             "📬 Hosts are **notified via DM** with their matches"
@@ -8434,8 +8439,9 @@ async def big_tour(ctx):
             "Select the Big Tournament type!\n\n"
             "🏆 **Classic** · 🎯 **FFA**\n\n"
             "⚠️ Tournament announcements currently ping **@everyone**!\n"
-            "Only players with the **Linked** role can register.\n\n"
-            f"{PERSONAL_INVITE_NOTICE}"
+            "Players need both the **1 Invite** requirement and the **Linked** "
+            "role to register."
+            f"\n\n{PERSONAL_INVITE_NOTICE}"
         ),
         color=discord.Color.from_rgb(255, 215, 0)
     )
@@ -11636,7 +11642,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "tours_title": "🏆 TOURNAMENTS",
             "tours": (
                 "`:setup` — Posts the Tournament Hub embed with **3 buttons** (Classic / FFA / World Cup). Clicking a button opens a **3-step modal** to configure: ① Name, Map, Ability, Prize → ② Start time, Max players, Region → ③ Host notes, Embed colour. The announcement is sent to the registration channel and pings the tournament role.\n"
-                "`:big-tour` — Like `:setup` but for Big Tournaments: pings @everyone, requires the Linked role to register. Admin only.\n"
+                 "`:big-tour` — Like `:setup` but for Big Tournaments: pings @everyone, requires both the 1 Invite requirement and the Linked role to register. Admin only.\n"
                 "`:match <#> <code>` — Sends the room code for match number `#` and marks it 💥 in-progress on the bracket.\n"
                 "`:qual @winner` — Registers the winner of a 1v1 match, awards Ranked Points and updates the bracket.\n"
                 "`:bracket [round]` — **No round**: generates the bracket from current players (min 2). **With round**: advances to the next round once all matches are complete.\n"
@@ -11702,7 +11708,7 @@ def _build_legacy_help_embeds(lang: str) -> list[discord.Embed]:
             "tours_title": "🏆 TORNEI",
             "tours": (
                 "`:setup` — Posta l'Hub Torneo nel canale: crea un embed con **3 pulsanti** (Classic / FFA / World Cup). Cliccando si apre un **modal a 3 step** → ① Nome, Mappa, Abilità, Premio → ② Orario, Max giocatori, Regione → ③ Note host, Colore embed. Il torneo viene annunciato nel canale registrazioni con ping al ruolo torneo.\n"
-                "`:big-tour` — Come `:setup` ma per Big Tournament: pinga @everyone e richiede account SG verificato per registrarsi. Solo Admin.\n"
+                 "`:big-tour` — Come `:setup` ma per Big Tournament: pinga @everyone e richiede sia il requisito 1 Invite sia il ruolo Linked per registrarsi. Solo Admin.\n"
                 "`:match <#> <codice>` — Invia il codice stanza per il match numero `#` e lo segna 💥 in corso nel bracket.\n"
                 "`:qual @vincitore` — Registra il vincitore di un match 1v1, assegna Ranked Points e aggiorna il bracket.\n"
                 "`:bracket [round]` — **Senza round**: genera il bracket dai giocatori attuali (minimo 2). **Con round**: avanza al round successivo quando tutti i match sono completati.\n"
@@ -12220,8 +12226,8 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # so a user can run a command without opening the source code.
     commands_by_page = [
         [
-            (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons. Players need the 1 Invite role to register.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
-            (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires the 1 Invite role plus a verified SG account for registration.", "No text arguments; admin access.", ":big-tour"),
+            (":setup (alias :setup-tour-hub)", "Posts the Tournament Hub and opens the Classic, FFA and World Cup registration buttons. Classic/regular tournaments do not check invites or the Linked role.", "No text arguments; configure the tournament through the buttons and modals. Hoster/admin access.", ":setup"),
+            (":big-tour", "Posts the Big Tournament hub, announces it broadly and requires both the 1 Invite requirement and the Linked role for registration.", "No text arguments; admin access.", ":big-tour"),
             (":setup-getlink", "Posts the English personal invite-link panel. Each member can generate a unique permanent server invite privately.", "No text arguments; admin access.", ":setup-getlink"),
             (":assign-hosts (alias :assign_hosts)", "Distributes the active tournament’s matches among registered hosts.", "No arguments; hoster/admin access.", ":assign-hosts"),
             (":add_bot (alias :add-bot)", "Adds bot players to the active tournament without creating a bracket.", "[n] optional number of bots; defaults to 1. Run :add_bot afterwards.", ":add_bot 2"),
@@ -12327,7 +12333,7 @@ def _build_help_embeds(lang: str) -> list[discord.Embed]:
     # Server-facing embeds and confirmations remain English.
     italian_descriptions = {
         ":setup": "Pubblica l’Hub Torneo e apre i pulsanti di iscrizione per Classic, FFA e World Cup; la configurazione continua tramite i modal.",
-        ":big-tour": "Pubblica l’hub del Big Tournament, annuncia l’apertura al server e richiede il ruolo Linked per iscriversi.",
+        ":big-tour": "Pubblica l’hub del Big Tournament, annuncia l’apertura al server e richiede sia il requisito 1 Invite sia il ruolo Linked per iscriversi.",
         ":assign-hosts": "Distribuisce tra gli host registrati i match del torneo attivo, così ogni partita può essere gestita dal proprio host.",
         ":add_bot": "Aggiunge alla lista del torneo il numero indicato di giocatori bot senza creare il bracket; il bracket va generato dopo con `:add_bot`.",
         ":bracket": "Crea il primo bracket dai giocatori iscritti oppure fa avanzare il torneo al round indicato quando i match del round corrente sono terminati.",
@@ -12703,7 +12709,9 @@ OFFICIAL_ANNOUNCEMENT_SOURCE = (
             "🏆 **Match Code:** When your match starts, Tournament Hosts send the "
             "room code directly to your DMs. Keep your Discord DMs open so you do "
             "not miss it.\n\n"
-            f"{TOURNAMENT_REQUIREMENT_BLOCK}\n\n"
+            "📌 **Classic Tournament registration:** Press the Register button; "
+            "there is no invite or Linked check. Big Tournaments require both "
+            "an invite and the Linked role.\n\n"
             "Help us grow this community and make it even better! 🌱✨"
         ),
     },
