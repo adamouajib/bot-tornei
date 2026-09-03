@@ -1441,6 +1441,12 @@ MANAGER_ROLE_IDS     = {
 MEMBER_ROLE_ID       = 1410695955308871703
 STUMBLE_STAFF_ROLE_ID = STAFF_ROLES["staff"]  # given to accepted staff applicants (channel access)
 
+# This role is deliberately protected from generic join, shop, and tournament
+# role paths.  The server has used both the Italian and English name over time.
+YELLOW_W_ROLE_NAMES = frozenset({"w gialla", "w yellow"})
+YELLOW_W_ADMIN_SOURCE = "admin_command"
+YELLOW_W_BIG_TOURNAMENT_SOURCE = "big_tournament_champion"
+
 # ── Channel restrictions ─────────────────────────────────────────────────────
 SOCIAL_ONLY_CH  = 1410696034232963273   # supporter / team / boost / link / gems only
 SHOP_ONLY_CH    = 1410696028419788891   # persistent shop panel only — all other msgs deleted
@@ -1752,6 +1758,34 @@ def get_rank_info(punti: int):
 def get_rank_emoji(punti: int) -> str:
     return get_rank_info(punti)[2]
 
+
+MATCH_WIN_RP = 100
+
+
+async def _award_match_rp(
+    guild: discord.Guild,
+    member: discord.Member,
+    *,
+    notification_target=None,
+) -> None:
+    """Award RP immediately for one officially recorded match victory."""
+    prof = get_profile(member.id, member.display_name)
+    old_pts = prof["punti"]
+    prof["punti"] += MATCH_WIN_RP
+    await update_rank_roles(guild, member, prof["punti"])
+
+    old_rank = get_rank_info(old_pts)
+    new_rank = get_rank_info(prof["punti"])
+    if notification_target is not None and new_rank[0] > old_rank[0]:
+        try:
+            await notification_target.send(
+                f"🎉 {member.mention} → **{new_rank[3]}** {new_rank[2]}!",
+                delete_after=10.0,
+            )
+        except Exception:
+            pass
+
+
 async def update_rank_roles(guild: discord.Guild, member: discord.Member, punti: int):
     """Remove all rank roles and assign the correct one."""
     _, new_role_id, _, new_rank_name = get_rank_info(punti)
@@ -1807,6 +1841,55 @@ async def assign_winner_role(guild: discord.Guild, member: discord.Member) -> No
     if "W" not in owned_items:
         owned_items.append("W")
         prof["w_owned"] = owned_items
+
+
+def _is_yellow_w_role(role: discord.Role | None) -> bool:
+    """Identify the protected yellow W role by its server-facing name."""
+    return bool(
+        role
+        and str(getattr(role, "name", "")).strip().casefold()
+        in YELLOW_W_ROLE_NAMES
+    )
+
+
+def _find_yellow_w_role(guild: discord.Guild) -> discord.Role | None:
+    """Find the existing protected yellow W role without creating aliases."""
+    return discord.utils.find(_is_yellow_w_role, guild.roles)
+
+
+async def assign_yellow_w_role(
+    guild: discord.Guild,
+    member: discord.Member,
+    *,
+    source: str,
+) -> bool:
+    """Assign yellow W only from an explicitly approved award path."""
+    if source not in {
+        YELLOW_W_ADMIN_SOURCE,
+        YELLOW_W_BIG_TOURNAMENT_SOURCE,
+    }:
+        print(f"[yellow W] Blocked unapproved assignment source: {source!r}")
+        return False
+
+    role = _find_yellow_w_role(guild)
+    if role is None:
+        try:
+            role = await guild.create_role(
+                name="W gialla",
+                color=discord.Color.gold(),
+                reason="Create protected yellow W role",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[yellow W] Could not create protected role: {exc}")
+            return False
+
+    if _is_yellow_w_role(role) and role not in member.roles:
+        try:
+            await member.add_roles(role, reason=f"Yellow W award: {source}")
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[yellow W] Could not assign protected role: {exc}")
+            return False
+    return True
 
 def get_profile_by_name(name: str):
     name_lower = name.lower()
@@ -4954,16 +5037,11 @@ class FinalWinnerModal(DetailedModal, title="🏆 Set winner"):
             member = interaction.guild.get_member(int(winner_id))
             if member:
                 await assign_winner_role(interaction.guild, member)
-                prof = get_profile(member.id, member.display_name)
-                old_pts = prof["punti"]
-                prof["punti"] += 100
-                await update_rank_roles(interaction.guild, member, prof["punti"])
-                if get_rank_info(prof["punti"])[0] > get_rank_info(old_pts)[0]:
-                    new_rank = get_rank_info(prof["punti"])
-                    await interaction.channel.send(
-                        f"🎉 {member.mention} → **{new_rank[3]}** {new_rank[2]}!",
-                        delete_after=10.0,
-                    )
+                await _award_match_rp(
+                    interaction.guild,
+                    member,
+                    notification_target=interaction.channel,
+                )
         save_db()
         await interaction.response.send_message(
             f"✅ Winner recorded: **{winner}** (player {self.winner_number.value}).",
@@ -6344,6 +6422,13 @@ async def on_member_join(member: discord.Member):
         # inviter's historical total before assigning their role.
         inviter_id = await _track_joining_member_invite(member)
     member_role = guild.get_role(MEMBER_ROLE_ID)
+    # Never let a misconfigured MEMBER_ROLE_ID grant the protected yellow W.
+    if _is_yellow_w_role(member_role):
+        print(
+            f"[on_member_join] Blocked protected yellow W assignment to "
+            f"{member.id}; check MEMBER_ROLE_ID."
+        )
+        member_role = None
     if member_role:
         try:
             await member.add_roles(member_role, reason="Automatically assign Member role")
@@ -7129,6 +7214,30 @@ async def give(ctx, member: discord.Member, cosa: str, quantita: int):
     )
     embed.set_footer(text=f"By {ctx.author.display_name}")
     await ctx.send(embed=embed, delete_after=10.0)
+
+
+@bot.command(
+    name="give-yellow-w",
+    aliases=["give_yellow_w", "assign-yellow-w", "assign_yellow_w"],
+)
+@admin_only()
+async def give_yellow_w(ctx, member: discord.Member):
+    """Admin-only award path for the protected yellow W role."""
+    assigned = await assign_yellow_w_role(
+        ctx.guild,
+        member,
+        source=YELLOW_W_ADMIN_SOURCE,
+    )
+    if not assigned:
+        return await ctx.send(
+            "❌ The protected **W gialla** role could not be assigned. "
+            "Check the role name and bot role hierarchy.",
+            delete_after=8.0,
+        )
+    await ctx.send(
+        f"✅ **W gialla** assigned to {member.mention}.",
+        delete_after=8.0,
+    )
 
 
 @bot.command(name="remove")
@@ -8892,17 +9001,7 @@ async def _give_xp_and_rank(ctx, member, match_data, win_slot):
     else:
         winner_name, loser = p2, p1
     _set_match_result(match_data, winner_name, loser, member.id)
-    prof    = get_profile(member.id, member.display_name)
-    old_pts = prof["punti"]
-    prof["punti"] += 100
-    await update_rank_roles(ctx.guild, member, prof["punti"])
-    old_rank = get_rank_info(old_pts)
-    new_rank = get_rank_info(prof["punti"])
-    if new_rank[0] > old_rank[0]:
-        try:
-            await ctx.send(f"🎉 {member.mention} → **{new_rank[3]}** {new_rank[2]}!", delete_after=10.0)
-        except Exception:
-            pass
+    await _award_match_rp(ctx.guild, member, notification_target=ctx)
 
 @bot.command()
 @hoster_only()
@@ -8995,13 +9094,11 @@ async def qual(ctx):
                 mbr = ctx.guild.get_member(int(uid))
                 if mbr:
                     await assign_winner_role(ctx.guild, mbr)
-                    prof    = get_profile(mbr.id, mbr.display_name)
-                    old_pts = prof["punti"]
-                    prof["punti"] += 100
-                    await update_rank_roles(ctx.guild, mbr, prof["punti"])
-                    if get_rank_info(prof["punti"])[0] > get_rank_info(old_pts)[0]:
-                        nr = get_rank_info(prof["punti"])
-                        await ctx.send(f"🎉 {mbr.mention} → **{nr[3]}** {nr[2]}!", delete_after=10.0)
+                    await _award_match_rp(
+                        ctx.guild,
+                        mbr,
+                        notification_target=ctx,
+                    )
             except Exception:
                 pass
 
@@ -9033,14 +9130,8 @@ async def qual(ctx):
         m["losers"] = losers
         m["in_progress"] = False
         m["status"] = "completed"
-        prof    = get_profile(winner.id, win_name)
         await assign_winner_role(ctx.guild, winner)
-        old_pts = prof["punti"]
-        prof["punti"] += 100
-        await update_rank_roles(ctx.guild, winner, prof["punti"])
-        if get_rank_info(prof["punti"])[0] > get_rank_info(old_pts)[0]:
-            nr = get_rank_info(prof["punti"])
-            await ctx.send(f"🎉 {winner.mention} → **{nr[3]}** {nr[2]}!", delete_after=10.0)
+        await _award_match_rp(ctx.guild, winner, notification_target=ctx)
 
     else:
         if not mentions:
@@ -9378,10 +9469,15 @@ async def winner_tour(ctx, *winners: discord.Member):
             prize_text = prize_map.get(position, "")
         if position == 1:
             first_prize_text = prize_text
+        if is_big and position == 1:
+            await assign_yellow_w_role(
+                ctx.guild,
+                member,
+                source=YELLOW_W_BIG_TOURNAMENT_SOURCE,
+            )
         await assign_winner_role(ctx.guild, member)
         prof = get_profile(member.id, member.display_name)
         prof["tornei_v"] += 1 if position == 1 else 0
-        prof["punti"] += 100 if position == 1 else 0
         if prize_text:
             grant_prize(prize_text, member, tournament_reward=True)
         await update_rank_roles(ctx.guild, member, prof["punti"])
@@ -9449,7 +9545,11 @@ async def winner_tour(ctx, *winners: discord.Member):
     )
     embed.add_field(name="🎁 Prize Distribution", value=result_prizes[:1024], inline=False)
     embed.add_field(name="🏆 Final Standings", value=result_lines[:1024], inline=False)
-    embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points",       inline=True)
+    embed.add_field(
+        name=f"{E_RP} Match rewards",
+        value=f"+{MATCH_WIN_RP} RP per match win",
+        inline=True,
+    )
     embed.add_field(name="🗺️ Map",       value=t["mappa"],                  inline=True)
     embed.add_field(name="⚡ Ability",    value=t["emote"],                  inline=True)
     embed.set_thumbnail(url=winner.display_avatar.url)
@@ -9564,7 +9664,11 @@ async def team_winner(ctx):
         ),
         inline=False,
     )
-    embed.add_field(name=f"{E_RP} Bonus", value="+100 Ranked Points each",          inline=True)
+    embed.add_field(
+        name=f"{E_RP} Match rewards",
+        value=f"+{MATCH_WIN_RP} RP per match win",
+        inline=True,
+    )
     embed.add_field(name="🗺️ Map",       value=t.get("mappa","—"),                 inline=True)
     embed.add_field(name="⚡ Ability",    value=t.get("emote","—"),                 inline=True)
     tournament_file = discord.File(STUMBLE_TOUR_IMG_PATH, filename=TOURNAMENT_IMAGE_FILENAME) if os.path.exists(STUMBLE_TOUR_IMG_PATH) else None
@@ -9578,10 +9682,15 @@ async def team_winner(ctx):
             try:
                 mbr = ctx.guild.get_member(int(uid))
                 if mbr:
+                    if t.get("is_big"):
+                        await assign_yellow_w_role(
+                            ctx.guild,
+                            mbr,
+                            source=YELLOW_W_BIG_TOURNAMENT_SOURCE,
+                        )
                     await assign_winner_role(ctx.guild, mbr)
                     prof = get_profile(mbr.id, mbr.display_name)
                     prof["tornei_v"] += 1
-                    prof["punti"]    += 100
                     reward_text = (
                         _big_tournament_prize_for_position(t, 1)
                         if t.get("is_big")
@@ -14359,6 +14468,12 @@ class WShopSelect(discord.ui.Select):
             return await interaction.response.send_message("❌ Not your shop!", ephemeral=True)
         w_name = self.values[0]
         w_data = W_ITEMS[w_name]
+        if w_name.casefold() == "yellow":
+            return await interaction.response.send_message(
+                "❌ **W gialla** can only be granted by an admin or by winning "
+                "the first place of a Big Tournament.",
+                ephemeral=True,
+            )
         prof   = get_profile(interaction.user.id, interaction.user.display_name)
         if w_name in prof.get("w_owned", []):
             return await interaction.response.send_message(
