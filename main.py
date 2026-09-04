@@ -2015,7 +2015,7 @@ def _active_w_role_emojis(member: discord.Member | None) -> list[str]:
 
 
 def _bracket_role_badges(member: discord.Member | None) -> list[str]:
-    """Return the compact W/S badges shown beside bracket participants."""
+    """Return the emoji W/S badges shown after bracket participants."""
     if member is None:
         return []
 
@@ -2023,11 +2023,12 @@ def _bracket_role_badges(member: discord.Member | None) -> list[str]:
     for role in getattr(member, "roles", ()):
         normalized_name = re.sub(r"[^a-z0-9]", "", role.name.casefold())
         if role.id == BOOSTER_ROLE_ID or normalized_name in {"w", "winner"}:
-            if "[W]" not in badges:
-                badges.append("[W]")
+            if E_W not in badges:
+                badges.append(E_W)
         if role.id == SUPPORTER_ROLE_ID or normalized_name in {"s", "supporter"}:
-            if "[S]" not in badges:
-                badges.append("[S]")
+            supporter_emoji = EMOJIS["supporter"]
+            if supporter_emoji not in badges:
+                badges.append(supporter_emoji)
     return badges
 
 
@@ -2035,7 +2036,7 @@ def display_with_rank(
     name: str,
     member_map: dict[str, discord.Member] | None = None,
 ) -> str:
-    """Return a bracket slot with player tags immediately before the name."""
+    """Return a bracket slot with rank before and role badges after the name."""
     player_name = str(name)
     if " × " in player_name:
         return " × ".join(
@@ -2067,7 +2068,7 @@ def display_with_rank(
     purchased_w = f" {''.join(owned_w_items)}" if owned_w_items else ""
     role_badges = _bracket_role_badges(member)
     badge_text = f" {' '.join(role_badges)}" if role_badges else ""
-    return f"{rank_emoji}{purchased_w}{badge_text} {formatted_name}"
+    return f"{rank_emoji} {formatted_name}{purchased_w}{badge_text}"
 
 
 BRACKET_VS_EMOJI = "<:VS:1388988636485390477>"
@@ -6377,6 +6378,11 @@ async def on_ready():
         auto_leaderboard.start()
     if not auto_duel_leaderboard.is_running():
         auto_duel_leaderboard.start()
+    # Restore the persisted 1v1 leaderboard immediately after a restart.
+    # tasks.loop waits for its first interval otherwise, which makes the
+    # configured :stumble-top message look stale for up to 30 minutes.
+    if db.get("duel_leaderboard_channel_id"):
+        await auto_duel_leaderboard()
     if not auto_save.is_running():
         auto_save.start()
     if not check_supporters.is_running():
@@ -7582,7 +7588,7 @@ async def _check_team_complete(guild, team_id: str):
     bot_names   = invite.get("bot_names", [])
     bot_ids     = invite.get("bot_ids", [])
     all_members = [leader] + members
-    names = [m.display_name for m in all_members] + bot_names
+    names = [m.name for m in all_members] + bot_names
     ids   = [str(m.id)      for m in all_members] + bot_ids
     db["teams"] = [t for t in db["teams"] if not any(uid in t["ids"] for uid in ids)]
     db["teams"].append({
@@ -7675,7 +7681,7 @@ async def team(ctx, *args):
 
     # Se ci sono solo Bot (nessun invitato reale), crea il team subito
     if not real_members:
-        all_names = [ctx.author.display_name] + [f"🤖 Bot {i+1}" for i in range(bot_slots)]
+        all_names = [ctx.author.name] + [f"🤖 Bot {i+1}" for i in range(bot_slots)]
         all_ids   = [str(ctx.author.id)]       + [f"Bot_{i+1}"    for i in range(bot_slots)]
         db["teams"] = [t for t in db["teams"] if str(ctx.author.id) not in t["ids"]]
         db["teams"].append({"members":[], "names":all_names, "ids":all_ids, "leader_id":str(ctx.author.id)})
@@ -7705,7 +7711,7 @@ async def team(ctx, *args):
         "bot_names": bot_names,
         "bot_ids":   bot_ids,
     }
-    all_names_preview = [ctx.author.display_name] + [m.display_name for m in real_members] + bot_names
+    all_names_preview = [ctx.author.name] + [m.name for m in real_members] + bot_names
     sent = 0
     for m in real_members:
         embed = discord.Embed(
@@ -7854,11 +7860,11 @@ class TourRegisterView(DetailedView):
                             f"❌ You need the **Linked** role to join Big Tournaments!\n"
                             f"Connect your account directly in the {destination} channel.",
                             ephemeral=True)
-                get_profile(interaction.user.id, interaction.user.display_name)["name"] = (
-                    interaction.user.display_name
+                get_profile(interaction.user.id, interaction.user.name)["name"] = (
+                    interaction.user.name
                 )
                 t["players"].append(uid)
-                t["player_names"].append(interaction.user.display_name)
+                t["player_names"].append(interaction.user.name)
             count = len(t["players"])
             max_p = t["max"]
             save_db()
@@ -9348,7 +9354,67 @@ async def match(ctx, match_num: int, codice: str):
         return e
 
     sent_to = []
+    failed_to = []
     sent_dm_messages = []
+
+    async def _send_match_code_dm(member: discord.Member) -> bool:
+        """Deliver a room-code DM with bounded retries for transient Discord errors."""
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            embed = _make_match_embed()
+            if os.path.exists(STUMBLE_TOUR_IMG_PATH):
+                file = discord.File(
+                    STUMBLE_TOUR_IMG_PATH,
+                    filename="stumble_tournament.png",
+                )
+                embed.set_image(url="attachment://stumble_tournament.png")
+                send_kwargs = {"file": file, "embed": embed}
+            else:
+                embed.set_image(url=STUMBLE_IMG)
+                send_kwargs = {"embed": embed}
+
+            try:
+                dm_message = await _send_dm_or_closed_notice(
+                    member,
+                    channel=ctx.channel,
+                    **send_kwargs,
+                )
+                if dm_message is None:
+                    return False
+                sent_dm_messages.append(dm_message)
+                return True
+            except discord.HTTPException as exc:
+                status = getattr(exc, "status", None)
+                is_transient = status == 429 or (
+                    isinstance(status, int) and status >= 500
+                )
+                if not is_transient or attempt >= max_attempts - 1:
+                    print(
+                        f"[match DM] Could not send to {member.id}: "
+                        f"status={status} code={getattr(exc, 'code', '?')} "
+                        f"details={exc}"
+                    )
+                    return False
+
+                retry_after = getattr(exc, "retry_after", None)
+                if retry_after is None:
+                    response = getattr(exc, "response", None)
+                    retry_after = getattr(response, "retry_after", None)
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = 2.0 * (attempt + 1)
+                delay = min(max(delay, 1.0), 10.0)
+                print(
+                    f"[match DM] Temporary Discord error for {member.id}; "
+                    f"retry {attempt + 1}/{max_attempts - 1} in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+            except Exception as exc:
+                print(f"[match DM] Could not send to {member.id}: {exc}")
+                return False
+        return False
+
     if modalita in TEAM_MODES:
         for team in db["teams"]:
             td    = " × ".join(team["names"])
@@ -9358,63 +9424,57 @@ async def match(ctx, match_num: int, codice: str):
                 for uid, name in zip(team["ids"], team["names"]):
                     try:
                         mbr   = await ctx.guild.fetch_member(int(uid))
-                        embed = _make_match_embed()
-                        if os.path.exists(STUMBLE_TOUR_IMG_PATH):
-                            f = discord.File(STUMBLE_TOUR_IMG_PATH, filename="stumble_tournament.png")
-                            embed.set_image(url="attachment://stumble_tournament.png")
-                            dm_message = await _send_dm_or_closed_notice(
-                                mbr,
-                                channel=ctx.channel,
-                                file=f,
-                                embed=embed,
-                            )
-                            if dm_message:
-                                sent_dm_messages.append(dm_message)
+                        if await _send_match_code_dm(mbr):
+                            sent_to.append(name)
                         else:
-                            embed.set_image(url=STUMBLE_IMG)
-                            dm_message = await _send_dm_or_closed_notice(
-                                mbr,
-                                channel=ctx.channel,
-                                embed=embed,
-                            )
-                            if dm_message:
-                                sent_dm_messages.append(dm_message)
-                        sent_to.append(name)
-                    except Exception as e:
-                        print(f"[match DM] {e}")
+                            failed_to.append(name)
+                    except Exception as exc:
+                        failed_to.append(name)
+                        print(f"[match DM] Could not fetch or send to {uid}: {exc}")
+                    await asyncio.sleep(0.75)
     else:
+        match_player_keys = {
+            _bracket_name_key(player_name)
+            for player_name in players_in_match
+        }
         for pid, pname in zip(t["players"], t["player_names"]):
-            if pname in players_in_match and not str(pid).startswith("Bot_"):
+            if (
+                _bracket_name_key(pname) in match_player_keys
+                and not str(pid).startswith("Bot_")
+            ):
                 try:
                     mbr   = await ctx.guild.fetch_member(int(pid))
-                    embed = _make_match_embed()
-                    if os.path.exists(STUMBLE_TOUR_IMG_PATH):
-                        f = discord.File(STUMBLE_TOUR_IMG_PATH, filename="stumble_tournament.png")
-                        embed.set_image(url="attachment://stumble_tournament.png")
-                        dm_message = await _send_dm_or_closed_notice(
-                            mbr,
-                            channel=ctx.channel,
-                            file=f,
-                            embed=embed,
-                        )
-                        if dm_message:
-                            sent_dm_messages.append(dm_message)
+                    if await _send_match_code_dm(mbr):
+                        sent_to.append(pname)
                     else:
-                        embed.set_image(url=STUMBLE_IMG)
-                        dm_message = await _send_dm_or_closed_notice(
-                            mbr,
-                            channel=ctx.channel,
-                            embed=embed,
-                        )
-                        if dm_message:
-                            sent_dm_messages.append(dm_message)
-                    sent_to.append(pname)
-                except Exception as e:
-                    print(f"[match DM] {e}")
+                        failed_to.append(pname)
+                except Exception as exc:
+                    failed_to.append(pname)
+                    print(f"[match DM] Could not fetch or send to {pid}: {exc}")
+                await asyncio.sleep(0.75)
 
     await _update_bracket_messages(t)
     if sent_to:
-        await ctx.send(f"✅ Room code sent to **{', '.join(sent_to)}** for Match #{match_num}! 💥", delete_after=5.0)
+        status = (
+            f"✅ Room code sent to **{', '.join(sent_to)}** "
+            f"for Match #{match_num}! 💥"
+        )
+        if failed_to:
+            status += (
+                f"\n⚠️ Could not DM: **{', '.join(failed_to)}**. "
+                "Their DMs may be closed; check the console if the problem persists."
+            )
+        await ctx.send(status, delete_after=8.0)
+    elif failed_to:
+        await ctx.send(
+            f"⚠️ I could not send the room code to **{', '.join(failed_to)}**. "
+            "Their DMs may be closed. The code is posted below for the host.",
+            delete_after=8.0,
+        )
+        embed = _make_match_embed()
+        embed.set_image(url=STUMBLE_IMG)
+        sent_code_message = await ctx.send(embed=embed)
+        asyncio.create_task(delete_message_later(sent_code_message, 120))
     else:
         embed = _make_match_embed()
         embed.set_image(url=STUMBLE_IMG)
@@ -16293,11 +16353,19 @@ async def duel_cmd(
 @bot.command(name="stumble-top", aliases=["stumbletop"])
 @manager_or_admin_only()
 async def stumble_top(ctx):
-    """Show only the 1v1 leaderboard."""
-    embed = (await build_leaderboard_embeds(
-        categories=DUEL_LEADERBOARD_CATEGORIES,
-    ))[0]
-    await ctx.send(embed=embed)
+    """Publish the persistent 1v1 leaderboard in this channel."""
+    channel_changed = db.get("duel_leaderboard_channel_id") != ctx.channel.id
+    db["duel_leaderboard_channel_id"] = ctx.channel.id
+    if channel_changed:
+        # Message IDs belong to the old channel and must not be reused.
+        db["duel_leaderboard_msg_ids"] = []
+    save_db()
+    await ctx.send(
+        f"✅ 1v1 leaderboard published in {ctx.channel.mention}. "
+        "It will update automatically every 30 minutes.",
+        delete_after=8.0,
+    )
+    await auto_duel_leaderboard()
 
 
 @bot.command(name="1v1-leaderboard", aliases=["1v1_top", "duel-leaderboard", "duel-top"])
