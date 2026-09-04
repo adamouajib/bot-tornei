@@ -1239,6 +1239,7 @@ bot = commands.Bot(command_prefix=":", intents=intents, help_command=None)
 SERVER_ID = 1046154910368014417
 SERVER_INVITE_URL = "https://discord.gg/pcf-cup-community-1046154910368014417"
 INVITE_ROLE_NAME = "1 Invite"
+INVITE_ROLE_ID: int | None = None
 
 EMOJIS = {
     "ruby": "<:ruby:1542674594454970448>",
@@ -2292,7 +2293,7 @@ def _remove_active_invitee(guild_id: int, invitee_id: int) -> int | None:
 
 async def _ensure_invite_role(guild: discord.Guild) -> discord.Role | None:
     """Return the exact invite eligibility role, creating it when necessary."""
-    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    role = _find_invite_role(guild)
     if role:
         return role
     try:
@@ -2311,6 +2312,19 @@ async def _ensure_invite_role(guild: discord.Guild) -> discord.Role | None:
     except discord.HTTPException as exc:
         print(f"[invite tracker] Could not create {INVITE_ROLE_NAME} in {guild.id}: {exc}")
         return None
+
+
+def _find_invite_role(guild: discord.Guild) -> discord.Role | None:
+    """Find the invite role by configured ID or case-insensitive name."""
+    if INVITE_ROLE_ID is not None:
+        role = guild.get_role(INVITE_ROLE_ID)
+        if role is not None:
+            return role
+    expected_name = INVITE_ROLE_NAME.casefold()
+    return discord.utils.find(
+        lambda role: str(getattr(role, "name", "")).casefold() == expected_name,
+        guild.roles,
+    )
 
 
 async def _award_invite_role(
@@ -2356,8 +2370,13 @@ async def _remove_invite_role(
     reason: str,
 ) -> bool:
     """Remove invite eligibility when an inviter has no active invitees."""
-    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    role = _find_invite_role(guild)
     member = guild.get_member(inviter_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(inviter_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            member = None
     if role is None or member is None or role not in member.roles:
         return False
     try:
@@ -2396,7 +2415,7 @@ async def _refresh_invite_cache(
                 inviter_id,
                 reason="Sync active invite eligibility role",
             )
-        role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+        role = _find_invite_role(guild)
         if role is not None:
             for member in guild.members:
                 if role in member.roles and member.id not in inviter_ids:
@@ -2484,19 +2503,31 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
         return False
 
     print(f"[DEBUG] User ID checking registration: {member_id}")
-    role = discord.utils.get(guild.roles, name=INVITE_ROLE_NAME)
+    role = _find_invite_role(guild)
     member = guild.get_member(member_id)
     if member is None:
         try:
             member = await guild.fetch_member(member_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             member = None
-    if (
+    active_invites = _active_invite_count(guild.id, member_id)
+    has_invite_role = (
         member is not None
         and role is not None
         and role in member.roles
-        and _active_invite_count(guild.id, member_id) > 0
-    ):
+    )
+    print(
+        "[DEBUG] Invite eligibility check: "
+        f"user={member_id}, active_invites={active_invites}, "
+        f"has_role={has_invite_role}"
+    )
+    if active_invites >= 1 or has_invite_role:
+        if active_invites >= 1 and not has_invite_role:
+            await _award_invite_role(
+                guild,
+                member_id,
+                reason="Restore invite eligibility role during tournament registration",
+            )
         return True
 
     bot_member = guild.me
@@ -2572,10 +2603,7 @@ async def _has_invited_member(guild: discord.Guild, member_id: int) -> bool | No
     return False
 
 def _tournament_invite_requirement_message() -> str:
-    return (
-        "❌ **Registration Failed:** You haven't invited anyone yet! "
-        f"Get your personal invite link in <#{TOURNAMENT_GET_LINK_CHANNEL_ID}>."
-    )
+    return "❌ Non hai i requisiti! Devi avere almeno 1 invito attivo o il ruolo '1 invite' per registrarti."
 
 
 async def _send_registration_error(
