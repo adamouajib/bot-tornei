@@ -1442,16 +1442,8 @@ DEFAULT_TOURNAMENT_PRIZES = (
     "3. 25 Crystals + 1000 Rubies"
 )
 
-# Big Tournaments use one explicit prize for each final-rank bracket.  The
-# amounts are deliberately kept as data so the setup modal can replace them
-# without changing the announcement or reward code.
-BIG_TOURNAMENT_PRIZE_DEFAULTS = {
-    "1": {"rubies": 2000, "gems": 100},
-    "2": {"rubies": 1000, "gems": 50},
-    "3": {"rubies": 500, "gems": 25},
-    "4_6": {"rubies": 250, "gems": 10},
-    "7_9": {"rubies": 100, "gems": 5},
-}
+# Legacy fixed-bracket keys remain readable for tournaments created before the
+# multiline Top 1–12 prize format was introduced.
 BIG_TOURNAMENT_PRIZE_BRACKETS = (
     ("1", "1st Place", "🥇"),
     ("2", "2nd Place", "🥈"),
@@ -1863,7 +1855,7 @@ async def update_level_role(guild: discord.Guild, member: discord.Member, level:
         print(f"[level role] {exc}")
 
 async def assign_winner_role(guild: discord.Guild, member: discord.Member) -> None:
-    """Give match winners the visible W role and persist the bracket marker."""
+    """Give a manually finalized tournament placement the visible W role."""
     role = discord.utils.get(guild.roles, name="W")
     if role is None:
         try:
@@ -2015,16 +2007,13 @@ def _active_w_role_emojis(member: discord.Member | None) -> list[str]:
 
 
 def _bracket_role_badges(member: discord.Member | None) -> list[str]:
-    """Return the emoji W/S badges shown after bracket participants."""
+    """Return non-match badges shown after bracket participants."""
     if member is None:
         return []
 
     badges: list[str] = []
     for role in getattr(member, "roles", ()):
         normalized_name = re.sub(r"[^a-z0-9]", "", role.name.casefold())
-        if role.id == BOOSTER_ROLE_ID or normalized_name in {"w", "winner"}:
-            if E_W not in badges:
-                badges.append(E_W)
         if role.id == SUPPORTER_ROLE_ID or normalized_name in {"s", "supporter"}:
             supporter_emoji = EMOJIS["supporter"]
             if supporter_emoji not in badges:
@@ -4630,25 +4619,72 @@ def format_tournament_prizes(prize_text: str) -> str:
     )
 
 
-def _parse_big_tournament_prize(value: str) -> dict[str, int] | None:
-    """Parse a modal value in the form ``rubies, gems``."""
-    amounts = re.findall(r"\d[\d.,]*", value or "")
-    if len(amounts) != 2:
-        return None
-    try:
-        rubies, gems = (
-            int(amount.replace(",", "").replace(".", ""))
-            for amount in amounts
+def _parse_big_tournament_prize_amounts(value: str) -> dict[str, int]:
+    """Extract supported reward amounts while preserving the original text."""
+    amounts = {
+        "rubies": 0,
+        "gems": 0,
+    }
+    for raw_amount, currency in re.findall(
+        r"(\d[\d.,]*)\s*"
+        r"(Ruby|Rubies|Rubino|Rubini|Gem|Gems)\b",
+        value or "",
+        flags=re.IGNORECASE,
+    ):
+        amount = int(raw_amount.replace(",", "").replace(".", ""))
+        if currency.lower().startswith("rub") or currency.lower() in {"ruby", "rubies"}:
+            amounts["rubies"] += amount
+        else:
+            amounts["gems"] += amount
+    return amounts
+
+
+def _parse_big_tournament_prize_lines(value: str) -> list[dict] | None:
+    """Parse one custom prize tier per line, supporting placements 1 through 12."""
+    line_pattern = re.compile(
+        r"^\s*(?P<label>(?:top\s*)?\d{1,2}"
+        r"(?:\s*(?:-|–|—|to)\s*(?:top\s*)?\d{1,2})?)"
+        r"\s*[:=-]\s*(?P<text>.+?)\s*$",
+        flags=re.IGNORECASE,
+    )
+    tiers = []
+    occupied_positions: set[int] = set()
+    for line_number, raw_line in enumerate((value or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = line_pattern.match(line)
+        if not match:
+            return None
+        placement_numbers = [int(number) for number in re.findall(r"\d+", match.group("label"))]
+        start = placement_numbers[0]
+        end = placement_numbers[-1] if len(placement_numbers) == 2 else start
+        if start < 1 or end > 12 or start > end:
+            return None
+        positions = set(range(start, end + 1))
+        if occupied_positions.intersection(positions):
+            return None
+        occupied_positions.update(positions)
+        text = match.group("text").strip()
+        if not text:
+            return None
+        amounts = _parse_big_tournament_prize_amounts(text)
+        tiers.append(
+            {
+                "start": start,
+                "end": end,
+                "label": match.group("label").strip(),
+                "text": text,
+                **amounts,
+            }
         )
-    except ValueError:
-        return None
-    if rubies < 0 or gems < 0:
-        return None
-    return {"rubies": rubies, "gems": gems}
+    return tiers or None
 
 
 def _format_big_tournament_prize(prize: dict) -> str:
     """Render one Big Tournament bracket using the public prize format."""
+    if prize.get("text"):
+        return str(prize["text"]).strip()
     rubies = int(prize.get("rubies", 0) or 0)
     gems = int(prize.get("gems", 0) or 0)
     return f"{rubies} Rubies + {gems} {E_GEMS}"
@@ -4656,6 +4692,8 @@ def _format_big_tournament_prize(prize: dict) -> str:
 
 def _big_tournament_reward_text(prize: dict) -> str:
     """Render one prize in the plain-text form understood by grant_prize."""
+    if prize.get("text"):
+        return str(prize["text"]).strip()
     rubies = int(prize.get("rubies", 0) or 0)
     gems = int(prize.get("gems", 0) or 0)
     return f"{rubies} Rubies + {gems} Gems"
@@ -4665,6 +4703,8 @@ def _big_tournament_prize_is_active(prize: dict | None) -> bool:
     """Return whether a Big Tournament tier actually awards anything."""
     if not isinstance(prize, dict):
         return False
+    if str(prize.get("text", "") or "").strip():
+        return True
     try:
         return (
             int(prize.get("rubies", 0) or 0) > 0
@@ -4674,22 +4714,83 @@ def _big_tournament_prize_is_active(prize: dict | None) -> bool:
         return False
 
 
+def _big_tournament_prize_tiers(prizes: dict | None) -> list[dict]:
+    """Return new custom tiers or convert the legacy fixed-bracket shape."""
+    if not isinstance(prizes, dict):
+        return []
+    custom_tiers = prizes.get("tiers")
+    if isinstance(custom_tiers, list):
+        return [tier for tier in custom_tiers if isinstance(tier, dict)]
+    legacy_ranges = {
+        "1": (1, 1, "1st Place"),
+        "2": (2, 2, "2nd Place"),
+        "3": (3, 3, "3rd Place"),
+        "4_6": (4, 6, "4th - 6th Place"),
+        "7_9": (7, 9, "7th - 9th Place"),
+    }
+    tiers = []
+    for key, (start, end, label) in legacy_ranges.items():
+        prize = prizes.get(key)
+        if _big_tournament_prize_is_active(prize):
+            tiers.append(
+                {
+                    **prize,
+                    "start": start,
+                    "end": end,
+                    "label": label,
+                }
+            )
+    return tiers
+
+
 def format_big_tournament_prizes(prizes: dict | None) -> str:
     """Render only the configured, non-empty Big Tournament prize tiers."""
-    prizes = BIG_TOURNAMENT_PRIZE_DEFAULTS if prizes is None else prizes
     lines = []
-    for key, label, medal in BIG_TOURNAMENT_PRIZE_BRACKETS:
-        prize = prizes.get(key) if isinstance(prizes, dict) else None
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for prize in _big_tournament_prize_tiers(prizes):
         if not _big_tournament_prize_is_active(prize):
             continue
+        start = int(prize.get("start", 0) or 0)
+        label = str(prize.get("label") or f"Top {start}").strip()
         lines.append(
-            f"• {medal} **{label}:** {_format_big_tournament_prize(prize)}"
+            f"• {medals.get(start, '🏅')} **{label}:** "
+            f"{_format_big_tournament_prize(prize)}"
         )
     return "\n".join(lines) or "—"
 
 
+def _big_tournament_prize_display_chunks(prizes: dict | None) -> list[str]:
+    """Split a custom prize list into Discord-safe field values without loss."""
+    lines = format_big_tournament_prizes(prizes).splitlines() or ["—"]
+    chunks = []
+    current = ""
+    for line in lines:
+        if current and len(current) + len(line) + 1 > 1024:
+            chunks.append(current)
+            current = ""
+        if len(line) <= 1024:
+            current = f"{current}\n{line}".strip()
+            continue
+        for offset in range(0, len(line), 1024):
+            piece = line[offset : offset + 1024]
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(piece)
+    if current:
+        chunks.append(current)
+    return chunks or ["—"]
+
+
 def _big_tournament_prize_text(prizes: dict) -> str:
     """Create a parseable legacy prize string for shared tournament helpers."""
+    custom_tiers = _big_tournament_prize_tiers(prizes)
+    if isinstance(prizes, dict) and isinstance(prizes.get("tiers"), list):
+        lines = []
+        for tier in custom_tiers:
+            label = tier.get("label") or f"Top {tier.get('start', 1)}"
+            lines.append(f"{label}: {tier.get('text', '').strip()}")
+        return "\n".join(lines)
     return ", ".join(
         f"{position}. {_format_big_tournament_prize(prizes[key])}"
         for position, key in enumerate(("1", "2", "3", "4_6", "7_9"), start=1)
@@ -4698,13 +4799,21 @@ def _big_tournament_prize_text(prizes: dict) -> str:
 
 def _big_tournament_prize_for_position(tournament: dict, position: int) -> str:
     """Return the prize awarded to one final placement."""
+    configured_prizes = tournament.get("big_prizes")
+    custom_tiers = _big_tournament_prize_tiers(configured_prizes)
+    if isinstance(configured_prizes, dict) and isinstance(configured_prizes.get("tiers"), list):
+        for configured in custom_tiers:
+            if int(configured.get("start", 0) or 0) <= position <= int(
+                configured.get("end", 0) or 0
+            ):
+                return _big_tournament_reward_text(configured)
+        return ""
     if position <= 3:
         key = str(position)
     elif position <= 6:
         key = "4_6"
     else:
         key = "7_9"
-    configured_prizes = tournament.get("big_prizes")
     if isinstance(configured_prizes, dict) and key in configured_prizes:
         configured = configured_prizes.get(key)
         if not _big_tournament_prize_is_active(configured):
@@ -4720,6 +4829,17 @@ def _tournament_prize_positions(tournament: dict) -> list[int]:
     """Return the paid final placements for a tournament."""
     if tournament.get("is_big"):
         configured = tournament.get("big_prizes")
+        if isinstance(configured, dict) and isinstance(configured.get("tiers"), list):
+            positions = []
+            for tier in _big_tournament_prize_tiers(configured):
+                if _big_tournament_prize_is_active(tier):
+                    positions.extend(
+                        range(
+                            int(tier.get("start", 0) or 0),
+                            int(tier.get("end", 0) or 0) + 1,
+                        )
+                    )
+            return sorted(set(positions)) or [1]
         if isinstance(configured, dict) and any(
             key in configured for key, _label, _medal in BIG_TOURNAMENT_PRIZE_BRACKETS
         ):
@@ -5083,7 +5203,6 @@ class FinalWinnerModal(DetailedModal, title="🏆 Set winner"):
         if winner_id and str(winner_id).isdigit() and interaction.guild:
             member = interaction.guild.get_member(int(winner_id))
             if member:
-                await assign_winner_role(interaction.guild, member)
                 await _award_match_rp(
                     interaction.guild,
                     member,
@@ -8023,7 +8142,7 @@ class _BigTournamentPrizeView(DetailedView):
 
 
 class TourModal1(DetailedModal):
-    """Step 1/3 — title, description, format, details and prize."""
+    """Step 1/3 — title, description, format and map/ability."""
 
     def __init__(
         self,
@@ -8065,21 +8184,23 @@ class TourModal1(DetailedModal):
             required=False,
             style=discord.TextStyle.paragraph,
         )
-        self.premio = TextInput(
-            label="🏆 Prize / Montepremi",
-            placeholder=(
-                "e.g. 2500,1000 / 1000,700 / 500,400 / "
-                "200,200 / 100,100 or custom text"
-            ),
-            max_length=500,
-            required=False,
-            style=discord.TextStyle.paragraph,
-        )
         self.add_item(self.nome)
         self.add_item(self.descrizione)
         self.add_item(self.formato)
         self.add_item(self.dettagli)
-        self.add_item(self.premio)
+        self.premio = None
+        if not self.is_big:
+            self.premio = TextInput(
+                label="🏆 Prize / Montepremi",
+                placeholder=(
+                    "e.g. 2500,1000 / 1000,700 / 500,400 / "
+                    "200,200 / 100,100 or custom text"
+                ),
+                max_length=500,
+                required=False,
+                style=discord.TextStyle.paragraph,
+            )
+            self.add_item(self.premio)
 
     async def on_submit(self, interaction: discord.Interaction):
         uid = str(interaction.user.id)
@@ -8092,7 +8213,7 @@ class TourModal1(DetailedModal):
         else:
             mappa, abilita = details or "—", "—"
         format_value = self.formato.value.strip() or self.modalita
-        prize_value = self.premio.value.strip()
+        prize_value = self.premio.value.strip() if self.premio else ""
         if not self.is_big and not prize_value:
             prize_value = DEFAULT_TOURNAMENT_PRIZES
         _pending_tour_setup[uid] = {
@@ -8106,30 +8227,39 @@ class TourModal1(DetailedModal):
             "is_big":   self.is_big,
             "is_custom": self.is_custom,
         }
+        step_summary = (
+            f"✅ **Step 1 / 3 complete!**\n"
+            f"Name: `{self.nome.value.strip()}` · Format: `{format_value}`"
+        )
+        if not self.is_big:
+            step_summary += f" · Prize: `{prize_value or '—'}`"
         await interaction.response.send_message(
-            f"✅ **Step 1 / 3 complete!**\nName: `{self.nome.value.strip()}` · "
-            f"Format: `{format_value}` · Prize: `{prize_value or '—'}`\n"
-            "Press the button to continue.",
-            view=_TourStep2View(uid), ephemeral=True)
+            step_summary + "\nPress the button to continue.",
+            view=_TourStep2View(uid),
+            ephemeral=True,
+        )
 
 
 class BigTournamentPrizeModal(DetailedModal):
-    """Collect the five configurable Big Tournament prize brackets."""
+    """Collect custom prize tiers for placements from Top 1 through Top 12."""
 
     def __init__(self, uid: str):
         super().__init__(title="🌟 Big Tournament Prizes")
         self.uid = uid
-        self.inputs: dict[str, TextInput] = {}
-        for key, label, _ in BIG_TOURNAMENT_PRIZE_BRACKETS:
-            defaults = BIG_TOURNAMENT_PRIZE_DEFAULTS[key]
-            field = TextInput(
-                label=f"{label} — Rubies, Gems",
-                placeholder="e.g. 2000, 100",
-                default=f"{defaults['rubies']}, {defaults['gems']}",
-                max_length=30,
-            )
-            self.inputs[key] = field
-            self.add_item(field)
+        self.prizes = TextInput(
+            label="Prize tiers (Top 1–12)",
+            placeholder=(
+                "Top 1: 2000 Rubies + 100 Gems\n"
+                "Top 2: 1000 Rubies + 50 Gems\n"
+                "Top 3: 500 Rubies + 25 Gems\n"
+                "Top 4-6: 250 Rubies + 10 Gems\n"
+                "Top 7-12: 100 Rubies + 5 Gems"
+            ),
+            max_length=4000,
+            required=True,
+            style=discord.TextStyle.paragraph,
+        )
+        self.add_item(self.prizes)
 
     async def on_submit(self, interaction: discord.Interaction):
         data = _pending_tour_setup.get(self.uid)
@@ -8138,16 +8268,15 @@ class BigTournamentPrizeModal(DetailedModal):
                 "❌ Session expired — start again with :big-tour.",
                 ephemeral=True,
             )
-        prizes = {}
-        for key, label, _ in BIG_TOURNAMENT_PRIZE_BRACKETS:
-            parsed = _parse_big_tournament_prize(self.inputs[key].value)
-            if parsed is None:
-                return await interaction.response.send_message(
-                    f"❌ Invalid value for **{label}**. Enter two non-negative "
-                    "whole numbers: `Rubies, Gems` (for example, `2000, 100`).",
-                    ephemeral=True,
-                )
-            prizes[key] = parsed
+        tiers = _parse_big_tournament_prize_lines(self.prizes.value)
+        if tiers is None:
+            return await interaction.response.send_message(
+                "❌ Invalid prize list. Use one entry per line in the form "
+                "`Top 1: 2000 Rubies + 100 Gems` or `Top 4-6: 250 Rubies + 10 Gems`. "
+                "Placements must be between Top 1 and Top 12, without overlapping tiers.",
+                ephemeral=True,
+            )
+        prizes = {"tiers": tiers}
         data["big_prizes"] = prizes
         data["premio"] = _big_tournament_prize_text(prizes)
         await interaction.response.send_message(
@@ -8340,7 +8469,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         f"🎮 **Format:** {actual}\n\n"
         f"🗺️ **Map:** {data['mappa']}\n\n"
         f"⚡ **Ability:** {emote_s}\n\n"
-        f"🎁 **Prizes:**\n\n{prize_display}\n\n"
+        f"{'' if is_big else f'🎁 **Prizes:**\\n\\n{prize_display}\\n\\n'}"
         f"⏰ **{time_str}**"
     )
     if data.get("regione"):
@@ -8349,6 +8478,16 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         info_val += "\n\n🔗 **Big Tournament requirement:** The **Linked** role."
     info_val += f"\n\n🆔 **Tournament ID:** `{tourney_id}`"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
+    if is_big:
+        for index, prize_chunk in enumerate(
+            _big_tournament_prize_display_chunks(data.get("big_prizes")),
+            start=1,
+        ):
+            embed.add_field(
+                name="🎁 Prizes" if index == 1 else "🎁 Prizes (continued)",
+                value=prize_chunk,
+                inline=False,
+            )
     rules_text = (
         (
             "📌 **Big Tournament requirements:**\n"
@@ -9242,7 +9381,6 @@ async def qual(ctx):
             try:
                 mbr = ctx.guild.get_member(int(uid))
                 if mbr:
-                    await assign_winner_role(ctx.guild, mbr)
                     await _award_match_rp(
                         ctx.guild,
                         mbr,
@@ -9279,7 +9417,6 @@ async def qual(ctx):
         m["losers"] = losers
         m["in_progress"] = False
         m["status"] = "completed"
-        await assign_winner_role(ctx.guild, winner)
         await _award_match_rp(ctx.guild, winner, notification_target=ctx)
 
     else:
@@ -9304,7 +9441,6 @@ async def qual(ctx):
         )
         await _give_xp_and_rank(ctx, winner, match_data, winner_name)
         _record_tournament_1v1_stats(t, match_data, winner.id)
-        await assign_winner_role(ctx.guild, winner)
 
     save_db()
     await _update_bracket_messages(t)
