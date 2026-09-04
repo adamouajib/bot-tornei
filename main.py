@@ -1373,10 +1373,16 @@ TOUR_PING_ROLE_ID      = TOURNAMENT_ROLE_ID
 TOURNAMENT_INVITE_TUTORIAL = (
     f"Get your personal invite link in <#{TOURNAMENT_GET_LINK_CHANNEL_ID}>."
 )
+TOURNAMENT_ACCOUNT_REQUIREMENT = (
+    "Must have a verified Stumble Guys account linked."
+)
+TOURNAMENT_INVITE_REQUIREMENT = (
+    "Must have invited at least 1 member to participate!\n"
+    f"{TOURNAMENT_INVITE_TUTORIAL}"
+)
 PERSONAL_INVITE_NOTICE = (
     "📌 **Invite Requirement:**\n"
-    "You must have invited at least 1 member to participate!\n"
-    f"{TOURNAMENT_INVITE_TUTORIAL}"
+    f"{TOURNAMENT_INVITE_REQUIREMENT}"
 )
 TOURNAMENT_REQUIREMENT_BLOCK = (
     f"{PERSONAL_INVITE_NOTICE}"
@@ -4625,11 +4631,20 @@ def format_tournament_prizes(prize_text: str) -> str:
 
 
 def _parse_big_tournament_prize_amounts(value: str) -> dict[str, int]:
-    """Extract supported reward amounts while preserving the original text."""
+    """Extract Rubies/Gems from named or compact ``rubies,gems`` input."""
     amounts = {
         "rubies": 0,
         "gems": 0,
     }
+    compact_match = re.fullmatch(
+        r"\s*(\d+)\s*,\s*(\d+)\s*",
+        value or "",
+    )
+    if compact_match:
+        return {
+            "rubies": int(compact_match.group(1)),
+            "gems": int(compact_match.group(2)),
+        }
     for raw_amount, currency in re.findall(
         r"(\d[\d.,]*)\s*"
         r"(Ruby|Rubies|Rubino|Rubini|Gem|Gems)\b",
@@ -4642,6 +4657,29 @@ def _parse_big_tournament_prize_amounts(value: str) -> dict[str, int]:
         else:
             amounts["gems"] += amount
     return amounts
+
+
+def _big_tournament_prize_has_numeric_amounts(value: str) -> bool:
+    """Return whether text contains a supported structured prize amount."""
+    return bool(
+        re.fullmatch(r"\s*(\d+)\s*,\s*(\d+)\s*", value or "")
+        or re.search(
+            r"\d[\d.,]*\s*(?:Ruby|Rubies|Rubino|Rubini|Gem|Gems)\b",
+            value or "",
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _big_tournament_prize_amounts(prize: dict) -> dict[str, int]:
+    """Resolve structured amounts from either parsed fields or legacy text."""
+    text = str(prize.get("text", "") or "").strip()
+    if text and _big_tournament_prize_has_numeric_amounts(text):
+        return _parse_big_tournament_prize_amounts(text)
+    return {
+        "rubies": int(prize.get("rubies", 0) or 0),
+        "gems": int(prize.get("gems", 0) or 0),
+    }
 
 
 def _parse_big_tournament_prize_lines(value: str) -> list[dict] | None:
@@ -4688,35 +4726,95 @@ def _parse_big_tournament_prize_lines(value: str) -> list[dict] | None:
 
 def _format_big_tournament_prize(prize: dict) -> str:
     """Render one Big Tournament bracket using the public prize format."""
-    if prize.get("text"):
-        return str(prize["text"]).strip()
-    rubies = int(prize.get("rubies", 0) or 0)
-    gems = int(prize.get("gems", 0) or 0)
-    return f"{rubies} Rubies + {gems} {E_GEMS}"
+    rubies_gems = _big_tournament_prize_amounts(prize)
+    parts = []
+    if rubies_gems["rubies"] > 0:
+        parts.append(f"{E_RUBY} {rubies_gems['rubies']} Rubies")
+    if rubies_gems["gems"] > 0:
+        parts.append(f"{E_GEMS} {rubies_gems['gems']} Gems")
+    if parts:
+        return " + ".join(parts)
+    return str(prize.get("text", "") or "").strip() or "—"
 
 
 def _big_tournament_reward_text(prize: dict) -> str:
     """Render one prize in the plain-text form understood by grant_prize."""
-    if prize.get("text"):
-        return str(prize["text"]).strip()
-    rubies = int(prize.get("rubies", 0) or 0)
-    gems = int(prize.get("gems", 0) or 0)
-    return f"{rubies} Rubies + {gems} Gems"
+    rubies_gems = _big_tournament_prize_amounts(prize)
+    parts = []
+    if rubies_gems["rubies"] > 0:
+        parts.append(f"{rubies_gems['rubies']} Rubies")
+    if rubies_gems["gems"] > 0:
+        parts.append(f"{rubies_gems['gems']} Gems")
+    return " + ".join(parts) or str(prize.get("text", "") or "").strip()
 
 
 def _big_tournament_prize_is_active(prize: dict | None) -> bool:
     """Return whether a Big Tournament tier actually awards anything."""
     if not isinstance(prize, dict):
         return False
-    if str(prize.get("text", "") or "").strip():
-        return True
-    try:
-        return (
-            int(prize.get("rubies", 0) or 0) > 0
-            or int(prize.get("gems", 0) or 0) > 0
-        )
-    except (TypeError, ValueError):
-        return False
+    text = str(prize.get("text", "") or "").strip()
+    amounts = _big_tournament_prize_amounts(prize)
+    if text and _big_tournament_prize_has_numeric_amounts(text):
+        return amounts["rubies"] > 0 or amounts["gems"] > 0
+    return bool(text) or amounts["rubies"] > 0 or amounts["gems"] > 0
+
+
+def _big_tournament_place_label(start: int, end: int) -> str:
+    """Return a compact human-readable label for one or more placements."""
+    ordinals = {1: "1st", 2: "2nd", 3: "3rd"}
+
+    def ordinal(position: int) -> str:
+        if position in ordinals:
+            return ordinals[position]
+        if 10 < position % 100 < 14:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(position % 10, "th")
+        return f"{position}{suffix}"
+
+    if start == end:
+        return f"{ordinal(start)} Place"
+    return f"{ordinal(start)} - {ordinal(end)} Place"
+
+
+def _big_tournament_prize_signature(prize: dict) -> tuple:
+    """Return a semantic signature used to merge identical adjacent tiers."""
+    text = str(prize.get("text", "") or "").strip()
+    if text and _big_tournament_prize_has_numeric_amounts(text):
+        amounts = _parse_big_tournament_prize_amounts(text)
+        return ("amounts", amounts["rubies"], amounts["gems"])
+    if text:
+        return ("text", re.sub(r"\s+", " ", text).casefold())
+    amounts = _big_tournament_prize_amounts(prize)
+    return ("amounts", amounts["rubies"], amounts["gems"])
+
+
+def _merge_big_tournament_prize_tiers(tiers: list[dict]) -> list[dict]:
+    """Merge adjacent tiers with the same effective reward."""
+    merged = []
+    for tier in tiers:
+        current = dict(tier)
+        start = int(current.get("start", 0) or 0)
+        end = int(current.get("end", start) or start)
+        current["start"] = start
+        current["end"] = end
+        current["label"] = _big_tournament_place_label(start, end)
+        if merged:
+            previous = merged[-1]
+            previous_end = int(previous.get("end", 0) or 0)
+            if (
+                previous_end + 1 == start
+                and _big_tournament_prize_signature(previous)
+                == _big_tournament_prize_signature(current)
+            ):
+                previous["end"] = end
+                previous["label"] = _big_tournament_place_label(
+                    int(previous.get("start", start) or start),
+                    end,
+                )
+                continue
+        merged.append(current)
+    return merged
 
 
 def _big_tournament_prize_tiers(prizes: dict | None) -> list[dict]:
@@ -4725,7 +4823,9 @@ def _big_tournament_prize_tiers(prizes: dict | None) -> list[dict]:
         return []
     custom_tiers = prizes.get("tiers")
     if isinstance(custom_tiers, list):
-        return [tier for tier in custom_tiers if isinstance(tier, dict)]
+        return _merge_big_tournament_prize_tiers(
+            [tier for tier in custom_tiers if isinstance(tier, dict)]
+        )
     legacy_ranges = {
         "1": (1, 1, "1st Place"),
         "2": (2, 2, "2nd Place"),
@@ -4745,7 +4845,7 @@ def _big_tournament_prize_tiers(prizes: dict | None) -> list[dict]:
                     "label": label,
                 }
             )
-    return tiers
+    return _merge_big_tournament_prize_tiers(tiers)
 
 
 def format_big_tournament_prizes(prizes: dict | None) -> str:
@@ -4756,7 +4856,10 @@ def format_big_tournament_prizes(prizes: dict | None) -> str:
         if not _big_tournament_prize_is_active(prize):
             continue
         start = int(prize.get("start", 0) or 0)
-        label = str(prize.get("label") or f"Top {start}").strip()
+        label = _big_tournament_place_label(
+            start,
+            int(prize.get("end", start) or start),
+        )
         lines.append(
             f"• {medals.get(start, '🏅')} **{label}:** "
             f"{_format_big_tournament_prize(prize)}"
@@ -8483,8 +8586,6 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     )
     if data.get("regione"):
         info_val += f"\n\n🌍 **Region:** {data['regione']}"
-    if is_big:
-        info_val += "\n\n🔗 **Big Tournament requirement:** The **Linked** role."
     info_val += f"\n\n🆔 **Tournament ID:** `{tourney_id}`"
     embed.add_field(name="📋 Info", value=info_val, inline=False)
     if is_big:
@@ -8497,17 +8598,28 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
                 value=prize_chunk,
                 inline=False,
             )
-    rules_text = (
-        (
-            "📌 **Big Tournament requirements:**\n"
-            "• Invite at least 1 member to the server.\n"
-            "• Have the **Linked** role.\n\n"
-            f"{TOURNAMENT_RULES_TEXT}"
+    if is_big:
+        embed.add_field(
+            name="🔗 Account Requirement",
+            value=TOURNAMENT_ACCOUNT_REQUIREMENT,
+            inline=False,
         )
-        if is_big
-        else TOURNAMENT_RULES_TEXT
-    )
-    embed.add_field(name="📜 Tournament Rules", value=rules_text, inline=False)
+        embed.add_field(
+            name="📌 Invite Requirement",
+            value=TOURNAMENT_INVITE_REQUIREMENT,
+            inline=False,
+        )
+        embed.add_field(
+            name="📜 Rules",
+            value=TOURNAMENT_RULES_TEXT,
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="📜 Tournament Rules",
+            value=TOURNAMENT_RULES_TEXT,
+            inline=False,
+        )
     status_val = (
         f"⏳ Registration open — **0/{default_max}**\n"
         f"**Host:** {interaction.user.mention}\n"
@@ -8527,7 +8639,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
     view   = TourRegisterView(count=0, max_p=default_max, host_count=0)
     if reg_ch:
         if is_big:
-            content = "@everyone 🌟 **BIG TOURNAMENT** announced!"
+            content = "@everyone"
             allowed_mentions = discord.AllowedMentions(roles=False, everyone=True)
         else:
             content = f"<@&{TOUR_PING_ROLE_ID}> 🏆 New tournament open — register now!"
