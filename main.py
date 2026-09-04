@@ -40,6 +40,11 @@ import uuid
 from collections.abc import MutableMapping
 
 
+def _modal_placeholder(value: str) -> str:
+    """Keep Discord modal/select placeholders safely below the 100-char limit."""
+    return str(value).strip()[:95]
+
+
 def _print_detailed_interaction_error(
     kind: str,
     owner,
@@ -5162,7 +5167,9 @@ MATCHES_PER_PAGE = 8
 class FinalWinnerModal(DetailedModal, title="🏆 Set winner"):
     winner_number = TextInput(
         label="Winner number (1 or 2)",
-        placeholder="Enter 1 for the first player or 2 for the second",
+        placeholder=_modal_placeholder(
+            "Enter 1 for the first player or 2 for the second"
+        ),
         min_length=1,
         max_length=1,
     )
@@ -8157,21 +8164,21 @@ class TourModal1(DetailedModal):
         self.is_custom = is_custom
         self.nome = TextInput(
             label="📛 Title",
-            placeholder="e.g. PCF™ Classic #42",
+            placeholder=_modal_placeholder("e.g. PCF™ Classic #42"),
             max_length=50,
             required=True,
             style=discord.TextStyle.short,
         )
         self.descrizione = TextInput(
             label="📝 Description",
-            placeholder="Optional tournament description",
+            placeholder=_modal_placeholder("Optional tournament description"),
             max_length=500,
             required=False,
             style=discord.TextStyle.paragraph,
         )
         self.formato = TextInput(
             label="🎮 Format / Mode",
-            placeholder="e.g. 1v1, 2v2, 3v3",
+            placeholder=_modal_placeholder("e.g. 1v1, 2v2, 3v3"),
             default=modalita,
             max_length=20,
             required=True,
@@ -8179,7 +8186,7 @@ class TourModal1(DetailedModal):
         )
         self.dettagli = TextInput(
             label="🗺️ Map / ⚡ Ability (optional)",
-            placeholder="e.g. Laser Dash | Slap",
+            placeholder=_modal_placeholder("e.g. Laser Dash | Slap"),
             max_length=200,
             required=False,
             style=discord.TextStyle.paragraph,
@@ -8192,9 +8199,8 @@ class TourModal1(DetailedModal):
         if not self.is_big:
             self.premio = TextInput(
                 label="🏆 Prize / Montepremi",
-                placeholder=(
-                    "e.g. 2500,1000 / 1000,700 / 500,400 / "
-                    "200,200 / 100,100 or custom text"
+                placeholder=_modal_placeholder(
+                    "e.g. 2500,1000 / 1000,700 / 500,400 / 200,200 / custom"
                 ),
                 max_length=500,
                 required=False,
@@ -8248,12 +8254,10 @@ class BigTournamentPrizeModal(DetailedModal):
         self.uid = uid
         self.prizes = TextInput(
             label="Prize tiers (Top 1–12)",
-            placeholder=(
+            placeholder=_modal_placeholder(
                 "Top 1: 2000 Rubies + 100 Gems\n"
                 "Top 2: 1000 Rubies + 50 Gems\n"
-                "Top 3: 500 Rubies + 25 Gems\n"
-                "Top 4-6: 250 Rubies + 10 Gems\n"
-                "Top 7-12: 100 Rubies + 5 Gems"
+                "Top 3: 500 Rubies + 25 Gems"
             ),
             max_length=4000,
             required=True,
@@ -8301,12 +8305,12 @@ class TourModal2(DetailedModal):
         )
         self.timing  = TextInput(
             label=timing_label,
-            placeholder=timing_ph,
+            placeholder=_modal_placeholder(timing_ph),
             max_length=32,
             required=False,
         )
-        self.max_p   = TextInput(label="👥 Max Players (optional)", placeholder="e.g. 32 — leave blank for default", max_length=3, required=False)
-        self.regione = TextInput(label="🌍 Region (optional)", placeholder="e.g. EU, NA, GLOBAL", required=False)
+        self.max_p   = TextInput(label="👥 Max Players (optional)", placeholder=_modal_placeholder("e.g. 32 — leave blank for default"), max_length=3, required=False)
+        self.regione = TextInput(label="🌍 Region (optional)", placeholder=_modal_placeholder("e.g. EU, NA, GLOBAL"), required=False)
         self.add_item(self.timing)
         self.add_item(self.max_p)
         self.add_item(self.regione)
@@ -8350,8 +8354,8 @@ class TourModal3(DetailedModal):
     def __init__(self, uid: str):
         super().__init__(title="🏆 Tournament Setup (3/3)")
         self.uid = uid
-        self.note   = TextInput(label="📝 Player notes (optional)", placeholder="e.g. No lag, stable connection…", required=False, style=discord.TextStyle.paragraph, max_length=200)
-        self.colore = TextInput(label="🎨 Embed color (optional)", placeholder="gold / green / red / blue / #FF5733", required=False, max_length=20)
+        self.note   = TextInput(label="📝 Player notes (optional)", placeholder=_modal_placeholder("e.g. No lag, stable connection…"), required=False, style=discord.TextStyle.paragraph, max_length=200)
+        self.colore = TextInput(label="🎨 Embed color (optional)", placeholder=_modal_placeholder("gold / green / red / blue / #FF5733"), required=False, max_length=20)
         self.add_item(self.note)
         self.add_item(self.colore)
 
@@ -10160,13 +10164,13 @@ def _manager_or_admin_access(member) -> bool:
 class EventModal(DetailedModal, title="⚡ Create Flash Event"):
     orario = TextInput(
         label="⏰ Start time",
-        placeholder=(
+        placeholder=_modal_placeholder(
             "e.g. 18:00, 02/09 18:00, 02/09/2026 18:00, "
             "domani 18:00"
         ),
         max_length=32,
     )
-    premio = TextInput(label="🎁 Prize",         placeholder="e.g. 1000 Ruby")
+    premio = TextInput(label="🎁 Prize",         placeholder=_modal_placeholder("e.g. 1000 Ruby"))
 
     def __init__(self, channel: discord.TextChannel):
         super().__init__()
@@ -10398,13 +10402,13 @@ async def end_event(ctx, base_premio: int, valuta: str):
 # ==========================================
 class BigEventModal(DetailedModal, title="🌟 Create Big Event"):
     info   = TextInput(label="🏷️ Event Name | Time/Schedule",
-                       placeholder=(
+                       placeholder=_modal_placeholder(
                            "e.g. Stumble Cup S1 | 18:00, "
                            "02/09 18:00, or domani 18:00"
                        ))
-    prize1 = TextInput(label="🥇 1st Place Prize", placeholder="e.g. 5000 Ruby")
-    prize2 = TextInput(label="🥈 2nd Place Prize", placeholder="e.g. 3000 Ruby")
-    prize3 = TextInput(label="🥉 3rd Place Prize", placeholder="e.g. 1000 Ruby")
+    prize1 = TextInput(label="🥇 1st Place Prize", placeholder=_modal_placeholder("e.g. 5000 Ruby"))
+    prize2 = TextInput(label="🥈 2nd Place Prize", placeholder=_modal_placeholder("e.g. 3000 Ruby"))
+    prize3 = TextInput(label="🥉 3rd Place Prize", placeholder=_modal_placeholder("e.g. 1000 Ruby"))
 
     def __init__(self, channel: discord.TextChannel):
         super().__init__()
@@ -10506,9 +10510,9 @@ async def big_event(ctx):
     await ctx.send(embed=embed, view=view, file=event_file)
 
 class BigEventWinnerModal(DetailedModal, title="🏆 Big Event — Final Rankings"):
-    primo   = TextInput(label="🥇 1st Place — ID or <@mention>", placeholder="e.g. 123456789 or <@123456789>")
-    secondo = TextInput(label="🥈 2nd Place — ID or <@mention>", placeholder="e.g. 123456789 or <@123456789>")
-    terzo   = TextInput(label="🥉 3rd Place — ID or <@mention>", placeholder="e.g. 123456789 or <@123456789>")
+    primo   = TextInput(label="🥇 1st Place — ID or <@mention>", placeholder=_modal_placeholder("e.g. 123456789 or <@123456789>"))
+    secondo = TextInput(label="🥈 2nd Place — ID or <@mention>", placeholder=_modal_placeholder("e.g. 123456789 or <@123456789>"))
+    terzo   = TextInput(label="🥉 3rd Place — ID or <@mention>", placeholder=_modal_placeholder("e.g. 123456789 or <@123456789>"))
 
     def __init__(self, channel: discord.TextChannel):
         super().__init__()
@@ -10943,13 +10947,15 @@ async def _open_staff_ticket(guild: discord.Guild, user: discord.User, answers: 
 class GemsTransferModal(DetailedModal, title="💎 Request Gems Transfer"):
     sg_account = TextInput(
         label="Stumble Guys User ID / Username",
-        placeholder="Enter the account linked to this Discord user",
+        placeholder=_modal_placeholder(
+            "Enter the account linked to this Discord user"
+        ),
         min_length=1,
         max_length=40,
     )
     gems_amount = TextInput(
         label="Gems Amount",
-        placeholder="Enter the number of Gems to receive",
+        placeholder=_modal_placeholder("Enter the number of Gems to receive"),
         min_length=1,
         max_length=10,
     )
@@ -13219,7 +13225,7 @@ class HelpLangSelect(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=label, value=code)
                    for label, code in LANG_OPTIONS.items()]
-        super().__init__(placeholder="🌍 Choose your language…", options=options, min_values=1, max_values=1)
+        super().__init__(placeholder=_modal_placeholder("🌍 Choose your language…"), options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         lang = self.values[0]
@@ -13600,7 +13606,7 @@ async def _translate_announcement_embeds(language: str) -> list[discord.Embed]:
 class SetTongueModal(DetailedModal, title="🌐 Set Language"):
     language = TextInput(
         label="Enter your language:",
-        placeholder="Italian, English, Spanish, Deutsch...",
+        placeholder=_modal_placeholder("Italian, English, Spanish, Deutsch..."),
         min_length=2,
         max_length=80,
     )
@@ -13645,7 +13651,7 @@ class OfficialAnnouncementView(DetailedView):
 class StaffTutorialLanguageModal(DetailedModal, title="🌐 Translate Staff Guide"):
     language = TextInput(
         label="Enter your language:",
-        placeholder="Italian, English, Spanish, Deutsch...",
+        placeholder=_modal_placeholder("Italian, English, Spanish, Deutsch..."),
         min_length=2,
         max_length=80,
     )
@@ -13798,7 +13804,7 @@ async def boost_cmd(ctx):
 # 🔗 SG ACCOUNT LINK
 # ==========================================
 class SGLinkModal(DetailedModal, title="🔗 Link your Stumble Guys Account"):
-    sg_name = TextInput(label="🎮 Your SG Username", placeholder="e.g. StumblePro123", max_length=30)
+    sg_name = TextInput(label="🎮 Your SG Username", placeholder=_modal_placeholder("e.g. StumblePro123"), max_length=30)
 
     def __init__(self, guild_id: int, default_name: str = ""):
         super().__init__()
@@ -14805,7 +14811,7 @@ class WShopSelect(discord.ui.Select):
             options.append(discord.SelectOption(
                 label=f"W {name} — {format_shop_amount(data['price'])} Crystals",
                 value=name, emoji=emoji))
-        super().__init__(placeholder="Choose a W item…", min_values=1, max_values=1, options=options, row=0)
+        super().__init__(placeholder=_modal_placeholder("Choose a W item…"), min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -14892,7 +14898,7 @@ class GemsShopSelect(discord.ui.Select):
                 value=str(i), emoji=gems_emoji)
             for i, (gems, price) in enumerate(GEM_PACKAGES)
         ]
-        super().__init__(placeholder="Choose a Gems package…", min_values=1, max_values=1, options=options, row=0)
+        super().__init__(placeholder=_modal_placeholder("Choose a Gems package…"), min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -15041,7 +15047,7 @@ class ExchangeSelect(discord.ui.Select):
             for index, (ruby_cost, crystal_amount) in enumerate(EXCHANGE_RATES)
         )
         super().__init__(
-            placeholder="Choose an exchange…",
+            placeholder=_modal_placeholder("Choose an exchange…"),
             min_values=1,
             max_values=1,
             options=options,
