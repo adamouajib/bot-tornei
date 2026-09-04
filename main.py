@@ -1374,7 +1374,8 @@ TOURNAMENT_INVITE_TUTORIAL = (
     f"Get your personal invite link in <#{TOURNAMENT_GET_LINK_CHANNEL_ID}>."
 )
 TOURNAMENT_ACCOUNT_REQUIREMENT = (
-    "Must have a verified Stumble Guys account linked."
+    "Must have a verified Stumble Guys account linked.\n"
+    f"Link your account in <#{CHANNELS['account_link']}>."
 )
 TOURNAMENT_INVITE_REQUIREMENT = (
     "Must have invited at least 1 member to participate!\n"
