@@ -8465,12 +8465,17 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         if is_big
         else format_tournament_prizes(prize_value)
     )
+    prize_info = (
+        ""
+        if is_big
+        else f"🎁 **Prizes:**\n\n{prize_display}\n\n"
+    )
     info_val = (
         f"🎮 **Format:** {actual}\n\n"
         f"🗺️ **Map:** {data['mappa']}\n\n"
         f"⚡ **Ability:** {emote_s}\n\n"
-        f"{'' if is_big else f'🎁 **Prizes:**\\n\\n{prize_display}\\n\\n'}"
-        f"⏰ **{time_str}**"
+        + prize_info
+        + f"⏰ **{time_str}**"
     )
     if data.get("regione"):
         info_val += f"\n\n🌍 **Region:** {data['regione']}"
