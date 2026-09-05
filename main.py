@@ -268,6 +268,26 @@ def _sqlite_conn() -> sqlite3.Connection:
                 "CREATE TABLE IF NOT EXISTS metadata "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
+            _sqlite_connection.execute(
+                "CREATE TABLE IF NOT EXISTS wager_matches ("
+                "match_id TEXT PRIMARY KEY, "
+                "guild_id TEXT NOT NULL, "
+                "announcement_channel_id TEXT NOT NULL, "
+                "announcement_message_id TEXT, "
+                "thread_id TEXT, "
+                "controls_message_id TEXT, "
+                "creator_id TEXT NOT NULL, "
+                "team_one_json TEXT NOT NULL, "
+                "team_two_json TEXT NOT NULL, "
+                "joined_json TEXT NOT NULL, "
+                "amount INTEGER NOT NULL, "
+                "currency TEXT NOT NULL, "
+                "status TEXT NOT NULL, "
+                "winner_team INTEGER, "
+                "created_at REAL NOT NULL, "
+                "settled_at REAL"
+                ")"
+            )
             # Active invite counts are derived from active_invites. Do not
             # promote legacy historical totals into the active-only count.
             for (
@@ -6624,6 +6644,8 @@ async def on_ready():
             TourHubView(),
             CustomTournamentPanelView(),
             StaffLbView(),
+            TwoVTwoWagerView(),
+            TwoVTwoMatchControlsView(),
         ):
             bot.add_view(view)
         _additional_persistent_views_registered = True
@@ -15570,29 +15592,182 @@ def _credit_wager_balance(
     profile[base_key] = profile.get(base_key, 0) + max(0, int(amount))
 
 
+def _decode_wager_match(row) -> dict | None:
+    if row is None:
+        return None
+    (
+        match_id,
+        guild_id,
+        announcement_channel_id,
+        announcement_message_id,
+        thread_id,
+        controls_message_id,
+        creator_id,
+        team_one_json,
+        team_two_json,
+        joined_json,
+        amount,
+        currency,
+        status,
+        winner_team,
+        created_at,
+        settled_at,
+    ) = row
+    try:
+        team_one = json.loads(team_one_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        team_one = []
+    try:
+        team_two = json.loads(team_two_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        team_two = []
+    try:
+        joined = json.loads(joined_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        joined = []
+    return {
+        "match_id": str(match_id),
+        "guild_id": str(guild_id),
+        "announcement_channel_id": str(announcement_channel_id),
+        "announcement_message_id": (
+            str(announcement_message_id) if announcement_message_id else None
+        ),
+        "thread_id": str(thread_id) if thread_id else None,
+        "controls_message_id": (
+            str(controls_message_id) if controls_message_id else None
+        ),
+        "creator_id": str(creator_id),
+        "team_one": [str(user_id) for user_id in team_one],
+        "team_two": [str(user_id) for user_id in team_two],
+        "joined": {str(user_id) for user_id in joined},
+        "amount": int(amount),
+        "currency": str(currency),
+        "status": str(status),
+        "winner_team": int(winner_team) if winner_team is not None else None,
+        "created_at": float(created_at),
+        "settled_at": float(settled_at) if settled_at is not None else None,
+    }
+
+
+def _read_wager_match(match_id: str) -> dict | None:
+    with _sqlite_lock:
+        row = _sqlite_conn().execute(
+            "SELECT match_id, guild_id, announcement_channel_id, "
+            "announcement_message_id, thread_id, controls_message_id, creator_id, "
+            "team_one_json, team_two_json, joined_json, amount, currency, status, "
+            "winner_team, created_at, settled_at "
+            "FROM wager_matches WHERE match_id = ?",
+            (str(match_id),),
+        ).fetchone()
+    return _decode_wager_match(row)
+
+
+def _read_wager_match_by_announcement(message_id: int | str) -> dict | None:
+    with _sqlite_lock:
+        row = _sqlite_conn().execute(
+            "SELECT match_id, guild_id, announcement_channel_id, "
+            "announcement_message_id, thread_id, controls_message_id, creator_id, "
+            "team_one_json, team_two_json, joined_json, amount, currency, status, "
+            "winner_team, created_at, settled_at "
+            "FROM wager_matches WHERE announcement_message_id = ?",
+            (str(message_id),),
+        ).fetchone()
+    return _decode_wager_match(row)
+
+
+def _read_wager_match_by_thread(thread_id: int | str) -> dict | None:
+    with _sqlite_lock:
+        row = _sqlite_conn().execute(
+            "SELECT match_id, guild_id, announcement_channel_id, "
+            "announcement_message_id, thread_id, controls_message_id, creator_id, "
+            "team_one_json, team_two_json, joined_json, amount, currency, status, "
+            "winner_team, created_at, settled_at "
+            "FROM wager_matches WHERE thread_id = ?",
+            (str(thread_id),),
+        ).fetchone()
+    return _decode_wager_match(row)
+
+
+def _create_wager_match_record(
+    *,
+    match_id: str,
+    guild_id: int | str,
+    announcement_channel_id: int | str,
+    creator_id: int | str,
+    team_one: list[int | str],
+    team_two: list[int | str],
+    amount: int,
+    currency: str,
+) -> None:
+    with _sqlite_lock:
+        _sqlite_conn().execute(
+            "INSERT OR REPLACE INTO wager_matches("
+            "match_id, guild_id, announcement_channel_id, creator_id, "
+            "team_one_json, team_two_json, joined_json, amount, currency, "
+            "status, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, 'pending', ?)",
+            (
+                str(match_id),
+                str(guild_id),
+                str(announcement_channel_id),
+                str(creator_id),
+                json.dumps([str(user_id) for user_id in team_one]),
+                json.dumps([str(user_id) for user_id in team_two]),
+                int(amount),
+                str(currency),
+                datetime.now(timezone.utc).timestamp(),
+            ),
+        )
+        _sqlite_conn().commit()
+
+
+def _update_wager_match_record(match_id: str, **fields) -> None:
+    allowed = {
+        "announcement_message_id",
+        "thread_id",
+        "controls_message_id",
+        "joined",
+        "status",
+        "winner_team",
+        "settled_at",
+    }
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported wager match fields: {sorted(unknown)}")
+    if not fields:
+        return
+    values = []
+    assignments = []
+    for field, value in fields.items():
+        column = "joined_json" if field == "joined" else field
+        if field == "joined":
+            value = json.dumps(sorted(str(user_id) for user_id in value))
+        assignments.append(f"{column} = ?")
+        values.append(value)
+    values.append(str(match_id))
+    with _sqlite_lock:
+        _sqlite_conn().execute(
+            f"UPDATE wager_matches SET {', '.join(assignments)} WHERE match_id = ?",
+            values,
+        )
+        _sqlite_conn().commit()
+
+
 async def _add_2v2_participants(
     thread: discord.Thread,
     participants: list[discord.Member],
 ) -> None:
-    """Add every player to the newly-created wager thread before publishing it."""
+    """Add every player to the private wager thread."""
     for member in participants:
         await thread.add_user(member)
 
 
 async def _create_2v2_thread(
-    ctx,
+    parent_channel: discord.TextChannel,
     match_id: str,
     participants: list[discord.Member],
 ) -> discord.Thread:
-    """Create a private 2v2 thread, with a public-thread fallback."""
-    parent_channel = (
-        ctx.channel.parent
-        if isinstance(ctx.channel, discord.Thread)
-        else ctx.channel
-    )
-    if not isinstance(parent_channel, discord.TextChannel):
-        raise RuntimeError("A 2V2 wager must be started in a text channel.")
-
+    """Create the private thread only after all four players accept."""
     thread_name = f"⚔️-2v2-match-{match_id}"[:100]
     private_thread = None
     try:
@@ -15608,7 +15783,7 @@ async def _create_2v2_thread(
     except Exception as exc:
         print(
             f"[2V2] Private thread creation/setup failed; "
-            f"falling back to standard thread: {type(exc).__name__}: {exc}"
+            f"no public fallback will be used: {type(exc).__name__}: {exc}"
         )
         if private_thread is not None:
             try:
@@ -15618,106 +15793,165 @@ async def _create_2v2_thread(
                     f"[2V2] Could not remove failed private thread: "
                     f"{type(cleanup_exc).__name__}: {cleanup_exc}"
                 )
-
-    public_thread = None
-    try:
-        public_thread = await parent_channel.create_thread(
-            name=thread_name,
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=1440,
-            reason="Fallback standard 2V2 wager thread",
-        )
-        await _add_2v2_participants(public_thread, participants)
-        return public_thread
-    except Exception as exc:
-        if public_thread is not None:
-            try:
-                await public_thread.delete(reason="2V2 thread setup failed")
-            except Exception as cleanup_exc:
-                print(
-                    f"[2V2] Could not remove failed fallback thread: "
-                    f"{type(cleanup_exc).__name__}: {cleanup_exc}"
-                )
         raise RuntimeError(
-            f"Could not create or prepare a 2V2 thread: "
+            f"Could not create or prepare a private 2V2 thread: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
 
 
+def _2v2_participant_mentions(record: dict) -> tuple[str, str]:
+    return (
+        ", ".join(f"<@{user_id}>" for user_id in record["team_one"]),
+        ", ".join(f"<@{user_id}>" for user_id in record["team_two"]),
+    )
+
+
+def _build_2v2_controls_embed(
+    record: dict,
+    *,
+    result_text: str | None = None,
+) -> discord.Embed:
+    team_one, team_two = _2v2_participant_mentions(record)
+    if record["status"] == "settled":
+        title = "✅ 2V2 MATCH SETTLED"
+        color = discord.Color.green()
+    elif record["status"] == "cancelled":
+        title = "❌ 2V2 MATCH CANCELLED / DISPUTA"
+        color = discord.Color.red()
+    else:
+        title = "🏁 2V2 MATCH CONTROLS"
+        color = discord.Color.blurple()
+    description = (
+        f"**Wager:** {format_num(record['amount'])} "
+        f"{WAGER_CURRENCY_LABELS[record['currency']][1]} each\n"
+        f"**Total pot:** {format_num(record['amount'] * 4)} "
+        f"{WAGER_CURRENCY_LABELS[record['currency']][1]}\n\n"
+        f"**Team 1:** {team_one}\n"
+        f"**Team 2:** {team_two}\n"
+    )
+    if result_text:
+        description += f"\n{result_text}"
+    elif record["status"] == "in_progress":
+        description += (
+            "\nChoose the winning team below. The winning team receives the "
+            "full pot, split between its two players."
+        )
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.set_footer(text=f"PCF™ 2V2 Match • {record['match_id']}")
+    return embed
+
+
 class TwoVTwoWagerView(DetailedView):
-    """Require every tagged player to accept before escrowing a 2v2 wager."""
+    """Public acceptance view; the private thread is created after all accept."""
 
     def __init__(
         self,
-        guild: discord.Guild,
-        challenger: discord.Member,
-        participants: list[discord.Member],
-        amount: int,
-        currency: str,
-        match_id: str,
-        thread: discord.Thread,
+        guild: discord.Guild | None = None,
+        challenger: discord.Member | None = None,
+        participants: list[discord.Member] | None = None,
+        amount: int = 0,
+        currency: str = "rubies",
+        match_id: str | None = None,
     ):
-        super().__init__(timeout=15 * 60)
-        self.guild_id = guild.id
+        super().__init__(timeout=None)
+        self.guild_id = guild.id if guild else None
         self.challenger = challenger
-        self.participants = participants
-        self.participant_ids = {member.id for member in participants}
-        self.amount = amount
+        self.participants = participants or []
+        self.participant_ids = {member.id for member in self.participants}
+        self.amount = int(amount)
         self.currency = currency.casefold()
-        self.match_id = str(match_id)
-        self.thread = thread
-        self.confirmed = {challenger.id}
+        self.match_id = str(match_id) if match_id else None
+        self.confirmed = {challenger.id} if challenger else set()
         self.state = "pending"
         self.message: discord.Message | None = None
-        self.wager_id: str | None = None
+        self.thread: discord.Thread | None = None
+        self.wager_id: str | None = self.match_id
 
     @property
     def currency_label(self) -> str:
         return WAGER_CURRENCY_LABELS[self.currency][1]
 
-    def _status_lines(self) -> str:
-        team_one = self.participants[:2]
-        team_two = self.participants[2:]
+    async def _hydrate(self, interaction: discord.Interaction) -> dict | None:
+        record = (
+            _read_wager_match(self.match_id)
+            if self.match_id
+            else _read_wager_match_by_announcement(interaction.message.id)
+        )
+        if not record or str(record["guild_id"]) != str(interaction.guild.id):
+            return None
+        self.match_id = record["match_id"]
+        self.guild_id = int(record["guild_id"])
+        self.amount = record["amount"]
+        self.currency = record["currency"]
+        self.confirmed = {int(user_id) for user_id in record["joined"]}
+        self.state = record["status"]
+        self.participant_ids = set(
+            int(user_id) for user_id in record["team_one"] + record["team_two"]
+        )
+        if self.challenger is None:
+            self.challenger = interaction.guild.get_member(int(record["creator_id"]))
+        if not self.participants:
+            members = []
+            for user_id in record["team_one"] + record["team_two"]:
+                member = interaction.guild.get_member(int(user_id))
+                if member is None:
+                    try:
+                        member = await interaction.guild.fetch_member(int(user_id))
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        member = None
+                if member is not None:
+                    members.append(member)
+            self.participants = members
+        return record
 
-        def team_lines(members: list[discord.Member]) -> str:
+    def _status_lines(self) -> str:
+        by_id = {member.id: member for member in self.participants}
+
+        def team_lines(team_ids: list[int | str]) -> str:
             return "\n".join(
-                f"{'✅' if member.id in self.confirmed else '⏳'} "
-                f"{member.mention} — "
-                f"{'confirmed' if member.id in self.confirmed else 'waiting'}"
-                for member in members
+                f"{'✅' if str(user_id) in {str(uid) for uid in self.confirmed} else '⏳'} "
+                f"{by_id.get(int(user_id)).mention if by_id.get(int(user_id)) else f'<@{user_id}>'}"
+                for user_id in team_ids
             )
 
         return (
-            f"**Team 1**\n{team_lines(team_one)}\n\n"
-            f"**Team 2**\n{team_lines(team_two)}"
+            f"**Team 1**\n{team_lines([member.id for member in self.participants[:2]])}\n\n"
+            f"**Team 2**\n{team_lines([member.id for member in self.participants[2:]])}"
         )
 
-    def build_embed(self, *, started: bool = False, error: str | None = None) -> discord.Embed:
+    def build_embed(
+        self,
+        *,
+        started: bool = False,
+        error: str | None = None,
+    ) -> discord.Embed:
         if started:
-            title = "🏁 2V2 WAGER STARTED"
+            title = "🏁 2V2 WAGER — IN PROGRESS / IN CORSO"
             color = discord.Color.green()
             prompt = (
-                "All four players confirmed. The wager has been escrowed; "
-                "staff can record the winning team."
+                "All four players accepted. The private match thread is being "
+                "created now."
             )
-            if self.wager_id:
-                prompt += f"\nUse `:2v2-result {self.wager_id} <1|2>` to settle it."
         elif error:
             title = "❌ 2V2 WAGER CANCELLED"
             color = discord.Color.red()
             prompt = error
         else:
-            title = "⚔️ 2V2 WAGER CHALLENGE"
+            title = "⚔️ 2V2 WAGER / SFIDA"
             color = discord.Color.blurple()
             prompt = (
-                "Every tagged player must press **Accept Challenge** before "
-                "the match starts."
+                "Players can press **Accept / Partecipa** here. "
+                "The private match thread opens when all four players join."
             )
         embed = discord.Embed(
             title=title,
             description=(
-                f"**Stake:** {format_num(self.amount)} {self.currency_label} each\n"
-                f"**Total pot:** {format_num(self.amount * 4)} {self.currency_label}\n\n"
+                f"**Host / Creator:** "
+                f"{self.challenger.mention if self.challenger else '—'}\n"
+                f"**Wager / Prize:** {format_num(self.amount)} "
+                f"{self.currency_label} each · "
+                f"**{format_num(self.amount * 4)} {self.currency_label} total**\n"
+                f"**Current Joined Players:** {len(self.confirmed)}/4\n\n"
                 f"{prompt}\n\n{self._status_lines()}"
             ),
             color=color,
@@ -15733,62 +15967,116 @@ class TwoVTwoWagerView(DetailedView):
         if self.participant_ids != self.confirmed:
             return
         async with _wager_lock:
-            if self.state != "pending":
+            current = _read_wager_match(self.match_id)
+            if current is None or current["status"] != "pending":
                 return
-            self.state = "escrowing"
-            profiles = [
-                get_profile(member.id, member.display_name)
-                for member in self.participants
-            ]
-            insufficient = [
-                member
-                for member, profile in zip(self.participants, profiles)
-                if _wager_balance(profile, self.currency) < self.amount
-            ]
-            if insufficient:
-                self.state = "cancelled"
-                self._disable_buttons()
-                names = ", ".join(member.mention for member in insufficient)
-                await interaction.response.edit_message(
-                    embed=self.build_embed(
-                        error=f"Insufficient {self.currency_label} for {names}."
-                    ),
+            _update_wager_match_record(
+                self.match_id,
+                status="starting",
+                joined=self.confirmed,
+            )
+        await interaction.response.defer(ephemeral=True)
+        self.state = "creating_thread"
+        self._disable_buttons()
+        await interaction.message.edit(embed=self.build_embed(started=True), view=self)
+        parent_channel = (
+            interaction.channel.parent
+            if isinstance(interaction.channel, discord.Thread)
+            else interaction.channel
+        )
+        thread = None
+        try:
+            if not isinstance(parent_channel, discord.TextChannel):
+                raise RuntimeError("The 2V2 announcement must be in a text channel.")
+            thread = await _create_2v2_thread(
+                parent_channel,
+                self.match_id,
+                self.participants,
+            )
+            record = _read_wager_match(self.match_id)
+            if record is None:
+                raise RuntimeError("The SQLite match record no longer exists.")
+            controls_view = TwoVTwoMatchControlsView(self.match_id)
+            controls_record = dict(record)
+            controls_record["status"] = "in_progress"
+            controls_message = await thread.send(
+                embed=_build_2v2_controls_embed(controls_record),
+                view=controls_view,
+            )
+            async with _wager_lock:
+                profiles = [
+                    get_profile(member.id, member.display_name)
+                    for member in self.participants
+                ]
+                insufficient = [
+                    member
+                    for member, profile in zip(self.participants, profiles)
+                    if _wager_balance(profile, self.currency) < self.amount
+                ]
+                if insufficient:
+                    names = ", ".join(member.mention for member in insufficient)
+                    raise ValueError(f"Insufficient {self.currency_label} for {names}.")
+                for profile in profiles:
+                    _debit_wager_balance(profile, self.currency, self.amount)
+                _update_wager_match_record(
+                    self.match_id,
+                    status="in_progress",
+                    joined=self.confirmed,
+                    thread_id=thread.id,
+                    controls_message_id=controls_message.id,
+                )
+                active_wagers[self.match_id] = {
+                    "guild_id": self.guild_id,
+                    "team_one": [str(member.id) for member in self.participants[:2]],
+                    "team_two": [str(member.id) for member in self.participants[2:]],
+                    "amount": self.amount,
+                    "currency": self.currency,
+                    "created_at": datetime.now(timezone.utc).timestamp(),
+                }
+                save_db()
+            self.thread = thread
+            self.wager_id = self.match_id
+            self.state = "in_progress"
+            await interaction.followup.send(
+                f"✅ All four players joined. Private match thread created: {thread.mention}",
+                ephemeral=True,
+            )
+            self.stop()
+        except Exception as exc:
+            print(f"[2V2] Could not start private match: {type(exc).__name__}: {exc}")
+            if thread is not None:
+                try:
+                    await thread.delete(reason="2V2 match setup failed")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            self.state = "cancelled"
+            _update_wager_match_record(
+                self.match_id,
+                status="cancelled",
+                joined=self.confirmed,
+            )
+            self._disable_buttons()
+            try:
+                await interaction.message.edit(
+                    embed=self.build_embed(error=str(exc)),
                     view=self,
                 )
-                self.stop()
-                return
-            for profile in profiles:
-                _debit_wager_balance(profile, self.currency, self.amount)
-            wager_id = self.match_id
-            self.wager_id = wager_id
-            active_wagers[wager_id] = {
-                "guild_id": self.guild_id,
-                "team_one": [self.participants[0].id, self.participants[1].id],
-                "team_two": [self.participants[2].id, self.participants[3].id],
-                "amount": self.amount,
-                "currency": self.currency,
-                "created_at": datetime.now(timezone.utc).timestamp(),
-            }
-            save_db()
-        self.state = "started"
-        self._disable_buttons()
-        await interaction.response.edit_message(
-            embed=self.build_embed(started=True),
-            view=self,
-        )
-        await self.thread.send(
-            f"🏁 **2v2 Match Started!** All four players accepted. "
-            f"Staff can settle this wager with `:2v2-result {self.wager_id} <1|2>`."
-        )
-        self.stop()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+            await interaction.followup.send(
+                f"❌ The 2V2 match could not start: {exc}",
+                ephemeral=True,
+            )
+            self.stop()
 
     @discord.ui.button(
-        label="✅ Accept Challenge",
+        label="✅ Accept / Partecipa",
         style=discord.ButtonStyle.success,
         custom_id="two_v_two_wager_accept",
     )
     async def accept(self, interaction: discord.Interaction, button: Button):
-        if self.state != "pending":
+        record = await self._hydrate(interaction)
+        if record is None or record["status"] != "pending":
             return await interaction.response.send_message(
                 "❌ This 2V2 wager is already closed.",
                 ephemeral=True,
@@ -15800,21 +16088,23 @@ class TwoVTwoWagerView(DetailedView):
             )
         if interaction.user.id in self.confirmed:
             return await interaction.response.send_message(
-                "✅ You have already accepted this challenge.",
+                "✅ You have already joined this 2V2 match.",
                 ephemeral=True,
             )
         self.confirmed.add(interaction.user.id)
+        _update_wager_match_record(self.match_id, joined=self.confirmed)
         if self.participant_ids == self.confirmed:
             return await self._finish_if_confirmed(interaction)
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.button(
-        label="❌ Decline Challenge",
+        label="❌ Decline / Rifiuta",
         style=discord.ButtonStyle.danger,
         custom_id="two_v_two_wager_decline",
     )
     async def decline(self, interaction: discord.Interaction, button: Button):
-        if self.state != "pending":
+        record = await self._hydrate(interaction)
+        if record is None or record["status"] != "pending":
             return await interaction.response.send_message(
                 "❌ This 2V2 wager is already closed.",
                 ephemeral=True,
@@ -15825,6 +16115,11 @@ class TwoVTwoWagerView(DetailedView):
                 ephemeral=True,
             )
         self.state = "declined"
+        _update_wager_match_record(
+            self.match_id,
+            status="cancelled",
+            joined=self.confirmed,
+        )
         self._disable_buttons()
         await interaction.response.edit_message(
             embed=self.build_embed(
@@ -15834,19 +16129,111 @@ class TwoVTwoWagerView(DetailedView):
         )
         self.stop()
 
-    async def on_timeout(self) -> None:
-        if self.state != "pending":
-            return
-        self.state = "expired"
+
+class TwoVTwoMatchControlsView(DetailedView):
+    """Winner/cancel controls published inside the private 2V2 thread."""
+
+    def __init__(self, match_id: str | None = None):
+        super().__init__(timeout=None)
+        self.match_id = str(match_id) if match_id else None
+
+    async def _load(self, interaction: discord.Interaction) -> dict | None:
+        record = (
+            _read_wager_match(self.match_id)
+            if self.match_id
+            else _read_wager_match_by_thread(interaction.channel.id)
+        )
+        if not record or str(record["guild_id"]) != str(interaction.guild.id):
+            return None
+        self.match_id = record["match_id"]
+        return record
+
+    @staticmethod
+    def _can_control(record: dict, user_id: int) -> bool:
+        return str(user_id) in {
+            record["creator_id"],
+            *record["team_one"],
+            *record["team_two"],
+        }
+
+    def _disable_buttons(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def _report(self, interaction: discord.Interaction, winning_team: int):
+        record = await self._load(interaction)
+        if record is None or record["status"] != "in_progress":
+            return await interaction.response.send_message(
+                "❌ This 2V2 match is no longer active.",
+                ephemeral=True,
+            )
+        if not self._can_control(record, interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ Only the 2V2 participants can report this result.",
+                ephemeral=True,
+            )
+        await interaction.response.defer()
+        result = await _settle_2v2_wager(interaction.guild, record["match_id"], winning_team)
+        if not result["ok"]:
+            return await interaction.followup.send(result["message"], ephemeral=True)
         self._disable_buttons()
-        if self.message is not None:
-            try:
-                await self.message.edit(
-                    embed=self.build_embed(error="The challenge expired."),
-                    view=self,
-                )
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
+        settled_record = _read_wager_match(record["match_id"]) or record
+        await interaction.message.edit(
+            embed=_build_2v2_controls_embed(
+                settled_record,
+                result_text=result["message"],
+            ),
+            view=self,
+        )
+        await interaction.followup.send(result["message"])
+
+    @discord.ui.button(
+        label="🏆 Team 1 Won",
+        style=discord.ButtonStyle.success,
+        custom_id="two_v_two_team_one_won",
+    )
+    async def team_one_won(self, interaction: discord.Interaction, button: Button):
+        await self._report(interaction, 1)
+
+    @discord.ui.button(
+        label="🏆 Team 2 Won",
+        style=discord.ButtonStyle.success,
+        custom_id="two_v_two_team_two_won",
+    )
+    async def team_two_won(self, interaction: discord.Interaction, button: Button):
+        await self._report(interaction, 2)
+
+    @discord.ui.button(
+        label="⚖️ Cancel / Disputa",
+        style=discord.ButtonStyle.danger,
+        custom_id="two_v_two_cancel",
+    )
+    async def cancel(self, interaction: discord.Interaction, button: Button):
+        record = await self._load(interaction)
+        if record is None or record["status"] != "in_progress":
+            return await interaction.response.send_message(
+                "❌ This 2V2 match is no longer active.",
+                ephemeral=True,
+            )
+        if not self._can_control(record, interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ Only the 2V2 participants can dispute this match.",
+                ephemeral=True,
+            )
+        await interaction.response.defer()
+        result = await _cancel_2v2_wager(interaction.guild, record["match_id"])
+        if not result["ok"]:
+            return await interaction.followup.send(result["message"], ephemeral=True)
+        self._disable_buttons()
+        cancelled_record = _read_wager_match(record["match_id"]) or record
+        await interaction.message.edit(
+            embed=_build_2v2_controls_embed(
+                cancelled_record,
+                result_text=result["message"],
+            ),
+            view=self,
+        )
+        await interaction.followup.send(result["message"])
 
 
 @bot.command(name="2v2", aliases=["2v2-wager", "2v2_wager"])
@@ -15899,14 +16286,26 @@ async def two_v_two(
     match_id = str(getattr(ctx.message, "id", None) or int(
         datetime.now(timezone.utc).timestamp()
     ))
-    try:
-        thread = await _create_2v2_thread(ctx, match_id, participants)
-    except RuntimeError as exc:
+    announcement_channel = (
+        ctx.channel.parent
+        if isinstance(ctx.channel, discord.Thread)
+        else ctx.channel
+    )
+    if not isinstance(announcement_channel, discord.TextChannel):
         return await ctx.send(
-            f"❌ I couldn't create the 2V2 match thread: {exc}",
-            delete_after=10.0,
+            "❌ A 2V2 wager must be started in a text channel.",
+            delete_after=8.0,
         )
-
+    _create_wager_match_record(
+        match_id=match_id,
+        guild_id=ctx.guild.id,
+        announcement_channel_id=announcement_channel.id,
+        creator_id=ctx.author.id,
+        team_one=[participants[0].id, participants[1].id],
+        team_two=[participants[2].id, participants[3].id],
+        amount=amount,
+        currency=currency_key,
+    )
     view = TwoVTwoWagerView(
         ctx.guild,
         ctx.author,
@@ -15914,33 +16313,118 @@ async def two_v_two(
         amount,
         currency_key,
         match_id,
-        thread,
     )
     try:
-        view.message = await thread.send(embed=view.build_embed(), view=view)
+        view.message = await announcement_channel.send(
+            embed=view.build_embed(),
+            view=view,
+        )
+        _update_wager_match_record(
+            match_id,
+            announcement_message_id=view.message.id,
+            joined=view.confirmed,
+        )
     except Exception as exc:
-        print(f"[2V2] Could not publish wager in thread: {type(exc).__name__}: {exc}")
-        try:
-            await thread.delete(reason="2V2 wager message setup failed")
-        except Exception as cleanup_exc:
-            print(
-                f"[2V2] Could not remove thread after publish failure: "
-                f"{type(cleanup_exc).__name__}: {cleanup_exc}"
-            )
+        print(
+            f"[2V2] Could not publish public wager: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        _update_wager_match_record(match_id, status="cancelled")
         return await ctx.send(
-            "❌ I couldn't publish the interactive 2V2 wager in the match thread.",
+            "❌ I couldn't publish the public 2V2 wager announcement.",
             delete_after=10.0,
         )
+    return view.message
 
-    notification_channel = (
-        ctx.channel.parent
-        if isinstance(ctx.channel, discord.Thread)
-        else ctx.channel
-    )
-    await notification_channel.send(
-        f"⚔️ **2v2 Challenge Created!** All players move to "
-        f"{thread.mention} to confirm the wager."
-    )
+
+async def _settle_2v2_wager(
+    guild: discord.Guild,
+    match_id: str,
+    winning_team: int,
+) -> dict:
+    async with _wager_lock:
+        record = _read_wager_match(match_id)
+        if record is None or record["status"] != "in_progress":
+            return {
+                "ok": False,
+                "message": "❌ That 2V2 wager is not active or was already settled.",
+            }
+        winning_key = "team_one" if int(winning_team) == 1 else "team_two"
+        losing_key = "team_two" if winning_key == "team_one" else "team_one"
+        winners = list(record[winning_key])
+        losers = list(record[losing_key])
+        currency = record["currency"]
+        payout_each = int(record["amount"]) * 2
+        for user_id in winners + losers:
+            member = guild.get_member(int(user_id))
+            profile = get_profile(
+                user_id,
+                member.display_name if member else str(user_id),
+            )
+            profile["wager_matches"] = profile.get("wager_matches", 0) + 1
+            if user_id in winners:
+                profile["wager_wins"] = profile.get("wager_wins", 0) + 1
+                _credit_wager_balance(profile, currency, payout_each)
+        save_db()
+        _record_competitive_match_stats(
+            winners + losers,
+            winners,
+            currency,
+            payout_each,
+        )
+        _update_wager_match_record(
+            match_id,
+            status="settled",
+            winner_team=int(winning_team),
+            settled_at=datetime.now(timezone.utc).timestamp(),
+        )
+        active_wagers.pop(str(match_id), None)
+
+    if db.get("duel_leaderboard_channel_id"):
+        await auto_duel_leaderboard()
+    winner_mentions = ", ".join(f"<@{user_id}>" for user_id in winners)
+    return {
+        "ok": True,
+        "message": (
+            f"✅ 2V2 wager **{match_id}** settled for {winner_mentions}.\n"
+            f"💰 Each winner received **{format_num(payout_each)}** "
+            f"{WAGER_CURRENCY_LABELS[currency][1]}."
+        ),
+    }
+
+
+async def _cancel_2v2_wager(guild: discord.Guild, match_id: str) -> dict:
+    async with _wager_lock:
+        record = _read_wager_match(match_id)
+        if record is None or record["status"] != "in_progress":
+            return {
+                "ok": False,
+                "message": "❌ That 2V2 wager is not active or was already settled.",
+            }
+        participants = record["team_one"] + record["team_two"]
+        refund = int(record["amount"])
+        for user_id in participants:
+            member = guild.get_member(int(user_id))
+            profile = get_profile(
+                user_id,
+                member.display_name if member else str(user_id),
+            )
+            _credit_wager_balance(profile, record["currency"], refund)
+        save_db()
+        _update_wager_match_record(
+            match_id,
+            status="cancelled",
+            settled_at=datetime.now(timezone.utc).timestamp(),
+        )
+        active_wagers.pop(str(match_id), None)
+    return {
+        "ok": True,
+        "message": (
+            f"⚖️ 2V2 wager **{match_id}** was cancelled/disputed. "
+            f"Each player was refunded **{format_num(refund)}** "
+            f"{WAGER_CURRENCY_LABELS[record['currency']][1]}."
+        ),
+    }
 
 
 @bot.command(name="2v2-result", aliases=["2v2_result", "2v2-winner"])
@@ -15966,59 +16450,10 @@ async def two_v_two_result(
     else:
         return await ctx.send("❌ Winning team must be `1` or `2`.", delete_after=6.0)
 
-    async with _wager_lock:
-        wager = active_wagers.get(str(wager_id))
-        if not wager:
-            return await ctx.send(
-                "❌ That 2V2 wager is not active or was already settled.",
-                delete_after=8.0,
-            )
-        wager = active_wagers.pop(str(wager_id))
-        winners = list(wager[winning_key])
-        losers = list(
-            wager["team_two" if winning_key == "team_one" else "team_one"]
-        )
-        currency = wager["currency"]
-        payout_each = int(wager["amount"]) * 2
-
-        for user_id in winners + losers:
-            member = ctx.guild.get_member(int(user_id))
-            profile = get_profile(
-                user_id,
-                member.display_name if member else str(user_id),
-            )
-            profile["wager_matches"] = profile.get("wager_matches", 0) + 1
-            if user_id in winners:
-                profile["wager_wins"] = profile.get("wager_wins", 0) + 1
-                _credit_wager_balance(profile, currency, payout_each)
-
-        # SQLiteProfile commits each field assignment above. Persist the
-        # surrounding bot state too so this settlement is visible immediately
-        # to every subsequent live leaderboard query.
-        save_db()
-        _record_competitive_match_stats(
-            winners + losers,
-            winners,
-            currency,
-            payout_each,
-        )
-
-    # The command reads SQLite live, and the configured automatic leaderboard
-    # should reflect this completed 2V2 immediately instead of waiting for its
-    # next 30-minute scheduled iteration.
-    if db.get("duel_leaderboard_channel_id"):
-        await auto_duel_leaderboard()
-
-    winner_mentions = []
-    for user_id in winners:
-        member = ctx.guild.get_member(int(user_id))
-        winner_mentions.append(member.mention if member else f"<@{user_id}>")
-    await ctx.send(
-        f"✅ 2V2 wager **{wager_id}** settled for "
-        f"{', '.join(winner_mentions)}.\n"
-        f"💰 Each winner received **{format_num(payout_each)}** "
-        f"{WAGER_CURRENCY_LABELS[currency][1]}."
-    )
+    result = await _settle_2v2_wager(ctx.guild, str(wager_id), int(
+        winning_key == "team_two"
+    ) + 1)
+    await ctx.send(result["message"], delete_after=None if result["ok"] else 8.0)
 
 
 # ==========================================
