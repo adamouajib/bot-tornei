@@ -9084,12 +9084,21 @@ def _build_round_matches(
     must already contain an even number of real players; silently appending a
     Bye there would let a player receive multiple free wins.
     """
-    player_ids = player_ids or []
+    slots = list(slots)
+    player_ids = list(player_ids or [])
+    if len(player_ids) < len(slots):
+        player_ids.extend([None] * (len(slots) - len(player_ids)))
     if len(slots) % 2:
-        raise TournamentByeError(
-            f"Round {round_number} cannot be built from an odd number of players; "
-            "a later round must use real 1v1 pairings."
-        )
+        if round_number < 2:
+            raise TournamentByeError(
+                "The initial round must be padded to a power-of-two bracket."
+            )
+        # An odd number of qualified players must not be resolved with a
+        # second Bye. Add an explicit 1v1 bracket opponent instead, so the
+        # round can start and the match is resolved like every other match.
+        bot_number = len(slots) + 1
+        slots.append(f"Bot R{round_number}-{bot_number}")
+        player_ids.append(f"bot_round_{round_number}_{bot_number}")
     byes_given = _tournament_byes_given(tournament) if tournament is not None else set()
     pending_byes = set()
     matches = {}
@@ -9116,8 +9125,8 @@ def _build_round_matches(
             pending_byes.add(bye_key)
         matches[i//2+1] = {
             "p1": p1, "p2": p2,
-            "id1": player_ids[i] if i < len(player_ids) else None,
-            "id2": player_ids[i + 1] if i + 1 < len(player_ids) else None,
+            "id1": player_ids[i],
+            "id2": player_ids[i + 1],
             "winner": p1 if p2 == "BYE" else None,
             "winner_id": (
                 player_ids[i] if p2 == "BYE" and i < len(player_ids) else None
