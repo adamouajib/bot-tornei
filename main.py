@@ -17051,6 +17051,29 @@ async def duel_leaderboard(ctx):
         await ctx.send(embed=embed)
 
 
+# --- Fast announcement commands ---
+@bot.command(name="everyone")
+@hoster_only()
+async def ping_everyone(ctx):
+    """Send a fast @everyone announcement and remove both messages."""
+    try:
+        await ctx.send(
+            content="@everyone",
+            allowed_mentions=discord.AllowedMentions(
+                everyone=True,
+                users=False,
+                roles=False,
+                replied_user=False,
+            ),
+            delete_after=1.0,
+        )
+    finally:
+        try:
+            await ctx.message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+
 # --- AVVIO DEL BOT ---
 if __name__ == "__main__":
     token = os.getenv("DISCORD_API_TOKEN") or os.getenv("DISCORD_TOKEN") or "MISSING_DISCORD_TOKEN"
