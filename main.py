@@ -916,6 +916,13 @@ def _legacy_state(data: dict) -> dict:
     if state["tour"]:
         state["tour"] = dict(state["tour"])
         state["tour"]["host"] = None
+        state["tour"]["tournament_byes_given"] = list(
+            dict.fromkeys(
+                str(user_id)
+                for user_id in state["tour"].get("tournament_byes_given", [])
+                if user_id is not None
+            )
+        )
         if "matches" in state["tour"]:
             state["tour"]["matches"] = {
                 int(key): value for key, value in state["tour"]["matches"].items()
@@ -1469,6 +1476,7 @@ def xp_to_next_level(current_level: int) -> int:
     return (current_level + 1) * 100
 
 TEAM_MODES = {"2V2", "3V3", "4V4", "5V5", "6V6", "7V7", "8V8"}
+MAX_BYES_PER_USER_PER_TOURNAMENT = 1
 DEFAULT_TOURNAMENT_PRIZES = (
     "1. 100 Crystals + 2500 Rubies, "
     "2. 50 Crystals + 1500 Rubies, "
@@ -5659,13 +5667,17 @@ async def _auto_generate_bracket(guild: discord.Guild, t: dict):
         while len(slots) < t["max"]:
             slots.append(f"Bot Team {bot_idx}"); bot_idx += 1
         total_rounds = math.ceil(math.log2(len(slots))) if len(slots) > 1 else 1
-        t["matches"]      = _build_round_matches(slots)
+        t["matches"]      = _build_initial_round_matches(
+            t,
+            slots=slots,
+            player_ids=[None] * len(slots),
+        )
         t["round"]        = 1
         t["total_rounds"] = total_rounds
     else:
         names = list(t["player_names"])
         total_rounds = math.ceil(math.log2(len(names))) if len(names) > 1 else 1
-        t["matches"] = _build_round_matches(names, t["players"])
+        t["matches"] = _build_initial_round_matches(t)
         t["round"]        = 1
         t["total_rounds"] = total_rounds
     save_db()
@@ -5687,13 +5699,27 @@ async def _advance_round_if_complete(ctx, t: dict) -> bool:
     ]
     if len(winners) < 2:
         return False
+    next_round = int(t.get("round", 1)) + 1
+    try:
+        next_matches = (
+            _build_ffa_matches(winners)
+            if t.get("modalita") == "FFA"
+            else _build_round_matches(
+                winners,
+                winner_ids,
+                round_number=next_round,
+                tournament=t,
+            )
+        )
+    except TournamentByeError as exc:
+        return await ctx.send(
+            f"❌ {exc} Resolve the bracket with real 1v1 pairings "
+            "before advancing.",
+            delete_after=8.0,
+        )
     _archive_completed_matches(t)
-    t["round"] = int(t.get("round", 1)) + 1
-    t["matches"] = (
-        _build_ffa_matches(winners)
-        if t.get("modalita") == "FFA"
-        else _build_round_matches(winners, winner_ids)
-    )
+    t["round"] = next_round
+    t["matches"] = next_matches
     t["bracket_channel_id"] = t.get("bracket_channel_id") or ctx.channel.id
     save_db()
     await ctx.send(f"🔄 **Round {t['round']}** started automatically — {len(winners)} qualified!", delete_after=6.0)
@@ -8559,6 +8585,7 @@ async def _finish_tour_creation(interaction: discord.Interaction, data: dict):
         "mappa":             data["mappa"],
         "emote":             emote_s,
         "players":           [], "player_names": [], "matches": {},
+        "tournament_byes_given": [],
         "max":               default_max, "round": 1, "total_rounds": "?",
         "bracket_msg_id":    None, "bracket_channel_id": None,
         "is_big":            is_big,
@@ -9017,41 +9044,169 @@ async def big_tour(ctx):
 # ==========================================
 # 🏆 BRACKET HELPERS
 # ==========================================
-def _build_round_matches(slots: list, player_ids: list | None = None) -> dict:
-    """Bracket 1v1 standard."""
+class TournamentByeError(ValueError):
+    """Raised when a bracket would create an invalid or repeated Bye."""
+
+
+def _bye_tracking_key(player_id, player_name: str) -> str:
+    """Return a durable identity for a player receiving a tournament Bye."""
+    if player_id is not None and str(player_id).strip():
+        return str(player_id)
+    return f"name:{str(player_name).strip().casefold()}"
+
+
+def _tournament_byes_given(tournament: dict) -> set[str]:
+    """Load and normalize the Bye identities stored on the active tournament."""
+    raw_byes = tournament.setdefault("tournament_byes_given", [])
+    if isinstance(raw_byes, set):
+        raw_byes = list(raw_byes)
+    if not isinstance(raw_byes, list):
+        raw_byes = []
+    normalized = {
+        str(user_id)
+        for user_id in raw_byes
+        if user_id is not None and str(user_id).strip()
+    }
+    tournament["tournament_byes_given"] = sorted(normalized)
+    return normalized
+
+
+def _build_round_matches(
+    slots: list,
+    player_ids: list | None = None,
+    *,
+    round_number: int = 1,
+    tournament: dict | None = None,
+) -> dict:
+    """Build standard 1v1 matches without ever inventing a later-round Bye.
+
+    The initial bracket may contain explicit ``BYE`` slots. Every later round
+    must already contain an even number of real players; silently appending a
+    Bye there would let a player receive multiple free wins.
+    """
     player_ids = player_ids or []
+    if len(slots) % 2:
+        raise TournamentByeError(
+            f"Round {round_number} cannot be built from an odd number of players; "
+            "a later round must use real 1v1 pairings."
+        )
+    byes_given = _tournament_byes_given(tournament) if tournament is not None else set()
+    pending_byes = set()
     matches = {}
     for i in range(0, len(slots), 2):
         p1 = slots[i]
-        p2 = slots[i+1] if i+1 < len(slots) else "BYE"
+        p2 = slots[i + 1]
+        if p1 == "BYE":
+            raise TournamentByeError(
+                f"Round {round_number} contains an unpaired Bye slot."
+            )
+        if p2 == "BYE":
+            if round_number != 1:
+                raise TournamentByeError(
+                    f"Round {round_number} attempted to assign a Bye; "
+                    "later rounds require a real 1v1 pairing."
+                )
+            player_id = player_ids[i] if i < len(player_ids) else None
+            bye_key = _bye_tracking_key(player_id, p1)
+            if bye_key in byes_given or bye_key in pending_byes:
+                raise TournamentByeError(
+                    f"Player {p1!r} already received the maximum of "
+                    f"{MAX_BYES_PER_USER_PER_TOURNAMENT} Bye in this tournament."
+                )
+            pending_byes.add(bye_key)
         matches[i//2+1] = {
             "p1": p1, "p2": p2,
             "id1": player_ids[i] if i < len(player_ids) else None,
             "id2": player_ids[i + 1] if i + 1 < len(player_ids) else None,
-            "winner": p1 if p2 == "BYE" else None, "winner_id": None,
+            "winner": p1 if p2 == "BYE" else None,
+            "winner_id": (
+                player_ids[i] if p2 == "BYE" and i < len(player_ids) else None
+            ),
             "loser": None,
             "status": "completed" if p2 == "BYE" else "pending",
         }
+    if tournament is not None and pending_byes:
+        tournament["tournament_byes_given"] = sorted(byes_given | pending_byes)
     return matches
 
+
+def _build_initial_round_matches(
+    tournament: dict,
+    slots: list | None = None,
+    player_ids: list | None = None,
+) -> dict:
+    """Create a power-of-two first round and assign each Bye at most once."""
+    names = list(tournament.get("player_names", []) if slots is None else slots)
+    ids = list(tournament.get("players", []) if player_ids is None else player_ids)
+    if len(names) < 2:
+        raise TournamentByeError("At least two players are required.")
+    if len(ids) < len(names):
+        ids.extend([None] * (len(names) - len(ids)))
+
+    bracket_size = 1 << (len(names) - 1).bit_length()
+    match_count = bracket_size // 2
+    bye_count = bracket_size - len(names)
+    byes_given = _tournament_byes_given(tournament)
+
+    indexed_players = list(zip(range(len(names)), names, ids))
+    eligible = [
+        player
+        for player in indexed_players
+        if _bye_tracking_key(player[2], player[1]) not in byes_given
+    ]
+    if bye_count > len(eligible):
+        raise TournamentByeError(
+            "Not enough Bye-eligible players remain to build the initial bracket."
+        )
+
+    bye_players = eligible[:bye_count]
+    bye_indexes = {index for index, _name, _player_id in bye_players}
+    remaining_players = [
+        (name, player_id)
+        for index, name, player_id in indexed_players
+        if index not in bye_indexes
+    ]
+
+    bracket_slots = []
+    bracket_ids = []
+    remaining_index = 0
+    for match_index in range(match_count):
+        if match_index < bye_count:
+            _index, name, player_id = bye_players[match_index]
+            bracket_slots.extend((name, "BYE"))
+            bracket_ids.extend((player_id, None))
+        else:
+            first = remaining_players[remaining_index]
+            second = remaining_players[remaining_index + 1]
+            remaining_index += 2
+            bracket_slots.extend((first[0], second[0]))
+            bracket_ids.extend((first[1], second[1]))
+
+    return _build_round_matches(
+        bracket_slots,
+        bracket_ids,
+        round_number=1,
+        tournament=tournament,
+    )
+
 def _build_ffa_matches(slots: list) -> dict:
-    """Bracket FFA: gruppi da 3 (1v1v1)."""
+    """Bracket FFA: gruppi da 3 (1v1v1), padded with bots, never Byes."""
+    slots = list(slots)
+    while len(slots) % 3:
+        slots.append(f"Bot {len(slots) + 1}")
     matches = {}
     mnum    = 1
     i       = 0
     while i < len(slots):
         p1 = slots[i]
-        p2 = slots[i+1] if i+1 < len(slots) else "BYE"
-        p3 = slots[i+2] if i+2 < len(slots) else "BYE"
-        auto_win = None
-        if p2 == "BYE" and p3 == "BYE":
-            auto_win = p1   # solo un giocatore → BYE automatico
+        p2 = slots[i + 1]
+        p3 = slots[i + 2]
         matches[mnum] = {
             "p1": p1, "p2": p2, "p3": p3,
             "id1": None, "id2": None, "id3": None,
-            "winner": auto_win, "winner_id": None,
-            "losers": [] if not auto_win else [p2, p3],
-            "status": "completed" if auto_win else "pending",
+            "winner": None, "winner_id": None,
+            "losers": [],
+            "status": "pending",
         }
         mnum += 1
         i    += 3
@@ -9326,10 +9481,14 @@ def _generate_bracket_now(t: dict) -> bool:
         t["matches"]      = _build_ffa_matches(names)
         t["total_rounds"] = _ffa_total_rounds(len(names))
     elif modalita in TEAM_MODES:
-        t["matches"]      = _build_round_matches(names)
+        t["matches"]      = _build_initial_round_matches(
+            t,
+            slots=names,
+            player_ids=[None] * len(names),
+        )
         t["total_rounds"] = math.ceil(math.log2(len(names))) if len(names) > 1 else 1
     else:
-        t["matches"] = _build_round_matches(names, t["players"])
+        t["matches"] = _build_initial_round_matches(t)
         t["total_rounds"] = math.ceil(math.log2(len(names))) if len(names) > 1 else 1
     t["round"] = 1
     save_db()
@@ -9392,12 +9551,27 @@ async def bracket(ctx, next_round: int = None):
         ]
         if len(winners) < 2:
             return await ctx.send("🏆 Only 1 winner remains — use `:winner-tour` or `:team-winner` to close!")
-        _archive_completed_matches(t)
-        t["round"] = next_round
         if modalita == "FFA":
             t["matches"] = _build_ffa_matches(winners)
         else:
-            t["matches"] = _build_round_matches(winners, winner_ids)
+            try:
+                t["matches"] = _build_round_matches(
+                    winners,
+                    winner_ids,
+                    round_number=next_round,
+                    tournament=t,
+                )
+            except TournamentByeError as exc:
+                # Never recover by assigning a second Bye. Keep the bracket
+                # unchanged so the host must resolve a real 1v1 pairing.
+                t["round"] = cur
+                return await ctx.send(
+                    f"❌ {exc} Resolve the bracket with real 1v1 pairings "
+                    "before advancing.",
+                    delete_after=8.0,
+                )
+        _archive_completed_matches(t)
+        t["round"] = next_round
         save_db()
         await ctx.send(f"🔄 **Round {next_round}** started — {len(winners)} players!", delete_after=5.0)
     t["bracket_channel_id"] = ctx.channel.id
